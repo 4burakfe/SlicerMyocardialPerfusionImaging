@@ -65,9 +65,13 @@ an overview (active study, step status) and the five workflow steps inside its o
    center of each study's segmented myocardium (slice and panning); off, each row scrolls on its own.
 5. **Gated QC**: checks the gated study of Study 1 or Study 2 before the gated review. The myocardium
    is segmented in every gate frame, starting from the static wall of Myocardium: the mid-wall of each ray
-   is searched near the static one, the valve plane is fitted again (static tilt, at most 12 mm away, the
-   base descends about 1 cm in systole) and the endo- and epicardium keep the static myocardial volume
-   (QGS-like). Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in three rows,
+   is searched near the static one, the valve plane is fitted again (static tilt, at most 25 mm away, the
+   base descends about 1 cm in systole). By default every frame keeps the myocardial volume of
+   end-systole, where the wall is thickest and brightest: the ES wall thickness comes from its own count
+   profiles, with the image blur estimated from the frames rather than assumed (the summed static image
+   is blurred by the motion and overestimates the wall, which collapses the cavity at ES and inflates the
+   EF). Selectable instead: the ED volume as reference (QGS-like) or a per-ray wall volume taken from the
+   static fit. Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in three rows,
    one tile per frame, all at the same slice (mouse wheel over a row scrolls), with its contours and one
    color scale for all frames (or each frame on its own). Top right: counts per frame in % of the mean
    (projections, image, segmented myocardium; frames beyond ±10 % are ringed). Bottom right: the ECG gating
@@ -77,12 +81,13 @@ an overview (active study, step status) and the five workflow steps inside its o
    results are kept on the gated sequence (MPI.Gate* attributes).
 6. **Gated Review**: STRESS GATED shows the stress gated study. On the left are the SA / HLA / VLA rows of
    the gate frames as a cine, with the same grid, slices, colors and window as Perfusion (taken over when
-   the screen opens) and each frame's endo- and epicardium. On the right are the perfusion polar map next to
-   a function polar map: count-based wall thickening (ES / ED wall counts of every ray, first harmonic over
-   the cycle) or wall motion (mm the endocardium moves from ED to ES, valve descent included). Below them
+   the screen opens) and each frame's endo- and epicardium. On the right are three polar maps side by side: perfusion,
+   count-based wall thickening (ES / ED wall counts of every ray, first harmonic over the cycle, smoothed
+   more than the others since a count ratio is noisy) and wall motion (mm the endocardium moves from ED
+   to ES, valve descent included), each with its own window. Below them
    are the LV cavity volume of every frame (EDV, ESV, EF, the frame shown marked) and the beating 3D wall in
-   its own color map (Jotun by default), shown as a wireframe, surface or points, with the ED wall as
-   reference points drawn on top. The cine has play /
+   its own color map (Hel by default), shown as a wireframe (default), surface or points, with the ED wall in white
+   drawn on top as points, wireframe or surface with its own opacity. The cine has play /
    stop, a speed and a frame slider. The frames are segmented in Gated QC.
 
 The steps are hidden modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC, MPIGated). While the hub is open, a workflow

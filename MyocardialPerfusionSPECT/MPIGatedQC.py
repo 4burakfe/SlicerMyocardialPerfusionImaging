@@ -5,7 +5,9 @@ Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before 
 
   - the myocardium is segmented in every gate frame, starting from the static wall detected in
     Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: mid-wall refitted per ray near the
-    static one, valve plane refitted within a limit, myocardial volume kept constant);
+    static one, valve plane refitted within a limit; constantVolumeGates then gives every frame the
+    myocardial volume of the ES frame (or ED), whose thickness comes from its own profile widths at the
+    blur estimated from the frames; the per-ray model of the static wall stays selectable);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
     frame's endo- and epicardium;
@@ -208,23 +210,36 @@ class GatedStudy:
         center = np.asarray(frame["center"], dtype=float)
         reach = float(np.max(staticResult["epi"])) + 5.0
         self.slices = {name: [] for name in ORIENTATIONS}
+        frames = []
         for label, node in gates:
             array = slicer.util.arrayFromVolume(node).astype(np.float32)
             matrix = worldToIjk(node, self.study)
             spacing = node.GetSpacing()
             try:
                 result = wallLib.fitGate(sampler(array, matrix), staticResult, params)
-                stats = frameStatistics(result, frame, array, matrix, spacing[0] * spacing[1] * spacing[2])
             except Exception as e:
                 logging.warning(f"MPI: gate {label} could not be segmented:\n" + traceback.format_exc())
                 self.errors.append(f"frame {label}: {e}")
-                result, stats = None, {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
+                result = None
             self.results.append(result)
-            self.stats.append(stats)
+            frames.append((label, array, matrix, spacing[0] * spacing[1] * spacing[2]))
             self.imageCounts.append(float(array.sum(dtype=np.float64)))
             for name in ORIENTATIONS:
                 self.slices[name].append(resliceLike(array, matrix, outputs[name], mask, center))
             self.peaks.append(self._peakNear(self.slices["SA"][-1], outputs["SA"], center, reach))
+        model = dict(wallLib.GATE_DEFAULTS, **(params or {}))["thicknessModel"]
+        if model in ("volume", "es"):
+            # the wall thickness of all frames together: each keeps the myocardial volume of ED (or ES)
+            self.results = wallLib.constantVolumeGates(self.results, params, "es" if model == "es" else "ed")
+        for index, (label, array, matrix, voxel) in enumerate(frames):
+            stats = {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
+            if self.results[index] is not None:
+                try:
+                    stats = frameStatistics(self.results[index], frame, array, matrix, voxel)
+                except Exception as e:
+                    logging.warning(f"MPI: gate {label} statistics failed:\n" + traceback.format_exc())
+                    self.errors.append(f"frame {label}: {e}")
+            self.stats.append(stats)
         return self
 
     @staticmethod
@@ -339,6 +354,18 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.gateSmoothingSlider.toolTip = ("Smoothing of the wall surface of every frame (rays), 2 by default. Higher "
                                             "values bridge defects and noise more, lower values follow the counts")
         advancedForm.addRow("Surface smoothing:", self.gateSmoothingSlider)
+        self.thicknessModelCombo = qt.QComboBox()
+        for text, value in wallLib.THICKNESS_MODELS:
+            self.thicknessModelCombo.addItem(text, value)
+        self.thicknessModelCombo.setCurrentIndex(
+            max(0, self.thicknessModelCombo.findData(wallLib.GATE_DEFAULTS["thicknessModel"])))
+        self.thicknessModelCombo.toolTip = (
+            "Wall thickness of the frames. Constant myocardial volume, ES reference (default): every frame keeps "
+            "the myocardial volume of end-systole, the thickest and brightest wall, whose thickness comes from its "
+            "own count profiles (the blur estimated from the frames). ED reference: the same from end-diastole. "
+            "Per ray: each ray keeps its wall volume of the static fit (the summed image blurs the wall over the "
+            "cycle, so the walls come out thicker and the EF higher, most in small hearts)")
+        advancedForm.addRow("Wall thickness:", self.thicknessModelCombo)
         self.segmentButton = styleButton(qt.QPushButton("Segment frames again"), "create")
         advancedForm.addRow(self.segmentButton)
 
@@ -450,7 +477,8 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def params(self):
         return {"maxWallShift": float(self.wallShiftSpin.value), "maxValveShift": float(self.valveShiftSpin.value),
-                "gateSmoothing": float(self.gateSmoothingSlider.value)}
+                "gateSmoothing": float(self.gateSmoothingSlider.value),
+                "thicknessModel": self.thicknessModelCombo.itemData(self.thicknessModelCombo.currentIndex) or "es"}
 
     def gatedStudy(self, slot, rebuild=False):
         """GatedStudy of a slot, built once per study, gated sequence, static wall and settings."""
@@ -729,4 +757,11 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         gate = wallLib.fitGate(sampleOf(ventricle(21.0)), static)
         middle = static["grid"].nCyl - 4
         self.assertLess(float(np.median(gate["mid"][middle])), float(np.median(static["mid"][middle])) - 2.0)
+        # constant volume: the smaller frame gets a thicker wall, with the myocardial volume of ED
+        ed = wallLib.fitGate(sampleOf(ventricle(25.0)), static)
+        walls = wallLib.constantVolumeGates([ed, gate])
+        self.assertEqual(walls[1]["edFrame"], 0)
+        self.assertAlmostEqual(wallLib.wallVolumeMl(walls[1]), wallLib.wallVolumeMl(walls[0]),
+                               delta=0.03 * wallLib.wallVolumeMl(walls[0]))
+        self.assertGreater(float(np.median(walls[1]["thickness"][middle])), float(np.median(walls[0]["thickness"][middle])))
         self.delayDisplay("Gate fit test passed")

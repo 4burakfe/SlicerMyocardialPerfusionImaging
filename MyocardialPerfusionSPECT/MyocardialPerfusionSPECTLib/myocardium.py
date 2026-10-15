@@ -21,6 +21,12 @@ labelling:
    (FWHM) of the count profile with the system resolution removed in quadrature, and limited to a
    plausible range.
 
+Gate frames (fitGate, constantVolumeGates): the mid-wall is refitted per frame; with a constant-volume
+model the reference frame's thickness comes from its own profiles, modelled as a slab of uniform
+uptake blurred by a Gaussian (rectGaussThickness), the blur estimated from the frames themselves
+(estimateResolution: FWHM and peak / area of a profile fix slab width and blur together), so the
+gated reconstruction filter is taken into account.
+
 Coordinates: center c, u base -> apex, w anterior, s = u x w septum (as in MPIProcessing). The angle
 around the axis is measured from w toward s.
 """
@@ -181,7 +187,8 @@ def fitWall(sample, center, u, w, radius, params=None):
 
     # 4. thickness from the profile width
     fwhm = _fwhm(profiles, grid.t, mid, peak, 1.6 * half)
-    physical = np.sqrt(np.maximum(fwhm ** 2 - float(p["resolution"]) ** 2, 0.0))
+    resolution = float(p["resolution"])
+    physical = np.sqrt(np.maximum(fwhm ** 2 - resolution ** 2, 0.0))
     thickness = _smoothMap(physical, np.maximum(weight, 1e-6), p["thicknessSmoothing"])
     thickness = np.clip(_poleSmooth(grid, thickness, np.maximum(weight, 1e-6), p["thicknessSmoothing"], mid),
                         p["minThickness"], p["maxThickness"])
@@ -201,7 +208,14 @@ GATE_DEFAULTS = {
     "maxWallShift": 25.0,      # mm, the mid-wall of a gate is searched this far from the static mid-wall
     "maxValveShift": 25.0,     # mm, the valve plane of a gate stays this close to the static one (base descent ~1 cm)
     "gateSmoothing": 2.0,      # Gaussian sigma of the gate surface smoothing (grid samples)
+    "thicknessModel": "es",      # "ray": each ray keeps its wall volume of the static fit,
+                                 # "volume": every frame keeps the myocardial volume of ED (QGS-like),
+                                 # "es": the same with end-systole as the reference
+    "maxThicknessChange": 0.5,   # "volume": a ray's thickness stays within ED / (1 + x) .. ED x (1 + x)
 }
+THICKNESS_MODELS = (("Constant myocardial volume (ES reference)", "es"),
+                    ("Constant myocardial volume (ED reference)", "volume"),
+                    ("Per ray, from the static wall", "ray"))
 
 
 def fitGate(sample, reference, params=None):
@@ -253,11 +267,112 @@ def fitGate(sample, reference, params=None):
     ratio[grid.nCyl:] = ratio[grid.nCyl:] ** 2
     thickness = np.clip(reference["thickness"] * ratio, p["minThickness"], 1.5 * p["maxThickness"])
     thickness = _holdBeyondBase(thickness, beyond)
-    endo = _limitBasalNarrowing(grid, np.maximum(mid - 0.5 * thickness, 1.0), p["maxBaseNarrowing"])
-    epi = _limitBasalNarrowing(grid, mid + 0.5 * thickness, p["maxBaseNarrowing"])
+    endo, epi = _wallSurfaces(grid, mid, thickness, p)
+    # the frame's own wall thickness from its profile widths (the ED frame's is the reference of the
+    # constant-volume model: unlike the static image it is not blurred by the wall motion)
+    half = max(6.0, 0.35 * float(np.median(refMid)))
+    fwhm, base, area = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
     return {"grid": grid, "mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
             "baseZ": a, "detectedBaseZ": a, "valvePlane": plane, "basePoints": basePoints,
-            "rowCounts": np.median(peak[:grid.nCyl], axis=1), "gateWeight": weight}
+            "rowCounts": np.median(peak[:grid.nCyl], axis=1), "gateWeight": weight,
+            "profileFwhm": fwhm, "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
+            "thicknessModel": "ray"}
+
+
+def gateThickness(result, resolution):
+    """Wall thickness of a gate frame from its own count profiles (fitGate "profileFwhm"), for a system
+    resolution (FWHM mm), smoothed and limited like the static fit."""
+    grid, p = result["grid"], result["grid"].params
+    weight = np.maximum(result["gateWeight"], 1e-6)
+    widths = _smoothMap(rectGaussThickness(result["profileFwhm"], resolution), weight, p["thicknessSmoothing"])
+    widths = np.clip(_poleSmooth(grid, widths, weight, p["thicknessSmoothing"], result["mid"]),
+                     p["minThickness"], p["maxThickness"])
+    return _holdBeyondBase(widths, _beyondBase(grid, result["mid"], result["valvePlane"]))
+
+
+def gatedResolution(results, fallback):
+    """System resolution of a gated study: the median of the estimates of its frames."""
+    values = [r["resolutionEstimate"] for r in results if r is not None and r.get("resolutionEstimate")]
+    return float(np.median(values)) if values else float(fallback)
+
+
+def _wallSurfaces(grid, mid, thickness, p):
+    """Endo- and epicardium: mid-wall -/+ half the thickness, the base kept from folding in."""
+    endo = _limitBasalNarrowing(grid, np.maximum(mid - 0.5 * thickness, 1.0), p["maxBaseNarrowing"])
+    epi = _limitBasalNarrowing(grid, mid + 0.5 * thickness, p["maxBaseNarrowing"])
+    return endo, epi
+
+
+def _rayVolumes(result, inner, outer, power):
+    """Volume (ml) between two distances along every ray of the wall below the valve plane, summed:
+    cylinder rows as rings (r^2 / 2 dtheta dz), apical cap rows as spherical shells
+    (r^3 / 3 sin(phi) dphi dtheta). power 1: the shell between inner and outer, power 0: inside outer."""
+    grid = result["grid"]
+    nCyl = grid.nCyl
+    dTheta = 2.0 * math.pi / grid.nTheta
+    inside = ~_beyondBase(grid, result["mid"], result["valvePlane"])
+    inner = inner if power else np.zeros_like(outer)
+    ring = (outer[:nCyl] ** 2 - inner[:nCyl] ** 2) / 2.0 * dTheta * grid.dz
+    shell = (outer[nCyl:] ** 3 - inner[nCyl:] ** 3) / 3.0 * np.sin(grid.phi)[:, None] * grid.dphi * dTheta
+    return (float(ring[inside[:nCyl]].sum()) + float(shell.sum())) / 1000.0
+
+
+def wallVolumeMl(result, thickness=None):
+    """Myocardial volume (ml) of a fit, or of its mid-wall with another thickness map."""
+    if thickness is None:
+        return _rayVolumes(result, result["endo"], result["epi"], 1)
+    mid = result["mid"]
+    return _rayVolumes(result, np.maximum(mid - 0.5 * thickness, 1.0), mid + 0.5 * thickness, 1)
+
+
+def constantVolumeGates(results, params=None, referencePhase="ed"):
+    """QGS-like wall thickness of the gate frames: every frame keeps the myocardial volume of one
+    reference frame instead of each ray keeping its own. The reference is end-diastole ("ed", the frame
+    whose mid-wall encloses the most) or end-systole ("es", the least: the thickest, brightest wall,
+    best seen when the ED wall is dim). The reference has the thickness from its own profile widths
+    (at the resolution estimated over all frames); the other frames start from it, scaled by
+    (reference mid / frame mid) of each ray (limited to maxThicknessChange), and are then scaled together
+    so their myocardial volume equals that of the reference; no ray leaves reference / (1 + x) ..
+    reference x (1 + x). results: fitGate results (None for a frame that could not be segmented).
+    Returns new results."""
+    g = dict(GATE_DEFAULTS, **(params or {}))
+    known = [i for i, r in enumerate(results) if r is not None and "profileFwhm" in r]
+    if len(known) < 2:
+        return list(results)
+    enclosed = {i: _rayVolumes(results[i], None, results[i]["mid"], 0) for i in known}
+    ed = (min if referencePhase == "es" else max)(known, key=lambda i: enclosed[i])
+    edResult = results[ed]
+    p = edResult["grid"].params
+    change = 1.0 + max(float(g["maxThicknessChange"]), 0.0)
+    resolution = gatedResolution(results, p["resolution"])
+    reference = gateThickness(edResult, resolution)
+    target = wallVolumeMl(edResult, reference)
+    out = list(results)
+    for i in known:
+        result = results[i]
+        grid, mid = result["grid"], result["mid"]
+        low = np.maximum(reference / change, p["minThickness"])
+        high = np.minimum(reference * change, 1.5 * p["maxThickness"])
+        shape = reference * np.clip(edResult["mid"] / np.maximum(mid, 1.0), 1.0 / change, change)
+
+        def thicknessAt(scale):
+            return np.clip(scale * shape, low, high)
+        if i == ed:
+            thickness = np.clip(reference, low, high)
+        else:
+            lo, hi = 0.2, 5.0
+            for _ in range(40):                       # the volume grows with the scale: bisection
+                scale = 0.5 * (lo + hi)
+                if wallVolumeMl(result, thicknessAt(scale)) < target:
+                    lo = scale
+                else:
+                    hi = scale
+            thickness = thicknessAt(0.5 * (lo + hi))
+        thickness = _holdBeyondBase(thickness, _beyondBase(grid, mid, result["valvePlane"]))
+        endo, epi = _wallSurfaces(grid, mid, thickness, p)
+        out[i] = dict(result, thickness=thickness, endo=endo, epi=epi, thicknessModel=referencePhase,
+                      edFrame=ed, referenceFrame=ed, resolutionMm=resolution)
+    return out
 
 
 def endSystoleDiastole(volumes):
@@ -269,16 +384,21 @@ def endSystoleDiastole(volumes):
     return max(known)[1], min(known)[1]
 
 
-def thickeningMap(gatePolars, ed, es, smoothing=1.5):
+def thickeningMap(gatePolars, ed, es, smoothing=2.5, countSmoothing=3.0):
     """Count-based wall thickening polar map (partial volume effect: a thicker wall looks brighter),
     in % = (ES counts / ED counts - 1) x 100. The wall counts of every ray (polarMap of each frame)
     are fitted with the first harmonic over the cardiac cycle, so all frames count and the ED / ES
-    values are less noisy than two single frames; then smoothed over the map (count weighted).
+    values are less noisy than two single frames. The ED and ES count maps are smoothed first
+    (countSmoothing, in map cells), since the ratio of two noisy maps is far noisier than either,
+    and the % map is smoothed again (smoothing); both are count weighted, so a defect does not
+    pull its neighbours down. This gives a coarser map than the wall motion, on purpose.
     Returns a polar map dict like polarMap (on the rows of the ED frame) with "values" in %."""
     stack = np.array([np.asarray(p["values"], dtype=float) for p in gatePolars])     # [frames, rows, angles]
     mean, edCounts, esCounts = _firstHarmonic(stack, ed, es)
-    values = 100.0 * (esCounts / np.maximum(edCounts, 1e-9) - 1.0)
     weights = np.clip(mean / max(float(np.nanmax(mean)), 1e-9), 0.0, 1.0) ** 2
+    edCounts = _smoothMap(np.nan_to_num(edCounts), weights + 1e-6, countSmoothing)
+    esCounts = _smoothMap(np.nan_to_num(esCounts), weights + 1e-6, countSmoothing)
+    values = 100.0 * (esCounts / np.maximum(edCounts, 1e-9) - 1.0)
     values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -100.0, 200.0)
     reference = gatePolars[ed]
     return {"values": values, "rho": np.asarray(reference["rho"]).copy(), "theta": np.asarray(reference["theta"]).copy()}
@@ -897,10 +1017,77 @@ def _interp(profiles, t, position):
     return (1.0 - frac) * a + frac * b
 
 
-def _fwhm(profiles, t, position, peak, reach):
-    """Full width at half maximum around the peak, searched up to reach mm on each side."""
+def _profileWidth(profiles, t, position, peak, reach):
+    """(FWHM above the local background, background, area above it) of the wall profile of every ray:
+    the background is the lowest count within reach of the mid-wall, the area is summed within
+    1.5 FWHM of it."""
+    window = np.abs(t[None, None, :] - position[..., None]) <= reach
+    base = np.where(window, profiles, np.inf).min(axis=2)
+    base = np.where(np.isfinite(base), np.minimum(base, peak), 0.0)
+    fwhm = _fwhm(profiles, t, position, peak, reach, base)
+    inside = np.abs(t[None, None, :] - position[..., None]) <= 1.5 * fwhm[..., None]
+    area = (np.clip(profiles - base[..., None], 0.0, None) * inside).sum(axis=2) * float(t[1] - t[0])
+    return fwhm, base, area
+
+
+_RECT_GAUSS = {}
+
+
+def _rectGaussTable():
+    """FWHM and peak (unit uptake) of a slab of width T blurred by a Gaussian of FWHM R, on a grid of
+    T (0-40 mm) and R (3-30 mm): (T, R, fwhm [T, R], peak [T, R])."""
+    if not _RECT_GAUSS:
+        from math import erf
+        erfv = np.vectorize(erf)
+        T = np.arange(0.0, 40.01, 0.5)
+        R = np.arange(3.0, 30.01, 0.5)
+        x = np.arange(0.0, 60.0, 0.05)
+        fwhm = np.zeros((len(T), len(R)))
+        peak = np.zeros((len(T), len(R)))
+        for j, r in enumerate(R):
+            s = math.sqrt(2.0) * r / 2.3548
+            y = 0.5 * (erfv((x[None, :] + T[:, None] / 2.0) / s) - erfv((x[None, :] - T[:, None] / 2.0) / s))
+            peak[:, j] = y[:, 0]
+            below = y < 0.5 * y[:, :1]
+            first = np.argmax(below, axis=1)
+            fwhm[:, j] = 2.0 * x[np.maximum(first, 1)]
+        _RECT_GAUSS.update(T=T, R=R, fwhm=fwhm, peak=peak)
+    t = _RECT_GAUSS
+    return t["T"], t["R"], t["fwhm"], t["peak"]
+
+
+def rectGaussThickness(fwhm, resolution):
+    """Slab width (mm) whose profile, blurred by a Gaussian of FWHM resolution, has this FWHM."""
+    T, R, table, _ = _rectGaussTable()
+    j = int(np.clip(np.round((float(resolution) - R[0]) / (R[1] - R[0])), 0, len(R) - 1))
+    return np.interp(np.asarray(fwhm, dtype=float), table[:, j], T)
+
+
+def estimateResolution(fwhm, height, area, weight, rays=800):
+    """System resolution (FWHM, mm) from wall profiles: for a slab of width T blurred by a Gaussian,
+    the profile's FWHM and its peak / area ratio fix T and the blur together. Each of the brightest
+    rays (weight above its 60th percentile) is matched to the table; the median blur is returned, or
+    None when there are too few usable rays."""
+    T, R, table, peak = _rectGaussTable()
+    good = (weight >= np.percentile(weight, 60)) & (area > 0) & (height > 0) & np.isfinite(fwhm)
+    if np.count_nonzero(good) < 20:
+        return None
+    f, q = fwhm[good], (height / np.maximum(area, 1e-9))[good]
+    if len(f) > rays:
+        pick = np.linspace(0, len(f) - 1, rays).astype(int)
+        f, q = f[pick], q[pick]
+    ratio = peak[1:] / T[1:, None]                                         # peak / area, T > 0
+    err = ((table[1:][None] - f[:, None, None]) / f[:, None, None]) ** 2 + \
+          ((ratio[None] - q[:, None, None]) / q[:, None, None]) ** 2
+    best = err.reshape(len(f), -1).argmin(axis=1) % len(R)
+    return float(np.clip(np.median(R[best]), 5.0, 25.0))
+
+
+def _fwhm(profiles, t, position, peak, reach, base=None):
+    """Full width at half maximum around the peak (half way between base and peak when given),
+    searched up to reach mm on each side."""
     step = 0.5 * (t[1] - t[0])
-    halfValue = 0.5 * peak
+    halfValue = 0.5 * peak if base is None else base + 0.5 * (peak - base)
     offsets = np.arange(step, reach + 1e-6, step)
     widths = np.zeros_like(position)
     for sign in (-1.0, 1.0):

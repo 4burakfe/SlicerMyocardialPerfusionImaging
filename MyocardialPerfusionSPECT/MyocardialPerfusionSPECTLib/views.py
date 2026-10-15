@@ -15,7 +15,7 @@ DUAL_REORIENT_LAYOUT_ID = 5712   # two studies stacked (stress over rest)
 MYOCARDIUM_LAYOUT_ID = 5713      # wall contours on SA / HLA / VLA and the 3D wall
 DUAL_MYOCARDIUM_LAYOUT_ID = 5714  # the same for stress (top row) and rest (bottom row)
 GATED_QC_LAYOUT_ID = 5730        # gate frames in SA / HLA / VLA rows, count curve and gating information
-GATED_REVIEW_LAYOUT_ID = 5731    # cine slices, perfusion and thickening polar maps, LV volume curve, cine 3D
+GATED_REVIEW_LAYOUT_ID = 5731    # cine slices, perfusion / thickening / motion polar maps, LV volume curve, cine 3D
 
 EDIT_ORDER = ("TA", "VLA", "SA")
 EDIT_VIEWS = {"TA": "MPIEditTA", "VLA": "MPIEditVLA", "SA": "MPIEditSA"}
@@ -40,6 +40,7 @@ GATED_INFO_TAG = "mpigatedinfo"       # Gated QC: gating information (R-R window
 GATED_REVIEW_MOSAIC_TAG = "mpigatedreviewmosaic"   # Gated Review: cine SA / HLA / VLA rows
 GATED_POLAR_TAG = "mpigatedpolar"                  # Gated Review: perfusion polar map
 GATED_THICKENING_TAG = "mpigatedthickening"        # Gated Review: wall thickening polar map
+GATED_MOTION_TAG = "mpigatedmotion"                # Gated Review: wall motion polar map
 GATED_VOLUME_TAG = "mpigatedvolume"                # Gated Review: LV cavity volume per frame
 GATED_3D_VIEW = "MPIGated3D"                       # Gated Review: cine 3D wall with the perfusion colors
 
@@ -193,17 +194,18 @@ def gatedQcLayoutXml():
 
 
 def gatedReviewLayoutXml():
-    """Gated Review: the cine slice rows on the left; on the right the perfusion and thickening polar
-    maps side by side (top), the LV volume curve and the cine 3D wall side by side (bottom)."""
-    def pair(first, second):
-        return ('<item splitSize="500"><layout type="horizontal" split="true">'
-                f'<item splitSize="500">{first}</item><item splitSize="500">{second}</item>'
-                '</layout></item>')
+    """Gated Review: the cine slice rows on the left; on the right the perfusion, wall thickening and
+    wall motion polar maps side by side (top), the LV volume curve and the cine 3D wall side by side
+    (bottom)."""
+    def pair(*views, size=500):
+        items = "".join(f'<item splitSize="500">{view}</item>' for view in views)
+        return f'<item splitSize="{size}"><layout type="horizontal" split="true">{items}</layout></item>'
     return ('<layout type="horizontal" split="true">'
-            f'<item splitSize="620"><{GATED_REVIEW_MOSAIC_TAG}></{GATED_REVIEW_MOSAIC_TAG}></item>'
-            '<item splitSize="520"><layout type="vertical" split="true">'
-            + pair(f"<{GATED_POLAR_TAG}></{GATED_POLAR_TAG}>", f"<{GATED_THICKENING_TAG}></{GATED_THICKENING_TAG}>")
-            + pair(f"<{GATED_VOLUME_TAG}></{GATED_VOLUME_TAG}>", _threeDXml(GATED_3D_VIEW, "Gated 3D"))
+            f'<item splitSize="560"><{GATED_REVIEW_MOSAIC_TAG}></{GATED_REVIEW_MOSAIC_TAG}></item>'
+            '<item splitSize="700"><layout type="vertical" split="true">'
+            + pair(f"<{GATED_POLAR_TAG}></{GATED_POLAR_TAG}>", f"<{GATED_THICKENING_TAG}></{GATED_THICKENING_TAG}>",
+                   f"<{GATED_MOTION_TAG}></{GATED_MOTION_TAG}>", size=400)
+            + pair(f"<{GATED_VOLUME_TAG}></{GATED_VOLUME_TAG}>", _threeDXml(GATED_3D_VIEW, "Gated 3D"), size=600)
             + '</layout></item>'
             '</layout>')
 

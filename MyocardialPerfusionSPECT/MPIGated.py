@@ -37,7 +37,7 @@ from MyocardialPerfusionSPECTLib import session  # noqa: E402
 from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.resampling import DEFAULT_INTERPOLATION, zoomInPlane  # noqa: E402
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
-    GATED_REVIEW_LAYOUT_ID, GATED_POLAR_TAG, GATED_THICKENING_TAG, GATED_3D_VIEW, ORIENTATIONS,
+    GATED_REVIEW_LAYOUT_ID, GATED_POLAR_TAG, GATED_THICKENING_TAG, GATED_MOTION_TAG, GATED_3D_VIEW, ORIENTATIONS,
     ORIENTATION_TITLES, gatedReviewLayoutXml, registerLayout, threeDWidgetByTag)
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
@@ -54,46 +54,27 @@ OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "se
 REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points", "points"))
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
 MOTION_WINDOW = (-10.0, 25.0, 0.0, 10.0)        # the same of the wall motion map, mm (QGS: 0-10 mm)
-FUNCTION_MAPS = (("Wall thickening", "thickening"), ("Wall motion", "motion"))
+POLAR_TAGS = (GATED_POLAR_TAG, GATED_THICKENING_TAG, GATED_MOTION_TAG)
 DEFAULT_FPS = 8
 VOLUME_COLOR = (255, 200, 80)
 LABEL_DISTANCE_MM = 45.0
-DEFAULT_WALL_COLORMAP = "Jotun"     # 3D wall colors (its own setting, not taken over from Perfusion)
-DEFAULT_REPRESENTATION = "surface"
-GHOST_OPACITY = 0.65                # ED reference points (drawn on top, so they need not be opaque)
-# ED reference points: the candidate farthest (CIELAB) from every color of the wall's color map
-CONTRAST_CANDIDATES = ((0.0, 1.0, 1.0), (1.0, 0.0, 1.0), (0.2, 1.0, 0.2), (0.15, 0.45, 1.0),
-                       (1.0, 1.0, 1.0), (1.0, 0.95, 0.1), (1.0, 0.5, 0.0), (0.6, 0.2, 1.0))
+DEFAULT_WALL_COLORMAP = "Hel"     # 3D wall colors (its own setting, not taken over from Perfusion)
+DEFAULT_REPRESENTATION = "wireframe"
+GHOST_OPACITY = 0.35                # ED reference (drawn on top, so it need not be opaque)
+GHOST_REPRESENTATION = "points"
+GHOST_COLOR = (1.0, 1.0, 1.0)       # ED reference points: white on every color map
 WALL_OPACITY = {"surface": 0.5, "wireframe": 0.5, "points": 1.0}   # beating wall in the 3D view
 
 
-def _lab(rgb):
-    """sRGB 0-1 -> CIELAB (D65)."""
-    rgb = np.asarray(rgb, dtype=float)
-    lin = np.where(rgb <= 0.04045, rgb / 12.92, ((rgb + 0.055) / 1.055) ** 2.4)
-    xyz = lin @ np.array([[0.4124, 0.2126, 0.0193], [0.3576, 0.7152, 0.1192], [0.1805, 0.0722, 0.9505]])
-    xyz = xyz / np.array([0.9505, 1.0, 1.089])
-    f = np.where(xyz > 0.008856, np.cbrt(xyz), 7.787 * xyz + 16.0 / 116.0)
-    return np.stack([116.0 * f[..., 1] - 16.0, 500.0 * (f[..., 0] - f[..., 1]),
-                     200.0 * (f[..., 1] - f[..., 2])], axis=-1)
-
-
-def contrastingColor(table):
-    """The CONTRAST_CANDIDATES color farthest from all colors of a 256 x 3 uint8 color table, e.g.
-    lime on Jotun, magenta on PET-HotIron, orange on Vanaheim."""
-    colors = _lab(np.asarray(table, dtype=float).reshape(-1, 3) / 255.0)
-    candidates = _lab(np.array(CONTRAST_CANDIDATES))
-    distance = np.linalg.norm(candidates[:, None, :] - colors[None, :, :], axis=-1).min(axis=1)
-    return CONTRAST_CANDIDATES[int(np.argmax(distance))]
-
-
 class GhostLayer:
-    """The ED reference points drawn in their own renderer layer over the 3D view, sharing its camera,
-    so the beating wall never hides them."""
+    """The ED reference wall drawn in its own renderer layer over the 3D view, sharing its camera,
+    so the beating wall never hides it. Shown as points, wireframe or surface; points and lines are
+    drawn once each (the triangles would draw a point once per triangle that shares it, about 6 times,
+    and an edge twice, so a translucent reference would add up to nearly opaque)."""
 
     def __init__(self):
         self.window = self.renderer = self.actor = None
-        self.source = self.vertices = None
+        self.key = None
 
     @staticmethod
     def _mainRenderer(view):
@@ -120,17 +101,28 @@ class GhostLayer:
         actor = vtk.vtkActor()
         actor.SetMapper(mapper)
         prop = actor.GetProperty()
-        prop.SetRepresentationToPoints()
         prop.SetPointSize(1.0)
-        prop.SetOpacity(GHOST_OPACITY)
+        prop.SetLineWidth(1.0)
         prop.LightingOff()
         renderer.AddActor(actor)
         window.AddRenderer(renderer)
         self.window, self.renderer, self.actor = window, renderer, actor
         return view
 
-    def update(self, widget, polyData, color):
-        """Show polyData as points of the given color in the 3D view of widget (None hides them)."""
+    @staticmethod
+    def _geometry(polyData, representation):
+        if representation == "points":
+            source = vtk.vtkVertexGlyphFilter()
+        elif representation == "wireframe":
+            source = vtk.vtkExtractEdges()           # every edge once
+        else:
+            return polyData
+        source.SetInputData(polyData)
+        source.Update()
+        return source.GetOutput()
+
+    def update(self, widget, polyData, color, representation=GHOST_REPRESENTATION, opacity=GHOST_OPACITY):
+        """Show polyData in the 3D view of widget (None hides it)."""
         if widget is None or polyData is None:
             if self.actor is not None:
                 self.actor.SetVisibility(False)
@@ -140,15 +132,14 @@ class GhostLayer:
         camera = self._mainRenderer(view).GetActiveCamera()
         if self.renderer.GetActiveCamera() is not camera:
             self.renderer.SetActiveCamera(camera)
-        if self.source is not polyData:
-            # one vertex per point: drawn as points, the triangles would draw every point once per
-            # triangle that shares it (about 6 times), and the overlaps add up to an opaque point
-            glyphs = vtk.vtkVertexGlyphFilter()
-            glyphs.SetInputData(polyData)
-            glyphs.Update()
-            self.source, self.vertices = polyData, glyphs.GetOutput()
-            self.actor.GetMapper().SetInputData(self.vertices)
-        self.actor.GetProperty().SetColor(*color)
+        key = (id(polyData), representation)
+        if self.key != key:
+            self.actor.GetMapper().SetInputData(self._geometry(polyData, representation))
+            self.key = key
+        prop = self.actor.GetProperty()
+        prop.SetRepresentation({"points": 0, "wireframe": 1}.get(representation, 2))
+        prop.SetColor(*color)
+        prop.SetOpacity(float(opacity))
         self.actor.SetVisibility(True)
         view.scheduleRender()
 
@@ -156,7 +147,7 @@ class GhostLayer:
         if self.renderer is not None and self.window is not None:
             self.window.RemoveRenderer(self.renderer)
         self.window = self.renderer = self.actor = None
-        self.source = self.vertices = None
+        self.key = None
 
 
 def _installToolbar():
@@ -376,12 +367,6 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarWindowRange = self._windowWidget(
             "Color window of the perfusion polar map and the 3D wall, % of the polar map maximum")
         polarForm.addRow("", self.polarWindowRange)
-        self.functionCombo = qt.QComboBox()
-        for text, value in FUNCTION_MAPS:
-            self.functionCombo.addItem(text, value)
-        self.functionCombo.toolTip = ("Second polar map: wall thickening (% from the ES / ED wall counts) or wall "
-                                      "motion (mm the endocardium moves from ED to ES, valve descent included)")
-        polarForm.addRow("Function map:", self.functionCombo)
         self.thickeningRange = self._windowWidget(
             "Color window of the wall thickening map, % thickening (ES / ED wall counts)", *THICKENING_WINDOW)
         polarForm.addRow("Thickening window:", self.thickeningRange)
@@ -419,9 +404,24 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         threeDForm.addRow("Color map:", self.wallColormapCombo)
         self.ghostCheck = qt.QCheckBox("End-diastole as reference")
         self.ghostCheck.checked = True
-        self.ghostCheck.toolTip = ("The ED wall as points drawn over the beating wall, in a color that "
-                                   "contrasts with the 3D color map")
+        self.ghostCheck.toolTip = "The ED wall in white, drawn over the beating wall"
         threeDForm.addRow("Show:", self.ghostCheck)
+        ghostRow = qt.QHBoxLayout()
+        self.ghostRepresentationCombo = qt.QComboBox()
+        for text, value in REPRESENTATIONS:
+            self.ghostRepresentationCombo.addItem(text, value)
+        self.ghostRepresentationCombo.setCurrentIndex(
+            max(0, self.ghostRepresentationCombo.findData(GHOST_REPRESENTATION)))
+        self.ghostRepresentationCombo.toolTip = "How the ED reference is drawn: surface, wireframe or points"
+        self.ghostOpacitySlider = ctk.ctkSliderWidget()
+        self.ghostOpacitySlider.minimum, self.ghostOpacitySlider.maximum = 0.05, 1.0
+        self.ghostOpacitySlider.singleStep = 0.05
+        self.ghostOpacitySlider.decimals = 2
+        self.ghostOpacitySlider.value = GHOST_OPACITY
+        self.ghostOpacitySlider.toolTip = "Opacity of the ED reference"
+        ghostRow.addWidget(self.ghostRepresentationCombo)
+        ghostRow.addWidget(self.ghostOpacitySlider, 1)
+        threeDForm.addRow("ED reference:", ghostRow)
 
         # Layouts
         self.layoutButtons = {}
@@ -462,11 +462,12 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarWindowRange.connect("valuesChanged(double,double)", lambda a, b: self.refresh(rebuild3D=False))
         self.thickeningRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
         self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
-        self.functionCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
         self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onOverlaysChanged())
         self.scoresButton.connect("toggled(bool)", lambda _: self.onOverlaysChanged())
         self.representationCombo.connect("currentIndexChanged(int)", lambda _: self.updateRepresentation())
         self.ghostCheck.connect("toggled(bool)", lambda _: self.updateGhost())
+        self.ghostRepresentationCombo.connect("currentIndexChanged(int)", lambda _: self.updateGhost())
+        self.ghostOpacitySlider.connect("valueChanged(double)", lambda _: self.updateGhost())
         self.wallColormapCombo.connect("currentIndexChanged(int)", lambda _: self.update3DColors())
         for key, button in self.layoutButtons.items():
             button.connect("clicked(bool)", lambda _, k=key: self.show(k))
@@ -502,7 +503,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         session.removeListener(self.onSessionChanged)
         self.studySelector.cleanup()
         self.ghostLayer.detach()
-        for attribute in (MOSAIC_STATE, VOLUME_STATE, polarPanelState(GATED_POLAR_TAG), polarPanelState(GATED_THICKENING_TAG)):
+        for attribute in (MOSAIC_STATE, VOLUME_STATE, polarPanelState(GATED_POLAR_TAG), polarPanelState(GATED_THICKENING_TAG),
+                          polarPanelState(GATED_MOTION_TAG)):
             panel = existingPanel(attribute)
             if panel is not None:
                 panel.onResized = None
@@ -515,7 +517,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.data, self.tiles, self.polarImages, self.staticSamples = {}, {}, {}, {}
         self.surfaceKey = None
         self.ghostLayer.update(None, None, None)
-        for attribute in (MOSAIC_STATE, VOLUME_STATE, polarPanelState(GATED_POLAR_TAG), polarPanelState(GATED_THICKENING_TAG)):
+        for attribute in (MOSAIC_STATE, VOLUME_STATE, polarPanelState(GATED_POLAR_TAG), polarPanelState(GATED_THICKENING_TAG),
+                          polarPanelState(GATED_MOTION_TAG)):
             panel = existingPanel(attribute)
             if panel is not None:
                 panel.clear()
@@ -699,7 +702,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             panel.onResized = self.resizeTimer.start
             panel.gridRows, panel.gridColumns = self.gridRowsSpin.value, self.gridColumnsSpin.value
             panel.setRowKeys([(name, ORIENTATION_TITLES[name]) for name in ORIENTATIONS])
-            for tag in (GATED_POLAR_TAG, GATED_THICKENING_TAG):
+            for tag in POLAR_TAGS:
                 polar = polarPanel(tag)
                 polar.onResized = self.resizeTimer.start
                 polar.overlay, polar.showScores = self.overlay(), self.scoresButton.checked
@@ -731,7 +734,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return self.overlayCombo.itemData(self.overlayCombo.currentIndex) or None
 
     def onOverlaysChanged(self):
-        for tag in (GATED_POLAR_TAG, GATED_THICKENING_TAG):
+        for tag in POLAR_TAGS:
             panel = existingPanel(polarPanelState(tag))
             if panel is not None:
                 panel.setOverlays(self.overlay(), self.scoresButton.checked)
@@ -847,11 +850,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         low = float(source.minimumValue)
         return low, max(float(source.maximumValue), low + 1e-6)
 
-    def functionMap(self):
-        return self.functionCombo.itemData(self.functionCombo.currentIndex) or "thickening"
-
-    def thickeningWindow(self):
-        source = self.motionRange if self.functionMap() == "motion" else self.thickeningRange
+    def functionWindow(self, kind):
+        source = self.motionRange if kind == "motion" else self.thickeningRange
         low = float(source.minimumValue)
         return low, max(float(source.maximumValue), low + 1e-6)
 
@@ -877,34 +877,39 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     self.polarImages[GATED_POLAR_TAG] = cached
                 panel.setPolar(cached[1][0], cached[1][1], f"{title} perfusion",
                                note="Static study, in % of the polar map maximum.")
-        panel = existingPanel(polarPanelState(GATED_THICKENING_TAG))
-        if panel is not None:
-            kind = self.functionMap()
-            polar, name, unit = ((data.motion, "wall motion", " mm") if kind == "motion"
-                                 else (data.thickening, "wall thickening", "%"))
-            if polar is None:
-                panel.setLegend(None)
-                panel.setPolar(None, None, f"{title} {name}", message=data.thickeningMessage)
-                return
-            low, top = self.thickeningWindow()
-            panel.setLegend(table, low, top, unit=unit.strip())
-            size = panel.polarSize()
-            if size:
-                key = (id(data), kind, int(size), self.colormapCombo.currentText, low, top)
-                cached = self.polarImages.get(GATED_THICKENING_TAG)
-                if cached is None or cached[0] != key:
-                    image, _ = wallLib.bullseye(polar, size)
-                    rgb = colorize(np.nan_to_num(image, nan=low), top, table, low)
-                    rgb[np.isnan(image)] = 0
-                    regions = {overlay: [float(v) for v in wallLib.regionValues(polar, overlay)]
-                               for overlay in wallLib.OVERLAYS}
-                    cached = (key, (rgbToQImage(rgb), regions))
-                    self.polarImages[GATED_THICKENING_TAG] = cached
-                _, _, _, ed, es = data.phases
-                frames = f"ED frame {data.gated.labels[ed]} to ES frame {data.gated.labels[es]}"
-                note = (f"mm the endocardium moves inward, {frames} (valve descent included)." if kind == "motion"
-                        else f"% thickening from the wall counts, {frames} (first harmonic over the cycle).")
-                panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
+        for tag, kind in ((GATED_THICKENING_TAG, "thickening"), (GATED_MOTION_TAG, "motion")):
+            self.refreshFunctionPolar(data, tag, kind, table, title)
+
+    def refreshFunctionPolar(self, data, tag, kind, table, title):
+        """The wall thickening or the wall motion polar map."""
+        panel = existingPanel(polarPanelState(tag))
+        if panel is None:
+            return
+        polar, name, unit = ((data.motion, "wall motion", "mm") if kind == "motion"
+                             else (data.thickening, "wall thickening", "%"))
+        if polar is None:
+            panel.setLegend(None)
+            panel.setPolar(None, None, f"{title} {name}", message=data.thickeningMessage)
+            return
+        low, top = self.functionWindow(kind)
+        panel.setLegend(table, low, top, unit=unit)
+        size = panel.polarSize()
+        if size:
+            key = (id(data), int(size), self.colormapCombo.currentText, low, top)
+            cached = self.polarImages.get(tag)
+            if cached is None or cached[0] != key:
+                image, _ = wallLib.bullseye(polar, size)
+                rgb = colorize(np.nan_to_num(image, nan=low), top, table, low)
+                rgb[np.isnan(image)] = 0
+                regions = {overlay: [float(v) for v in wallLib.regionValues(polar, overlay)]
+                           for overlay in wallLib.OVERLAYS}
+                cached = (key, (rgbToQImage(rgb), regions))
+                self.polarImages[tag] = cached
+            _, _, _, ed, es = data.phases
+            frames = f"ED frame {data.gated.labels[ed]} to ES frame {data.gated.labels[es]}"
+            note = (f"mm the endocardium moves inward, {frames} (valve descent included)." if kind == "motion"
+                    else f"% thickening from the wall counts, {frames} (first harmonic over the cycle).")
+            panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
 
     def refreshVolumeCurve(self):
         data = self.current()
@@ -994,8 +999,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if data is not None and widget is not None and self.surfaceModel() is not None and self.ghostCheck.checked:
             ed = data.phases[3] if data.phases else None
             polyData = data.surfaces.get(ed) if ed is not None else None
-        color = contrastingColor(colorTableArray(self.wallColormapCombo.currentText))
-        self.ghostLayer.update(widget, polyData, color)
+        representation = self.ghostRepresentationCombo.itemData(self.ghostRepresentationCombo.currentIndex)
+        self.ghostLayer.update(widget, polyData, GHOST_COLOR, representation or GHOST_REPRESENTATION,
+                               float(self.ghostOpacitySlider.value))
 
     def updateRepresentation(self):
         """Surface, wireframe or points: only the rendering of the same model changes."""
