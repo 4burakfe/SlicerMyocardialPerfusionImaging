@@ -23,7 +23,8 @@ STEPS = [
     ("processing", "MPIProcessing", "Processing", "Reorientation to the cardiac axes"),
     ("myocardium", "MPIMyocardium", "Myocardium", "LV wall surfaces and volumes (automatic)"),
     ("perfusion", "MPIReview", "Perfusion", "Stress / rest slices, polar maps and 3D uptake"),
-    ("gated", "MPIGated", "Gated", "Wall motion, thickening and EF (to come)"),
+    ("gatedqc", "MPIGatedQC", "Gated QC", "Frames segmented, counts per frame and ECG gating checks"),
+    ("gated", "MPIGated", "Gated Review", "Cine slices, perfusion and thickening polar maps, LV volumes and EF, cine 3D wall"),
 ]
 MODULE_NAMES = (HUB_MODULE,)   # the toolbar is shown while one of these is the current module
 
@@ -100,27 +101,82 @@ def outputsForStudy(volumeNode):
 
 
 STUDY_SLOT_ROLES = {"stress": ("Stress",), "rest": ("Rest", "Redistribution")}   # roles filling each place
+STUDY_SLOTS = ("stress", "rest")   # Study 1 and Study 2 of the two-study screens
+STUDY_REFERENCES = {"stress": "MPI.Study1", "rest": "MPI.Study2"}
+STUDY_PAIR_ATTRIBUTE = "MPI.StudyPairChosen"   # "1": Study 1 / 2 were picked by the user, not by role
 
 
-def stressRestStudies():
-    """{"stress": node, "rest": node} of the studies shown side by side: by role (Data roles), preferring
-    the active study, else the newest processed one; a study without a stress or rest role counts as
-    the stress (single) study. Either can be None."""
+def candidateStudies():
+    """Static volumes that can be Study 1 / Study 2: the SPECT / PET studies not set to None."""
+    return [n for n in studiesLib.staticVolumes() if not studiesLib.isExcluded(n)]
+
+
+def _defaultStudyPair():
+    """Study 1 / Study 2 from the roles (Data roles), preferring the active study, else the newest
+    processed one; a study without a stress or rest role counts as Study 1."""
     active = activeStudy()
-    processed = [n for n in studiesLib.staticVolumes() if len(outputsForStudy(n)) == 3]
+    if studiesLib.isExcluded(active):
+        active = None
+    candidates = candidateStudies()
+    processed = [n for n in candidates if len(outputsForStudy(n)) == 3]
     if active is not None and not any(n is active for n in processed):
         processed.append(active)
     roles = {n.GetID(): studiesLib.studyRole(n)[0] for n in processed}
     found = {}
     for slot, slotRoles in STUDY_SLOT_ROLES.items():
-        candidates = [n for n in processed if roles[n.GetID()] in slotRoles]
-        if active is not None and any(n is active for n in candidates):
+        withRole = [n for n in processed if roles[n.GetID()] in slotRoles]
+        if not withRole:   # not processed yet: any study of that role
+            withRole = [n for n in candidates if studiesLib.studyRole(n)[0] in slotRoles]
+        if active is not None and any(n is active for n in withRole):
             found[slot] = active
         else:
-            found[slot] = candidates[-1] if candidates else None
+            found[slot] = withRole[-1] if withRole else None
     if found["stress"] is None and active is not None and active is not found["rest"]:
         found["stress"] = active
     return found
+
+
+def stressRestStudies():
+    """{"stress": node, "rest": node}: Study 1 and Study 2 of the two-study screens, as picked in
+    the Study 1 / Study 2 boxes of the steps, else from the roles. Either can be None."""
+    node = sessionNode(create=False)
+    if node is not None and node.GetAttribute(STUDY_PAIR_ATTRIBUTE) == "1":
+        scene = slicer.mrmlScene
+        found = {}
+        for slot in STUDY_SLOTS:
+            study = node.GetNodeReference(STUDY_REFERENCES[slot])
+            ok = study is not None and scene.IsNodePresent(study) and not studiesLib.isExcluded(study)
+            found[slot] = study if ok else None
+        if found["stress"] is not None or found["rest"] is not None:
+            return found
+    return _defaultStudyPair()
+
+
+def setStudyPair(stress, rest):
+    """Pick Study 1 (stress) and Study 2 (rest) by hand; None for none. (None, None) and a later
+    resetStudyPair() go back to the roles."""
+    node = sessionNode()
+    for slot, study in (("stress", stress), ("rest", rest)):
+        node.SetNodeReferenceID(STUDY_REFERENCES[slot], study.GetID() if study is not None else None)
+    node.SetAttribute(STUDY_PAIR_ATTRIBUTE, "1" if (stress is not None or rest is not None) else "0")
+    notify()
+
+
+def setStudySlot(slot, study):
+    """Pick one of Study 1 / Study 2; picking the study already in the other place swaps them."""
+    pair = stressRestStudies()
+    other = "rest" if slot == "stress" else "stress"
+    if study is not None and pair[other] is study:
+        pair[other] = pair[slot]
+    pair[slot] = study
+    setStudyPair(pair["stress"], pair["rest"])
+
+
+def resetStudyPair():
+    node = sessionNode(create=False)
+    if node is not None:
+        node.SetAttribute(STUDY_PAIR_ATTRIBUTE, "0")
+        notify()
 
 
 def myocardiumForStudy(volumeNode):
@@ -164,6 +220,7 @@ def stepStates(studyList, active):
         "myocardium": (STATE_DONE if myocardiumForStudy(active) is not None
                        else (STATE_AVAILABLE if processed else STATE_LOCKED)),
         "perfusion": STATE_AVAILABLE if processed else STATE_LOCKED,
-        "gated": STATE_AVAILABLE if active is not None else STATE_LOCKED,
+        "gatedqc": STATE_AVAILABLE if myocardiumForStudy(active) is not None else STATE_LOCKED,
+        "gated": STATE_AVAILABLE if myocardiumForStudy(active) is not None else STATE_LOCKED,
     }
 

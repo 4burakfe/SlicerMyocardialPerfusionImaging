@@ -12,7 +12,7 @@ Slices are made from the reoriented volumes of Processing, rendered once at scre
 kept in memory (scrolling only swaps tiles), optionally with the myocardium contours. With "Sync"
 the rest rows follow the stress rows: the same position relative to the center of each study's
 segmented myocardium, slice and in-plane. Polar maps and 3D uptake use the LV wall detected in
-Myocardium (MPIMyocardium.py). Gated review is MPIGated.py.
+Myocardium (MPIMyocardium.py). Gated QC is MPIGatedQC.py, Gated Review MPIGated.py.
 """
 
 import os
@@ -43,6 +43,7 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     setVolumeDisplay, rgbToQImage, mosaicPanel, polarPanel, polarPanelState, existingPanel)
 from MyocardialPerfusionSPECTLib.geometry import worldToLocalMatrix  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import StudyPairSelector  # noqa: E402
 from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 
 
@@ -70,6 +71,7 @@ MODES = {
 }
 MODE_GRID = (("stressPerf", "stressSlices"), ("restPerf", "restSlices"),
              ("stressRestPerf", "stressRestSlices"), ("stressRestPolar",))   # rows of layout buttons
+OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "segments"), ("None", ""))
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}   # myocardium contours on the slices
 CONTOUR_MAX_SIZE = 160    # contours are computed at most at this tile size and enlarged above it
 CENTER_GRID_MM = 3.0      # grid of the myocardium mass center (slice / pan matching of stress and rest)
@@ -145,6 +147,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
 
+        self.studySelector = StudyPairSelector(self.layout)
         self.studyLabel = qt.QLabel("No study selected.")
         self.studyLabel.wordWrap = True
         self.layout.addWidget(self.studyLabel)
@@ -213,11 +216,14 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "values are lower uptake at stress (ischemia)", *DIFF_WINDOW)
         polarForm.addRow("Difference:", self.diffWindowRange)
         overlayRow = qt.QHBoxLayout()
-        self.segmentsButton = self._toggleButton("Segments", True,
-                                                 "Show the borders of the 17 segments on the polar maps and in 3D")
+        self.overlayCombo = qt.QComboBox()
+        for text, value in OVERLAY_CHOICES:
+            self.overlayCombo.addItem(text, value)
+        self.overlayCombo.toolTip = ("Regions drawn on the polar maps and the 3D uptake views: the coronary "
+                                     "territories (LAD, RCA, LCX, from the 17 segments), the 17 segments, or none")
         self.scoresButton = self._toggleButton("Scores", True,
-                                               "Show the segment values (mean counts, % of the map maximum)")
-        overlayRow.addWidget(self.segmentsButton)
+                                               "Show the region values (mean counts, % of the map maximum)")
+        overlayRow.addWidget(self.overlayCombo, 1)
         overlayRow.addWidget(self.scoresButton)
         polarForm.addRow("Show:", overlayRow)
 
@@ -279,7 +285,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.gridColumnsSpin.connect("valueChanged(int)", lambda _: self.onGridChanged())
         self.contoursButton.connect("toggled(bool)", lambda _: self.refreshMosaic(polar=False))
         self.syncButton.connect("toggled(bool)", lambda _: self.onSyncToggled())
-        self.segmentsButton.connect("toggled(bool)", lambda _: self.onPolarOverlaysChanged())
+        self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onPolarOverlaysChanged())
         self.scoresButton.connect("toggled(bool)", lambda _: self.onPolarOverlaysChanged())
         self.stepSpin.connect("valueChanged(int)", lambda _: self.refreshMosaic(polar=False))
         for spin in self.firstSliceSpins.values():
@@ -313,12 +319,14 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return button
 
     def enter(self):
+        self.studySelector.refresh()
         self.loadOutputs()
         self.showResults()
 
     def cleanup(self):
         self.mosaicResizeTimer.stop()
         session.removeListener(self.onSessionChanged)
+        self.studySelector.cleanup()
         for tag in (POLAR_TAG, POLAR_REST_TAG, POLAR_DIFF_TAG):
             panel = existingPanel(polarPanelState(tag))
             if panel is not None:
@@ -393,19 +401,14 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         lines = []
         for slot in (STRESS, REST):
             study = self.studies[slot]
-            if study is None:
-                lines.append(f"{SLOT_TITLES[slot]}: none")
-            elif not self.ready(slot):
-                lines.append(f"{SLOT_TITLES[slot]}: <b>{study.GetName()}</b> has no reoriented volumes yet "
-                             "(create them in Processing)")
-            else:
-                lines.append(f"{SLOT_TITLES[slot]}: <b>{study.GetName()}</b>")
+            if study is not None and not self.ready(slot):
+                lines.append(f"<b>{study.GetName()}</b> has no reoriented volumes yet (create them in Processing)")
         if self.studies[STRESS] is None and self.studies[REST] is None:
-            lines = ["No study selected. Choose one in the workflow toolbar or set the roles in Data roles."]
+            lines = ["No study selected. Pick Study 1 / Study 2 above or set the roles in Data roles."]
         self.studyLabel.text = "<br>".join(lines)
         anyReady = self.ready(STRESS) or self.ready(REST)
         for widget in [self.gridRowsSpin, self.gridColumnsSpin, self.stepSpin, self.contoursButton,
-                       self.polarLinkCheck, self.segmentsButton, self.scoresButton]:
+                       self.polarLinkCheck, self.overlayCombo, self.scoresButton]:
             widget.enabled = anyReady
         self.syncButton.enabled = self.ready(STRESS) and self.ready(REST)
         self.diffWindowRange.enabled = self.ready(STRESS) and self.ready(REST)
@@ -508,7 +511,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for tag in polars:
             polar = polarPanel(tag)
             polar.onResized = self.mosaicResizeTimer.start
-            polar.showSegments, polar.showScores = self.segmentsButton.checked, self.scoresButton.checked
+            polar.overlay, polar.showScores = self.overlay(), self.scoresButton.checked
         registerLayout(layoutId, LAYOUT_XML[layoutId]())
         slicer.app.layoutManager().setLayout(layoutId)
         slicer.app.processEvents()
@@ -800,15 +803,20 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for tag in (POLAR_TAG, POLAR_REST_TAG, POLAR_DIFF_TAG):
             panel = existingPanel(polarPanelState(tag))
             if panel is not None:
-                panel.setOverlays(self.segmentsButton.checked, self.scoresButton.checked)
+                panel.setOverlays(self.overlay(), self.scoresButton.checked)
         self.updateSegmentBorders()
+
+    def overlay(self):
+        """Region overlay chosen: "vessels", "segments" or None."""
+        return self.overlayCombo.itemData(self.overlayCombo.currentIndex) or None
 
     @staticmethod
     def polarPercent(polar, size):
-        """(bullseye image, 17 segment values), both in % of the map maximum."""
+        """(bullseye image, {overlay: region values}), all in % of the map maximum."""
         maximum = float(np.nanmax(polar["values"])) or 1.0
         image, _ = wallLib.bullseye(polar, size)
-        return 100.0 * image / maximum, 100.0 * wallLib.segmentValues(polar) / maximum
+        return 100.0 * image / maximum, {overlay: 100.0 * wallLib.regionValues(polar, overlay) / maximum
+                                         for overlay in wallLib.OVERLAYS}
 
     def refreshPolar(self):
         _, _, _, polars, views, _ = MODES[self.mode]
@@ -851,7 +859,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             image, segments = self.polarPercent(polar, size)
             rgb = colorize(np.nan_to_num(image), top, table, low)
             rgb[np.isnan(image)] = 0
-            cached = (key, (rgbToQImage(rgb), [float(v) for v in segments]))
+            cached = (key, (rgbToQImage(rgb), {k: [float(v) for v in values] for k, values in segments.items()}))
             self.polarImageCache[tag] = cached
         qimage, segments = cached[1]
         panel.setPolar(qimage, segments, title, note=volumeText(session.myocardiumForStudy(study)))
@@ -879,7 +887,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             image = restImage - stressImage
             rgb = colorize(np.nan_to_num(image, nan=low), top, table, low)
             rgb[np.isnan(image)] = 0
-            cached = (key, (rgbToQImage(rgb), [float(v) for v in restSegments - stressSegments]))
+            cached = (key, (rgbToQImage(rgb), {k: [float(v) for v in restSegments[k] - stressSegments[k]]
+                                               for k in wallLib.OVERLAYS}))
             self.polarImageCache[tag] = cached
         qimage, segments = cached[1]
         panel.setPolar(qimage, segments, title,
@@ -936,8 +945,9 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     slicer.mrmlScene.RemoveNode(node)
                 model = self.makeSurfaceModel(study, result, frame, polar, viewNode.GetID())
                 model.SetAttribute("MPI.WallKey", repr(key))
-                borders = self.makeSegmentBorderModel(study, result, viewNode.GetID())
-                for node in [model, borders] + MPIMyocardium.addWallLabelNodes(result, study, [viewNode.GetID()]):
+                borders = [self.makeSegmentBorderModel(study, result, viewNode.GetID(), overlay)
+                           for overlay in wallLib.OVERLAYS]
+                for node in [model] + borders + MPIMyocardium.addWallLabelNodes(result, study, [viewNode.GetID()]):
                     node.SetAttribute("MPI.PerfusionOf", study.GetID())
                     node.SetAttribute("MPI.PerfusionView", viewTag)
                 placeCamera = True
@@ -982,38 +992,41 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return 0.75 * (float(np.max(result["epi"])) + MPIMyocardium.LABEL_DISTANCE_MM) + 10.0
 
     @staticmethod
-    def makeSegmentBorderModel(study, result, viewId):
-        """The 17-segment borders of the polar map drawn on the epicardium of the 3D uptake view."""
+    def makeSegmentBorderModel(study, result, viewId, overlay="segments"):
+        """The region borders of the polar map (17 segments or the vessel territories) drawn on the
+        epicardium of the 3D uptake view."""
         points = vtk.vtkPoints()
         lines = vtk.vtkCellArray()
-        for line in wallLib.segmentBorderLines(result):
+        for line in wallLib.segmentBorderLines(result, overlay=overlay):
             lines.InsertNextCell(len(line))
             for point in line:
                 lines.InsertCellPoint(points.InsertNextPoint(*[float(x) for x in point]))
         polyData = vtk.vtkPolyData()
         polyData.SetPoints(points)
         polyData.SetLines(lines)
-        model = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", f"{study.GetName()} LV segments 3D")
+        name = "territories" if overlay == "vessels" else "segments"
+        model = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", f"{study.GetName()} LV {name} 3D")
         model.SetAndObservePolyData(polyData)
         model.CreateDefaultDisplayNodes()
         display = model.GetDisplayNode()
         display.SetVisibility2D(False)
         display.SetColor(1.0, 1.0, 1.0)
-        display.SetOpacity(0.7)
-        display.SetLineWidth(2.0)
+        display.SetOpacity(0.85 if overlay == "vessels" else 0.7)
+        display.SetLineWidth(3.0 if overlay == "vessels" else 2.0)
         display.SetAmbient(1.0)
         display.SetDiffuse(0.0)
         display.SetSpecular(0.0)
         display.SetScalarVisibility(False)
         display.SetViewNodeIDs([viewId])
         model.SetAttribute("MPI.Surface", "segments")
+        model.SetAttribute("MPI.Overlay", overlay)
         return model
 
     def updateSegmentBorders(self):
         for tag in (PERFUSION_3D_VIEW, PERFUSION_3D_VIEW_REST):
             for node in self.surfaceNodes(tag):
                 if node.GetAttribute("MPI.Surface") == "segments" and node.GetDisplayNode():
-                    node.GetDisplayNode().SetVisibility(bool(self.segmentsButton.checked))
+                    node.GetDisplayNode().SetVisibility(node.GetAttribute("MPI.Overlay") == self.overlay())
 
     @staticmethod
     def makeSurfaceModel(study, result, frame, polar, viewId):

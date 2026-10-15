@@ -34,7 +34,7 @@ Myocardium instead of 12 mm).
 Only one module appears in Slicer's module list: *Nuclear Medicine > Myocardial Perfusion SPECT*. It shows
 an overview (active study, step status) and the five workflow steps inside its own panel:
 
-1. **Data roles**: studies in the scene, their roles and gated sequences. Select the study to work on.
+1. **Data roles**: studies in the scene, their roles (None leaves a volume out) and gated sequences. Study 1 (stress) and Study 2 (rest) come from the roles and can be changed at the top of every step.
 2. **Processing**: the active study loads when the step opens. Click the left ventricle in the anterior or
    left lateral MIP on the left (the depth goes to the count-weighted center along the projection line;
    drag the yellow point to move the ROI and the orange point to resize it), align the three axis lines in
@@ -56,16 +56,36 @@ an overview (active study, step status) and the five workflow steps inside its o
    once and kept in memory, optional myocardium contours, a min-max color window per study; PET-DICOM,
    Hel, PET-HotMetalBlue, PET-HotIron, Jotun, Vanaheim, Valhalla and Trugold color maps, plus Slicer's
    own PET-DICOM), polar maps (bullseye: the maximum counts across the detected wall, apex in the center
-   and valve plane at the rim, with the 17 segments and their values in % of the map maximum) and 3D
+   and valve plane at the rim, with the coronary territories (LAD, RCA, LCX; default) or the 17 segments and their values in % of the map maximum) and 3D
    views of the LV with the same counts projected on its surface, both annotated with the LV cavity and
    myocardium volumes. Layouts: *STRESS PERF* / *REST PERF* (slices, polar map and 3D of one study),
    *STRESS SLICES* / *REST SLICES*, *STRESS-REST PERF* (stress and rest rows interleaved, both polar maps
    and 3D views), *STRESS-REST SLICES* and *STRESS REST POLAR* (stress, rest and rest - stress difference
    maps, each with its own window). With *Sync* on, the rest rows follow the stress rows, matched on the
    center of each study's segmented myocardium (slice and panning); off, each row scrolls on its own.
-5. **Gated**: gated review (wall motion, thickening, EF); empty for now.
+5. **Gated QC**: checks the gated study of Study 1 or Study 2 before the gated review. The myocardium
+   is segmented in every gate frame, starting from the static wall of Myocardium: the mid-wall of each ray
+   is searched near the static one, the valve plane is fitted again (static tilt, at most 12 mm away, the
+   base descends about 1 cm in systole) and the endo- and epicardium keep the static myocardial volume
+   (QGS-like). Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in three rows,
+   one tile per frame, all at the same slice (mouse wheel over a row scrolls), with its contours and one
+   color scale for all frames (or each frame on its own). Top right: counts per frame in % of the mean
+   (projections, image, segmented myocardium; frames beyond ±10 % are ringed). Bottom right: the ECG gating
+   information stored by the DICOM SPECT Recon extension (accepted R-R window, accepted and rejected
+   beats, heart rate, frame width, R-R per projection view when the scanner stores it, e.g. Mediso),
+   a per-frame table with the LV cavity volume and a preliminary EF, and the QC findings. The per-frame
+   results are kept on the gated sequence (MPI.Gate* attributes).
+6. **Gated Review**: STRESS GATED shows the stress gated study. On the left are the SA / HLA / VLA rows of
+   the gate frames as a cine, with the same grid, slices, colors and window as Perfusion (taken over when
+   the screen opens) and each frame's endo- and epicardium. On the right are the perfusion polar map next to
+   a function polar map: count-based wall thickening (ES / ED wall counts of every ray, first harmonic over
+   the cycle) or wall motion (mm the endocardium moves from ED to ES, valve descent included). Below them
+   are the LV cavity volume of every frame (EDV, ESV, EF, the frame shown marked) and the beating 3D wall in
+   its own color map (Jotun by default), shown as a wireframe, surface or points, with the ED wall as
+   reference points drawn on top. The cine has play /
+   stop, a speed and a frame slider. The frames are segmented in Gated QC.
 
-The steps are hidden modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGated). While the hub is open, a workflow
+The steps are hidden modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC, MPIGated). While the hub is open, a workflow
 toolbar at the top of the window shows the active study and the steps with their status; it is hidden in
 all other modules.
 
@@ -80,13 +100,15 @@ MyocardialPerfusionSPECT/
   MPIProcessing.py                   2. Processing: reorientation logic, widget and tests (hidden)
   MPIMyocardium.py                   3. Myocardium: automatic LV wall detection (hidden)
   MPIReview.py                       4. Perfusion (hidden)
-  MPIGated.py                        5. Gated, placeholder (hidden)
+  MPIGatedQC.py                      5. Gated QC: per-frame segmentation, counts, gating checks (hidden)
+  MPIGated.py                        6. Gated Review (hidden)
   MyocardialPerfusionSPECTLib/
     geometry.py                      cardiac frame vectors, matrices, ellipsoid masks
-    myocardium.py                    LV wall fitting (rays, mid-wall, thickness, valve plane), no Slicer imports
+    myocardium.py                    LV wall fitting (rays, mid-wall, thickness, valve plane; per gate frame), no Slicer imports
+    gating.py                        ECG gating information and per-frame count checks, no Slicer imports
     resampling.py                    B-spline / sinc / linear reslicing, in-plane zoom
     views.py                         layouts and view helpers
-    display.py                       colour maps, the slice panel and the polar map panel
+    display.py                       colour maps, the slice panel, the polar map panel and the Gated QC charts
     studies.py                       study roles, gated sequence recognition and pairing
     session.py                       active study shared by the modules, workflow steps
     toolbar.py                       workflow toolbar

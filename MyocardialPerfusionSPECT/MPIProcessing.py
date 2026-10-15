@@ -4,7 +4,7 @@ Myocardial Perfusion SPECT - 2. Processing: reorientation to the cardiac axes
 Hidden step module of the Myocardial Perfusion SPECT hub (MyocardialPerfusionSPECT.py):
 1. Data roles (MPIDataRoles.py) sets the study roles and the active study, 2. Processing (this file)
 reorients it, 3. Myocardium (MPIMyocardium.py) detects the LV wall, 4. Perfusion (MPIReview.py) shows
-the slices and 5. Gated (MPIGated.py) the gated study. The steps are opened from the hub and from
+the slices, 5. Gated QC (MPIGatedQC.py) checks the gate frames and 6. Gated Review (MPIGated.py) the gated study. The steps are opened from the hub and from
 the workflow toolbar, which is shown only while the hub or a step is open.
 
 Workflow
@@ -82,7 +82,7 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     COLORMAPS, setVolumeDisplay, mosaicPanel)
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import styleButton  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
 
 DEFAULT_PIXEL_SIZE_MM = 2.0       # in-plane
 DEFAULT_SLICE_THICKNESS_MM = 5.0
@@ -1428,6 +1428,7 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic = MPIProcessingLogic()
 
         # Studies: the active study of the toolbar, or the stress and rest studies of Data roles
+        self.studySelector = StudyPairSelector(self.layout)
         header = qt.QFrame()
         self.layout.addWidget(header)
         form = qt.QFormLayout(header)
@@ -1657,10 +1658,12 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateButtonStates()
 
     def enter(self):
+        self.studySelector.refresh()
         self.loadStudies(showLayout=True)
 
     def cleanup(self):
         session.removeListener(self.onSessionChanged)
+        self.studySelector.cleanup()
         for lane in self.lanes:
             lane.cleanup()
         self.removeObservers()
@@ -1672,22 +1675,15 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     @staticmethod
     def stressRestPair():
-        """(stress, rest) static volumes from the study roles, or None. The active study is
-        preferred for its own role when there are several of one role."""
-        try:
-            studies = [s for s in studiesLib.scanStudies()
-                       if s.staticNode is not None and s.staticNode.GetImageData() is not None]
-        except Exception:
-            logging.warning("Could not list the studies:\n" + traceback.format_exc())
+        """(Study 1, Study 2) static volumes of the stress-rest screen (picked in the Study 1 / Study 2
+        boxes, else from the roles), or None."""
+        pair = session.stressRestStudies()
+        stress, rest = pair["stress"], pair["rest"]
+        if stress is None or rest is None or stress is rest:
             return None
-        active = session.activeStudy()
-        pair = []
-        for role in DUAL_ROLES:
-            candidates = [s.staticNode for s in studies if s.role == role]
-            if not candidates:
-                return None
-            pair.append(active if active in candidates else candidates[0])
-        return tuple(pair)
+        if stress.GetImageData() is None or rest.GetImageData() is None:
+            return None
+        return stress, rest
 
     def wantedStudies(self):
         """(mode, [input volume per lane]) the screen should show now."""

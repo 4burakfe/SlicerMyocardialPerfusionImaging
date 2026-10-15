@@ -36,7 +36,7 @@ from MyocardialPerfusionSPECTLib.geometry import unit, worldToLocalMatrix, sampl
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
     MYOCARDIUM_LAYOUT_ID, DUAL_MYOCARDIUM_LAYOUT_ID, LANE_SUFFIXES, ORIENTATIONS, myocardiumLayoutXml,
     dualMyocardiumLayoutXml, myocardiumViews, registerLayout, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry)
-from MyocardialPerfusionSPECTLib.widgets import styleButton  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
 
 LABEL_SPACING_MM = 1.5      # grid of the myocardium / cavity segmentation
 # 3D view, styled as Taranis' segmentation layout: segments as flat wireframes, low opacity (dense meshes)
@@ -394,6 +394,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
 
+        self.studySelector = StudyPairSelector(self.layout)
         self.studyLabel = qt.QLabel()
         self.studyLabel.wordWrap = True
         self.layout.addWidget(self.studyLabel)
@@ -422,7 +423,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.smoothingSlider.singleStep = 0.25
         self.smoothingSlider.decimals = 2
         self.smoothingSlider.value = defaults["smoothing"]
-        self.smoothingSlider.toolTip = ("Extra smoothing of the wall surface (rays), 0 by default. Higher values "
+        self.smoothingSlider.toolTip = ("Smoothing of the wall surface (rays), 2 by default. Higher values "
                                         "bridge perfusion defects more, lower values follow the counts more closely. "
                                         "The apex is kept consistent around the axis at any value.")
         form.addRow("Surface smoothing:", self.smoothingSlider)
@@ -547,6 +548,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateState()
 
     def enter(self):
+        self.studySelector.refresh()
         self.updateState()
         if self.frame is None:
             return
@@ -576,6 +578,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def cleanup(self):
         self.valveTimer.stop()
         session.removeListener(self.onSessionChanged)
+        self.studySelector.cleanup()
         self.removeObservers()
 
     def onSceneClosed(self, caller=None, event=None):

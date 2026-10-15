@@ -35,7 +35,7 @@ DEFAULTS = {
     "capRows": 12,             # rows of the apical cap (90 deg / capRows apart)
     "step": 1.0,               # mm between samples along a ray
     "iterations": 3,
-    "smoothing": 0.0,          # Gaussian sigma of the surface smoothing, in grid samples (0 = none)
+    "smoothing": 2.0,          # Gaussian sigma of the surface smoothing, in grid samples (0 = none)
     "thicknessSmoothing": 3.0, # Gaussian sigma of the wall thickness map, in grid samples
     "baseFraction": 0.55,      # wall ends where its counts fall below this fraction of its column's wall counts
     "maxValveTilt": 40.0,      # deg, largest tilt of the valve plane against the short-axis plane
@@ -192,6 +192,141 @@ def fitWall(sample, center, u, w, radius, params=None):
     return {"grid": grid, "mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
             "baseZ": baseZ, "detectedBaseZ": baseZ, "valvePlane": plane, "basePoints": basePoints,
             "rowCounts": rowCounts}
+
+
+# ---------------------------------------------------------------------------
+# Gated frames
+# ---------------------------------------------------------------------------
+GATE_DEFAULTS = {
+    "maxWallShift": 25.0,      # mm, the mid-wall of a gate is searched this far from the static mid-wall
+    "maxValveShift": 25.0,     # mm, the valve plane of a gate stays this close to the static one (base descent ~1 cm)
+    "gateSmoothing": 2.0,      # Gaussian sigma of the gate surface smoothing (grid samples)
+}
+
+
+def fitGate(sample, reference, params=None):
+    """LV wall of one gate of a gated study, with the static fit (reference, from fitWall) as prior.
+
+    The rays are those of the static fit. Along every ray the mid-wall is the count peak within
+    maxWallShift of the static mid-wall (smoothed with count weights, so rays through a defect follow
+    their neighbours). The valve plane is fitted again as in fitWall, keeps the static tilt and moves
+    at most maxValveShift along the axis. Endo- and epicardium keep the myocardial volume of the static
+    fit locally (QGS-like): the wall thickness of a ray scales with (static mid / gate mid), squared on
+    the apical cap. Returns a result dict like fitWall, so classify / labelGrid / wallStatistics apply."""
+    grid = reference["grid"]
+    p = grid.params
+    g = dict(GATE_DEFAULTS, **(params or {}))
+    origins, directions = grid.rays()
+    points = origins[:, :, None, :] + grid.t[None, None, :, None] * directions[:, :, None, :]
+    profiles = np.asarray(sample(points.reshape(-1, 3)), dtype=float).reshape(grid.nRows, grid.nTheta, len(grid.t))
+    profiles = np.nan_to_num(profiles)
+    if profiles.max() <= 0:
+        raise ValueError("No counts around the LV center in this gate.")
+
+    refMid = reference["mid"]
+    shift = float(g["maxWallShift"])
+    lo = np.maximum(refMid - shift, 1.0)
+    hi = np.minimum(refMid + shift, grid.t[-1])
+    sigma = float(g["gateSmoothing"])
+    peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
+    weight = (peakValue / max(peakValue.max(), 1e-9)) ** 2
+    # rays far from their neighbours (noise, a neighbouring organ inside the window) do not count
+    reference2 = _circularMedian(peakT, _angleWindow(grid, 9))
+    nearPole = _nearPoleRows(grid, peakT)
+    reference2[nearPole] = np.median(peakT[nearPole], axis=1)[:, None]
+    weight[np.abs(peakT - reference2) > 0.5 * shift] = 0.0
+    mid = _smoothSurface(np.where(weight > 0, peakT, reference2), np.maximum(weight, 1e-6), sigma)
+    mid = _poleSmooth(grid, mid, np.maximum(weight, 1e-6), sigma)
+    mid = np.clip(mid, lo, hi)
+    peak = _interp(profiles, grid.t, mid)
+
+    a0, gw, gs = reference["valvePlane"]
+    plane, basePoints = _fitValvePlane(grid, mid, peak, p, _cavityFill(profiles, grid.t, mid, peak))
+    maxValve = float(g["maxValveShift"])
+    a = float(np.clip(plane[0], a0 - maxValve, a0 + maxValve))
+    plane = (a, gw, gs)
+    beyond = _beyondBase(grid, mid, plane)
+    mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
+    peak = _interp(profiles, grid.t, mid)
+
+    ratio = np.clip(refMid / np.maximum(mid, 1.0), 0.5, 2.0)
+    ratio[grid.nCyl:] = ratio[grid.nCyl:] ** 2
+    thickness = np.clip(reference["thickness"] * ratio, p["minThickness"], 1.5 * p["maxThickness"])
+    thickness = _holdBeyondBase(thickness, beyond)
+    endo = _limitBasalNarrowing(grid, np.maximum(mid - 0.5 * thickness, 1.0), p["maxBaseNarrowing"])
+    epi = _limitBasalNarrowing(grid, mid + 0.5 * thickness, p["maxBaseNarrowing"])
+    return {"grid": grid, "mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
+            "baseZ": a, "detectedBaseZ": a, "valvePlane": plane, "basePoints": basePoints,
+            "rowCounts": np.median(peak[:grid.nCyl], axis=1), "gateWeight": weight}
+
+
+def endSystoleDiastole(volumes):
+    """(ED index, ES index) of a cardiac cycle: the frames with the largest and the smallest LV cavity
+    (frames without a volume are skipped); None when fewer than two frames have one."""
+    known = [(float(v), i) for i, v in enumerate(volumes) if v is not None and np.isfinite(v)]
+    if len(known) < 2:
+        return None
+    return max(known)[1], min(known)[1]
+
+
+def thickeningMap(gatePolars, ed, es, smoothing=1.5):
+    """Count-based wall thickening polar map (partial volume effect: a thicker wall looks brighter),
+    in % = (ES counts / ED counts - 1) x 100. The wall counts of every ray (polarMap of each frame)
+    are fitted with the first harmonic over the cardiac cycle, so all frames count and the ED / ES
+    values are less noisy than two single frames; then smoothed over the map (count weighted).
+    Returns a polar map dict like polarMap (on the rows of the ED frame) with "values" in %."""
+    stack = np.array([np.asarray(p["values"], dtype=float) for p in gatePolars])     # [frames, rows, angles]
+    mean, edCounts, esCounts = _firstHarmonic(stack, ed, es)
+    values = 100.0 * (esCounts / np.maximum(edCounts, 1e-9) - 1.0)
+    weights = np.clip(mean / max(float(np.nanmax(mean)), 1e-9), 0.0, 1.0) ** 2
+    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -100.0, 200.0)
+    reference = gatePolars[ed]
+    return {"values": values, "rho": np.asarray(reference["rho"]).copy(), "theta": np.asarray(reference["theta"]).copy()}
+
+
+def _firstHarmonic(stack, ed, es):
+    """(mean, value at ED, value at ES) of [frames, ...] after a first-harmonic fit over the cycle
+    (the frames as is when there are fewer than 3)."""
+    n = stack.shape[0]
+    mean = stack.mean(axis=0)
+    if n < 3:
+        return mean, stack[ed], stack[es]
+    phase = 2.0 * np.pi * np.arange(n) / n
+    cosine = 2.0 / n * np.tensordot(np.cos(phase), stack, axes=1)
+    sine = 2.0 / n * np.tensordot(np.sin(phase), stack, axes=1)
+
+    def fitted(index):
+        return mean + cosine * np.cos(phase[index]) + sine * np.sin(phase[index])
+    return mean, fitted(ed), fitted(es)
+
+
+def motionMap(gateResults, ed, es, weights=None, smoothing=1.5):
+    """Wall motion polar map (QGS-like endocardial excursion), in mm: how far the endocardium of every
+    polar map ray moves from ED to ES. The rays of each frame run from its own valve plane to the apex
+    (polarRays), so a basal point follows the valve descent and the longitudinal shortening counts too.
+    The distance is signed: positive when the ES point lies inside the ED endocardium (toward the cavity),
+    negative for outward (dyskinetic) motion. The endocardial points are fitted with the first harmonic
+    over the cycle, like the thickening; weights (e.g. the mean wall counts of each ray) let rays through
+    a defect follow their neighbours when the map is smoothed. The rays are those of the static fit
+    (fixed LV center and axis), so a translation of the whole heart is not corrected.
+    Returns a polar map dict like polarMap (rho of the ED frame) with "values" in mm."""
+    points, rhos, directions = [], [], []
+    for result in gateResults:
+        origins, rays, endo, _, rho = polarRays(result)
+        points.append(origins + endo[..., None] * rays)              # [rows, angles, 3]
+        rhos.append(rho)
+        directions.append(rays)
+    stack = np.array(points)                                          # [frames, rows, angles, 3]
+    _, edPoints, esPoints = _firstHarmonic(stack, ed, es)
+    displacement = esPoints - edPoints
+    distance = np.linalg.norm(displacement, axis=-1)
+    inward = -np.sum(displacement * directions[ed], axis=-1)
+    values = np.where(inward >= 0.0, distance, -distance)
+    if weights is None:
+        weights = np.ones(values.shape)
+    weights = np.clip(np.asarray(weights, dtype=float) / max(float(np.nanmax(weights)), 1e-9), 0.0, 1.0) ** 2
+    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -30.0, 30.0)
+    return {"values": values, "rho": np.asarray(rhos[ed]).copy(), "theta": gateResults[ed]["grid"].theta.copy()}
 
 
 def _cavityFill(profiles, t, mid, peak):
@@ -516,6 +651,97 @@ def segmentIndex(radius, angle):
     return segment
 
 
+VESSELS = ("LAD", "RCA", "LCX")
+VESSEL_SEGMENTS = {   # coronary territories of the 17 segments (AHA 2002 standard assignment)
+    "LAD": (1, 2, 7, 8, 13, 14, 17),
+    "RCA": (3, 4, 9, 10, 15),
+    "LCX": (5, 6, 11, 12, 16),
+}
+OVERLAYS = ("vessels", "segments")   # region overlays of the polar maps and 3D views
+# where the values are written on the bullseye: (radius, angle from anterior toward the septum, deg)
+SEGMENT_LABEL_PLACES = tuple(
+    [(0.5 * (POLAR_RING_EDGES[3] + POLAR_RING_EDGES[4]), 60.0 * k) for k in range(6)]
+    + [(0.5 * (POLAR_RING_EDGES[2] + POLAR_RING_EDGES[3]), 60.0 * k) for k in range(6)]
+    + [(0.5 * (POLAR_RING_EDGES[1] + POLAR_RING_EDGES[2]), 90.0 * k) for k in range(4)] + [(0.0, 0.0)])
+VESSEL_LABEL_PLACES = ((0.6, 35.0), (0.6, 160.0), (0.6, 270.0))   # LAD anteroseptal, RCA inferior, LCX lateral
+
+
+def regionIndex(radius, angle, overlay="segments"):
+    """Region at bullseye radius / angle: the segment number (1..17) or, for "vessels", the index
+    of its territory in VESSELS plus one; 0 outside the bullseye."""
+    segment = segmentIndex(radius, angle)
+    if overlay != "vessels":
+        return segment
+    lookup = np.zeros(18, dtype=int)
+    for index, vessel in enumerate(VESSELS):
+        lookup[list(VESSEL_SEGMENTS[vessel])] = index + 1
+    return lookup[segment]
+
+
+def regionBorders(overlay="segments", step=0.5):
+    """Borders between the regions of an overlay on the bullseye, as polylines of (radius,
+    angle in degrees) [n, 2], with the outer rim. Arcs run along the ring edges where the region
+    changes across them, spokes along the segment edges where it changes around; for "vessels"
+    this gives the stepped territory outline that follows the segment borders."""
+    edges = POLAR_RING_EDGES
+    eps = 1e-4
+    lines = []
+    degrees = np.arange(0.0, 360.0, step) + 0.5 * step
+
+    def runs(mask):
+        """Contiguous (start, stop) index runs of a circular boolean array."""
+        if mask.all():
+            return [(0, len(mask))]
+        found, start = [], None
+        rolled = int(np.argmin(mask))   # start the walk where the mask is off
+        order = [(rolled + i) % len(mask) for i in range(len(mask))]
+        for position, i in enumerate(order):
+            if mask[i] and start is None:
+                start = position
+            if not mask[i] and start is not None:
+                found.append((order[start], order[start] + position - start))
+                start = None
+        if start is not None:
+            found.append((order[start], order[start] + len(mask) - start))
+        return found
+
+    for edge in edges[1:4]:
+        inside = regionIndex(np.full(degrees.shape, edge - eps), np.radians(degrees), overlay)
+        outside = regionIndex(np.full(degrees.shape, edge + eps), np.radians(degrees), overlay)
+        for start, stop in runs(inside != outside):
+            angles = np.concatenate([[start * step], (np.arange(start, stop) + 0.5) * step, [stop * step]])
+            lines.append(np.column_stack([np.full(angles.shape, edge), angles]))
+    rim = np.linspace(0.0, 360.0, 721)
+    lines.append(np.column_stack([np.ones(rim.shape), rim]))
+    rings = ((edges[1], edges[2], [45.0 + 90.0 * k for k in range(4)]),
+             (edges[2], edges[3], [30.0 + 60.0 * k for k in range(6)]),
+             (edges[3], edges[4], [30.0 + 60.0 * k for k in range(6)]))
+    for low, high, spokes in rings:
+        middle = 0.5 * (low + high)
+        for spoke in spokes:
+            before = regionIndex(middle, math.radians(spoke - 1.0), overlay)
+            after = regionIndex(middle, math.radians(spoke + 1.0), overlay)
+            if before != after:
+                lines.append(np.array([[low, spoke], [high, spoke]]))
+    return lines
+
+
+def regionValues(polar, overlay="segments", resolution=181):
+    """Mean polar map value of each region of an overlay (17 segments or the VESSELS territories)."""
+    if overlay != "vessels":
+        return segmentValues(polar, resolution)
+    image, segments = bullseye(polar, resolution)
+    values = []
+    for vessel in VESSELS:
+        inside = np.isin(segments, VESSEL_SEGMENTS[vessel])
+        values.append(float(np.nanmean(image[inside])) if np.any(inside) else float("nan"))
+    return np.array(values)
+
+
+def regionLabelPlaces(overlay="segments"):
+    return VESSEL_LABEL_PLACES if overlay == "vessels" else SEGMENT_LABEL_PLACES
+
+
 def bullseye(polar, size):
     """Polar map as a [size, size] image (row 0 at the top; NaN outside the circle). Anterior up,
     septum left, lateral right, inferior down; apex in the center, valve plane at the rim.
@@ -555,18 +781,20 @@ def polarToWorld(result, radius, angle, outsideMm=1.5):
             + fr * ((1 - fc) * points[r0 + 1, c0] + fc * points[r0 + 1, c1]))
 
 
-def segmentBorderLines(result, samples=180):
-    """Borders of the 17 segments of the polar map, drawn on the epicardium: a list of polylines
-    (world points [n, 3]): the three inner ring edges and the spokes between the segments."""
+def segmentBorderLines(result, samples=180, overlay="segments"):
+    """Borders of the regions of an overlay (17 segments or the vessel territories) of the polar
+    map, drawn on the epicardium: a list of polylines (world points [n, 3])."""
     lines = []
-    inner, apical, middle, outer = POLAR_RING_EDGES[1:]
-    around = np.linspace(0.0, 2.0 * math.pi, samples + 1)
-    for edge in (inner, apical, middle):
-        lines.append(polarToWorld(result, np.full(around.shape, edge), around))
-    for degrees, start, stop in ([(45 + 90 * k, inner, apical) for k in range(4)]
-                                 + [(30 + 60 * k, apical, outer) for k in range(6)]):
-        radius = np.linspace(start, stop, 24)
-        lines.append(polarToWorld(result, radius, np.full(radius.shape, math.radians(degrees))))
+    for line in regionBorders(overlay):
+        if len(line) == 2:   # spoke: sample along the radius
+            radius = np.linspace(line[0, 0], line[1, 0], 24)
+            angles = np.full(radius.shape, line[0, 1])
+        else:
+            angles = np.linspace(line[0, 1], line[-1, 1], max(2, int(samples * (line[-1, 1] - line[0, 1]) / 360.0) + 1))
+            radius = np.full(angles.shape, line[0, 0])
+        if np.all(radius >= 1.0):
+            continue   # the rim is the valve plane edge of the model already
+        lines.append(polarToWorld(result, radius, np.radians(angles)))
     return lines
 
 

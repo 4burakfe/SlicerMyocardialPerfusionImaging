@@ -14,6 +14,8 @@ POLAR_LAYOUT_ID = 5722           # stress, rest and difference polar maps (STRES
 DUAL_REORIENT_LAYOUT_ID = 5712   # two studies stacked (stress over rest)
 MYOCARDIUM_LAYOUT_ID = 5713      # wall contours on SA / HLA / VLA and the 3D wall
 DUAL_MYOCARDIUM_LAYOUT_ID = 5714  # the same for stress (top row) and rest (bottom row)
+GATED_QC_LAYOUT_ID = 5730        # gate frames in SA / HLA / VLA rows, count curve and gating information
+GATED_REVIEW_LAYOUT_ID = 5731    # cine slices, perfusion and thickening polar maps, LV volume curve, cine 3D
 
 EDIT_ORDER = ("TA", "VLA", "SA")
 EDIT_VIEWS = {"TA": "MPIEditTA", "VLA": "MPIEditVLA", "SA": "MPIEditSA"}
@@ -32,6 +34,14 @@ POLAR_REST_TAG = "mpipolarmaprest"   # polar map of the rest study (two-study la
 POLAR_DIFF_TAG = "mpipolardiff"      # rest - stress difference polar map
 PERFUSION_3D_VIEW = "MPIPerf3D"   # surface uptake (SSP-style) 3D view under the polar map
 PERFUSION_3D_VIEW_REST = "MPIPerf3DRest"   # the same for the rest study (STRESS-REST PERF)
+GATED_MOSAIC_TAG = "mpigatedmosaic"   # Gated QC: one tile per gate frame in SA / HLA / VLA rows
+GATED_CURVE_TAG = "mpigatedcurve"     # Gated QC: counts per frame
+GATED_INFO_TAG = "mpigatedinfo"       # Gated QC: gating information (R-R window, beats, frame timing)
+GATED_REVIEW_MOSAIC_TAG = "mpigatedreviewmosaic"   # Gated Review: cine SA / HLA / VLA rows
+GATED_POLAR_TAG = "mpigatedpolar"                  # Gated Review: perfusion polar map
+GATED_THICKENING_TAG = "mpigatedthickening"        # Gated Review: wall thickening polar map
+GATED_VOLUME_TAG = "mpigatedvolume"                # Gated Review: LV cavity volume per frame
+GATED_3D_VIEW = "MPIGated3D"                       # Gated Review: cine 3D wall with the perfusion colors
 
 ORIENTATION_TITLES = {
     "SA": "Short axis (apex \u2192 base)",
@@ -168,6 +178,34 @@ def polarLayoutXml():
     return ('<layout type="horizontal" split="true">'
             + "".join(f'<item splitSize="500"><{tag}></{tag}></item>' for tag in (POLAR_TAG, POLAR_REST_TAG, POLAR_DIFF_TAG))
             + '</layout>')
+
+
+def gatedQcLayoutXml():
+    """Gated QC: the frame rows on the left; the count curve (top) and the gating information
+    (bottom) on the right."""
+    return ('<layout type="horizontal" split="true">'
+            f'<item splitSize="760"><{GATED_MOSAIC_TAG}></{GATED_MOSAIC_TAG}></item>'
+            '<item splitSize="300"><layout type="vertical" split="true">'
+            f'<item splitSize="450"><{GATED_CURVE_TAG}></{GATED_CURVE_TAG}></item>'
+            f'<item splitSize="550"><{GATED_INFO_TAG}></{GATED_INFO_TAG}></item>'
+            '</layout></item>'
+            '</layout>')
+
+
+def gatedReviewLayoutXml():
+    """Gated Review: the cine slice rows on the left; on the right the perfusion and thickening polar
+    maps side by side (top), the LV volume curve and the cine 3D wall side by side (bottom)."""
+    def pair(first, second):
+        return ('<item splitSize="500"><layout type="horizontal" split="true">'
+                f'<item splitSize="500">{first}</item><item splitSize="500">{second}</item>'
+                '</layout></item>')
+    return ('<layout type="horizontal" split="true">'
+            f'<item splitSize="620"><{GATED_REVIEW_MOSAIC_TAG}></{GATED_REVIEW_MOSAIC_TAG}></item>'
+            '<item splitSize="520"><layout type="vertical" split="true">'
+            + pair(f"<{GATED_POLAR_TAG}></{GATED_POLAR_TAG}>", f"<{GATED_THICKENING_TAG}></{GATED_THICKENING_TAG}>")
+            + pair(f"<{GATED_VOLUME_TAG}></{GATED_VOLUME_TAG}>", _threeDXml(GATED_3D_VIEW, "Gated 3D"))
+            + '</layout></item>'
+            '</layout>')
 
 
 def registerLayout(layoutId, xml):

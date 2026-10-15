@@ -1,10 +1,12 @@
 """Helper package of the Myocardial Perfusion SPECT hub (MyocardialPerfusionSPECT) and its hidden
-step modules (MPIDataRoles, MPIProcessing, MPIReview, MPIGated).
+step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC, MPIGated).
 
     geometry    vectors, matrices and ellipsoid masks of the cardiac frame (numpy/VTK only)
     resampling  B-spline / windowed sinc / linear reslicing and in-plane zoom (numpy/VTK only)
     views       layouts and slice/3D view helpers
     display     colour maps, in-memory slice images and the slice panel of the result screen
+    myocardium  LV wall fit of the static study and of every gate frame (numpy only)
+    gating      ECG gating information and per-frame count checks of Gated QC
     studies     study roles (stress, rest, ...) and gated sequence recognition/pairing
     session     active study shared by the modules, workflow steps
     widgets     coloured action buttons
@@ -14,7 +16,7 @@ step modules (MPIDataRoles, MPIProcessing, MPIReview, MPIGated).
 import logging
 import traceback
 
-SUBMODULES = ("geometry", "myocardium", "resampling", "views", "colortables", "display", "studies", "session", "widgets", "toolbar")  # dependency order
+SUBMODULES = ("geometry", "myocardium", "gating", "resampling", "views", "colortables", "display", "studies", "session", "widgets", "toolbar")  # dependency order
 
 
 def reloadInDeveloperMode():

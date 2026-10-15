@@ -48,8 +48,9 @@ class MPIDataRoles(ScriptedLoadableModule):
         self.parent.contributors = ["Burak Demir"]
         self.parent.helpText = (
             "Myocardial perfusion SPECT studies in the scene, their roles (stress, rest, redistribution, "
-            "viability) and gated sequences. Roles in italics are guesses: pick the right one to confirm it. "
-            "The selected study is used by Processing, Perfusion and Gated.")
+            "viability) and gated sequences. Roles in italics are guesses: pick the right one to confirm it; "
+            "None leaves a volume out of the analysis. Study 1 / Study 2 are picked from the roles and can be "
+            "changed in every step.")
         self.parent.acknowledgementText = ""
         iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
         if os.path.exists(iconPath):
@@ -102,8 +103,9 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         studyButtons.addWidget(self.sumGatesButton)
         studiesLayout.addLayout(studyButtons)
 
-        self.nextButton = styleButton(qt.QPushButton("Process the selected study \u203a"), "primary")
-        self.nextButton.toolTip = "Open Processing (reorientation) with the selected study"
+        self.nextButton = styleButton(qt.QPushButton("Process \u203a"), "primary")
+        self.nextButton.toolTip = ("Open Processing (reorientation). Study 1 / Study 2 are picked from the roles "
+                                   "and can be changed in every step; set a volume to None to leave it out")
         self.nextButton.enabled = False
         self.layout.addWidget(self.nextButton)
 
@@ -117,7 +119,7 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.studiesTimer.connect("timeout()", self.refreshStudies)
         self.detectStudiesButton.connect("clicked(bool)", self.refreshStudies)
         self.sumGatesButton.connect("clicked(bool)", self.onSumGates)
-        self.nextButton.connect("clicked(bool)", lambda: session.selectStep("processing"))
+        self.nextButton.connect("clicked(bool)", self.onProcess)
         self.studiesTable.connect("itemSelectionChanged()", self.onStudySelected)
 
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeAddedEvent, self.onNodeAdded)
@@ -226,7 +228,19 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def updateStudyButtons(self):
         study = self.selectedStudy()
         self.sumGatesButton.enabled = bool(study and study.staticNode is None and study.gatedNode)
-        self.nextButton.enabled = bool(study and study.staticNode is not None)
+        self.nextButton.enabled = any(s.staticNode is not None and s.role != studiesLib.EXCLUDED_ROLE
+                                      for s in self.studies)
+
+    def onProcess(self):
+        """Processing needs an active study: keep the one chosen, else take Study 1 (or any study)."""
+        active = session.activeStudy()
+        if active is None or studiesLib.isExcluded(active) or not slicer.mrmlScene.IsNodePresent(active):
+            pair = session.stressRestStudies()
+            candidates = session.candidateStudies()
+            study = pair["stress"] or pair["rest"] or (candidates[0] if candidates else None)
+            if study is not None:
+                session.setActiveStudy(study)
+        session.selectStep("processing")
 
     def onStudySelected(self):
         self.updateStudyButtons()

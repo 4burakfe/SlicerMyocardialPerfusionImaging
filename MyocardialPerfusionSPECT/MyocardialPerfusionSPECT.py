@@ -8,7 +8,8 @@ workflow steps, which are hidden modules opened from here and from the workflow 
     2. Processing   (MPIProcessing.py)  reorientation to SA / HLA / VLA
     3. Myocardium   (MPIMyocardium.py)  automatic LV wall detection (endo/epi surfaces, valve plane)
     4. Perfusion    (MPIReview.py)      stress / rest slices, polar maps and 3D uptake
-    5. Gated        (MPIGated.py)       gated review (to come)
+    5. Gated QC     (MPIGatedQC.py)     every gate frame segmented, counts per frame, ECG gating checks
+    6. Gated Review (MPIGated.py)       cine slices, perfusion / thickening polar maps, volumes and EF, cine 3D
 
 The workflow toolbar at the top of the window is shown while the hub or a step is open.
 The helpers shared by all modules are in the MyocardialPerfusionSPECTLib package next to this file.
@@ -41,6 +42,7 @@ from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import styleButton  # noqa: E402
 
 ICON_PATH = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
+BANNER_PATH = os.path.join(_MODULE_DIR, "Resources", "Images", "Banner.jpg")
 STATE_TEXT = {session.STATE_DONE: "Done", session.STATE_AVAILABLE: "Ready", session.STATE_LOCKED: "Waiting"}
 
 
@@ -59,19 +61,52 @@ PANEL_MAX_WIDTH = 600   # px, module panel width while the hub is open
 class MyocardialPerfusionSPECT(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
-        self.parent.title = "Myocardial Perfusion SPECT"
+        self.parent.title = "Tarvos - Myocardial Perfusion Imaging"
         self.parent.categories = ["Nuclear Medicine"]
         self.parent.dependencies = []
         self.parent.contributors = ["Burak Demir"]
         self.parent.helpText = (
             "Myocardial perfusion SPECT workflow: <b>1. Data roles</b> (studies, stress/rest/viability roles, "
             "gated sequences), <b>2. Processing</b> (reorientation to the cardiac axes), <b>3. Myocardium</b> "
-            "(LV wall detection), <b>4. Perfusion</b> (stress / rest slices and polar maps) and <b>5. Gated</b> (to come). Open a step here or from the workflow toolbar.")
+            "(LV wall detection), <b>4. Perfusion</b> (stress / rest slices and polar maps), <b>5. Gated QC</b> (gate frames, counts and ECG gating checks) and <b>6. Gated Review</b> (cine slices, perfusion and thickening polar maps, LV volumes and EF, cine 3D wall). Open a step here or from the workflow toolbar.")
         self.parent.acknowledgementText = ""
         if os.path.exists(ICON_PATH):
             self.parent.icon = qt.QIcon(ICON_PATH)
         if not slicer.app.commandOptions().noMainWindow:
             slicer.app.connect("startupCompleted()", _installToolbar)
+
+
+class _BannerScaler(qt.QObject):
+    """Keeps the intro banner as wide as the panel (aspect kept, sharp on scaled displays)."""
+
+    def __init__(self, label, pixmap):
+        super().__init__()
+        self.label = label
+        self.pixmap = pixmap
+        self.width = None
+        self.label.setFixedHeight(120)
+
+    def eventFilter(self, obj, event):
+        if event.type() == qt.QEvent.Resize:
+            self.rescale()
+        return False
+
+    def rescale(self):
+        width = self.label.contentsRect().width()
+        if width < 20 or width == self.width or self.pixmap.isNull():
+            return
+        self.width = width
+        try:
+            ratio = float(self.label.devicePixelRatioF())
+        except Exception:
+            ratio = 1.0
+        scaled = self.pixmap.scaledToWidth(int(round(width * ratio)), qt.Qt.SmoothTransformation)
+        try:
+            scaled.setDevicePixelRatio(ratio)
+        except Exception:
+            pass
+        self.label.setFixedHeight(int(round(scaled.height() / ratio)))
+        self.label.setPixmap(scaled)
 
 
 class MyocardialPerfusionSPECTWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
@@ -108,16 +143,20 @@ class MyocardialPerfusionSPECTWidget(ScriptedLoadableModuleWidget, VTKObservatio
 
     def _buildOverview(self, layout):
         layout.setContentsMargins(0, 0, 0, 0)
-        header = qt.QHBoxLayout()
-        if os.path.exists(ICON_PATH):
-            logo = qt.QLabel()
-            logo.setPixmap(qt.QPixmap(ICON_PATH).scaledToHeight(56, qt.Qt.SmoothTransformation))
-            header.addWidget(logo)
-        title = qt.QLabel("<b style='font-size: 15px'>Myocardial Perfusion SPECT</b><br>"
-                          "Reorientation and review of stress, rest and viability studies")
+        if os.path.exists(BANNER_PATH):
+            self.banner = qt.QLabel()
+            self.banner.setObjectName("MPIBanner")
+            self.banner.setSizePolicy(qt.QSizePolicy.Ignored, qt.QSizePolicy.Fixed)
+            self.banner.setAlignment(qt.Qt.AlignCenter)
+            self.bannerScaler = _BannerScaler(self.banner, qt.QPixmap(BANNER_PATH))
+            self.banner.installEventFilter(self.bannerScaler)
+            layout.addWidget(self.banner)
+            title = qt.QLabel("Reorientation and review of stress, rest and viability studies")
+        else:
+            title = qt.QLabel("<b style='font-size: 15px'>Tarvos - Myocardial Perfusion Imaging</b><br>"
+                              "Reorientation and review of stress, rest and viability studies")
         title.wordWrap = True
-        header.addWidget(title, 1)
-        layout.addLayout(header)
+        layout.addWidget(title)
 
         studyBox = ctk.ctkCollapsibleButton()
         studyBox.text = "Active study"

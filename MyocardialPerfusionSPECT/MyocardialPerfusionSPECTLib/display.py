@@ -22,13 +22,14 @@ from MyocardialPerfusionSPECTLib.views import ORIENTATIONS, ORIENTATION_TITLES
 
 DEFAULT_GRID_ROWS = 2
 DEFAULT_GRID_COLUMNS = 12
-MOSAIC_PANEL_VERSION = 8   # bump when SliceMosaicPanel changes, so a reload replaces the old panel
+MOSAIC_PANEL_VERSION = 12  # bump when SliceMosaicPanel changes, so a reload replaces the old panel
 
 # (combo label, color node name or ID); the first one is the default. "MPI ..." tables are this
 # extension's own (colortables.py), made in the scene when first used.
 COLORMAPS = [
     ("PET-DICOM", "MPI PET-DICOM"),
     ("Hel", "MPI Hel"),
+    ("Inferno", "Inferno"),       # Slicer's own (matplotlib) Inferno
     ("PET-HotMetalBlue", "PET-HotMetalBlue"),
     ("PET-HotIron", "MPI PET-HotIron"),
     ("Jotun", "MPI Jotun"),
@@ -60,7 +61,10 @@ def _sampleColorNode(node, positions):
 
 
 def _builtInNode(key):
-    return slicer.mrmlScene.GetNodeByID(key) or slicer.mrmlScene.GetFirstNodeByName(key)
+    """A Slicer color node by ID or name; color files (e.g. Inferno) also by their file node ID."""
+    return (slicer.mrmlScene.GetNodeByID(key) or slicer.mrmlScene.GetFirstNodeByName(key)
+            or slicer.mrmlScene.GetNodeByID(f"vtkMRMLColorTableNodeFile{key}.txt")
+            or slicer.mrmlScene.GetNodeByID(f"vtkMRMLProceduralColorNodeFile{key}.txt"))
 
 
 def _customTable(nodeName):
@@ -425,13 +429,14 @@ class SliceMosaicPanel:
 
 class PolarPanel:
     """Polar map (bullseye with the 17 segments), in its own place of the layout above the 3D view.
-    Segment borders and segment scores can be switched off (showSegments, showScores)."""
+    Region overlay: the coronary territories ("vessels", the default), the 17 segments, or None
+    (overlay); their values can be switched off (showScores)."""
 
     POLAR_MARGIN = 0.09    # share of the side left around the disk for the ANT / SEPT / LAT / INF labels
 
     def __init__(self):
         self.onResized = None
-        self.showSegments = True
+        self.overlay = "vessels"
         self.showScores = True
         self.widget = qt.QWidget()
         self.widget.setObjectName("MPIPolarPanel")
@@ -466,10 +471,10 @@ class PolarPanel:
         layout.addWidget(self.polarNote)
         self.polar = {"image": None, "segments": None, "message": ""}
 
-    def setLegend(self, table, low=0.0, high=100.0):
-        """Horizontal color bar under the map (when its window differs from the slice legend);
-        table None hides it."""
-        self.legend = None if table is None else (np.asarray(table, dtype=np.uint8), float(low), float(high))
+    def setLegend(self, table, low=0.0, high=100.0, unit="%"):
+        """Horizontal color bar under the map (when its window differs from the slice legend), its labels
+        in unit; table None hides it."""
+        self.legend = None if table is None else (np.asarray(table, dtype=np.uint8), float(low), float(high), unit)
         self.legendImage.setVisible(self.legend is not None)
         self.paintLegend()
 
@@ -484,7 +489,7 @@ class PolarPanel:
         width, height = int(round(rect.width() * ratio)), int(round(rect.height() * ratio))
         pixmap = qt.QPixmap(width, height)
         pixmap.fill(qt.QColor(0, 0, 0))
-        table, low, high = self.legend
+        table, low, high, unit = self.legend
         painter = qt.QPainter(pixmap)
         painter.setRenderHint(qt.QPainter.TextAntialiasing, True)
         font = painter.font()
@@ -505,7 +510,7 @@ class PolarPanel:
             value = low + k * (high - low) / 4.0
             painter.drawLine(x, y0, x, y0 + int(round(3 * ratio)))
             painter.drawText(qt.QRectF(x - 3 * font.pixelSize(), y0 + 3 * ratio, 6 * font.pixelSize(),
-                                       1.4 * font.pixelSize()), qt.Qt.AlignCenter, f"{value:.0f}%")
+                                       1.4 * font.pixelSize()), qt.Qt.AlignCenter, f"{value:.0f}{unit}")
         painter.end()
         try:
             pixmap.setDevicePixelRatio(ratio)
@@ -528,8 +533,9 @@ class PolarPanel:
         diameter, ratio, _ = self._polarGeometry()
         return int(round(diameter * ratio)) if diameter else 0
 
-    def setOverlays(self, segments, scores):
-        self.showSegments, self.showScores = bool(segments), bool(scores)
+    def setOverlays(self, overlay, scores):
+        """overlay: "vessels", "segments" or None (no borders and values)."""
+        self.overlay, self.showScores = overlay or None, bool(scores)
         self.paintPolar()
 
     def clear(self):
@@ -537,8 +543,9 @@ class PolarPanel:
         self.setPolar(None, None, "Polar map")
 
     def setPolar(self, qimage, segments, titleText, note="", message=""):
-        """qimage: bullseye (square, outside the disk black) or None; segments: 17 values shown on
-        the segments (None to hide); message: shown instead of the map when there is no image."""
+        """qimage: bullseye (square, outside the disk black) or None; segments: the values written
+        on the regions, {overlay: values} (17 for "segments", one per vessel for "vessels"), or None
+        to hide them; message: shown instead of the map when there is no image."""
         self.polar = {"image": qimage, "segments": segments, "message": message}
         self.polarTitle.setText(titleText)
         self.polarNote.setText(note)
@@ -565,38 +572,53 @@ class PolarPanel:
         radius = disk / 2.0
         if image is not None and not image.isNull():
             painter.drawImage(qt.QRect(offset, offset, disk, disk), image)
-            from MyocardialPerfusionSPECTLib.myocardium import POLAR_RING_EDGES
-            inner, apical, middle, outer = POLAR_RING_EDGES[1:]
+            from MyocardialPerfusionSPECTLib import myocardium as wallLib
 
             def point(r, degrees):   # angle from anterior (up) toward the septum (left)
                 a = math.radians(degrees)
                 return qt.QPointF(center.x() - r * radius * math.sin(a), center.y() - r * radius * math.cos(a))
-            if self.showSegments:
-                pen = qt.QPen(qt.QColor(255, 255, 255, 170))
-                pen.setWidthF(max(1.0, ratio))
+            overlay = self.overlay
+            if overlay:
+                pen = qt.QPen(qt.QColor(255, 255, 255, 190 if overlay == "vessels" else 170))
+                pen.setWidthF(max(1.0, ratio) * (1.6 if overlay == "vessels" else 1.0))
                 painter.setPen(pen)
                 painter.setBrush(qt.QBrush(qt.Qt.NoBrush))
-                for edge in POLAR_RING_EDGES[1:]:
-                    painter.drawEllipse(center, radius * edge, radius * edge)
-                for k in range(4):
-                    painter.drawLine(point(inner, 45 + 90 * k), point(apical, 45 + 90 * k))
-                for k in range(6):
-                    painter.drawLine(point(apical, 30 + 60 * k), point(outer, 30 + 60 * k))
-            segments = self.polar.get("segments")
-            if segments is not None and self.showScores:
-                places = ([(0.5 * (middle + outer), 60 * k) for k in range(6)]
-                          + [(0.5 * (apical + middle), 60 * k) for k in range(6)]
-                          + [(0.5 * (inner + apical), 90 * k) for k in range(4)] + [(0.0, 0)])
-                box = font.pixelSize() * 3
-                for value, (r, degrees) in zip(segments, places):
+                for line in wallLib.regionBorders(overlay):
+                    if len(line) == 2:
+                        painter.drawLine(point(*line[0]), point(*line[1]))
+                    else:
+                        painter.drawPolyline(qt.QPolygonF([point(r, degrees) for r, degrees in line]))
+            values = self.polar.get("segments")
+            if isinstance(values, dict):
+                values = values.get(overlay)
+            elif overlay != "segments":
+                values = None
+            if overlay and values is not None and self.showScores:
+                big = overlay == "vessels"
+                box = font.pixelSize() * (4 if big else 3)
+                names = wallLib.VESSELS if big else [None] * len(values)
+                valueFont = qt.QFont(font)
+                if big:
+                    valueFont.setPixelSize(int(round(font.pixelSize() * 1.35)))
+                    valueFont.setBold(True)
+                for value, name, (r, degrees) in zip(values, names, wallLib.regionLabelPlaces(overlay)):
                     if value is None or value != value:
                         continue
                     p = point(r, degrees)
                     rect = qt.QRectF(p.x() - box / 2.0, p.y() - box / 4.0, box, box / 2.0)
+                    painter.setFont(valueFont)
                     painter.setPen(qt.QColor(0, 0, 0))
                     painter.drawText(rect.translated(max(1.0, ratio), max(1.0, ratio)), qt.Qt.AlignCenter, f"{value:.0f}")
                     painter.setPen(qt.QColor(255, 255, 255))
                     painter.drawText(rect, qt.Qt.AlignCenter, f"{value:.0f}")
+                    if name:
+                        painter.setFont(font)
+                        below = rect.translated(0, valueFont.pixelSize() * 1.1)
+                        painter.setPen(qt.QColor(0, 0, 0))
+                        painter.drawText(below.translated(max(1.0, ratio), max(1.0, ratio)), qt.Qt.AlignCenter, name)
+                        painter.setPen(qt.QColor(230, 230, 230))
+                        painter.drawText(below, qt.Qt.AlignCenter, name)
+                painter.setFont(font)
             painter.setPen(qt.QColor(224, 224, 224))
             margin = offset
             painter.drawText(qt.QRectF(0, 0, sideDevice, margin), qt.Qt.AlignCenter, "ANT")
@@ -629,6 +651,282 @@ class PolarPanel:
         return False
 
 
+class CurveChart:
+    """Line chart painted into a label: frames or views on the x axis.
+    mode "percent": every series in % of its own mean (the image and the myocardium counts share one
+    axis), with dashed lines at 100 +/- band %; points outside the band are ringed.
+    mode "absolute": the values themselves, in unit."""
+
+    def __init__(self):
+        self.onResized = None
+        self.series = []        # [(name, values, (r, g, b), legend text, dashed)]
+        self.labels = []
+        self.titleText = ""
+        self.message = ""
+        self.mode = "percent"
+        self.band = 10.0
+        self.unit = ""
+        self.xTitle = "frame"
+        self.marker = None      # index of the frame marked with a vertical line (cine), or None
+        self.pointLabels = {}   # {index: text} written above the points of the first series (ED, ES)
+        self.overlayText = ""   # large text in the top left corner of the plot (e.g. the EF)
+        self.label = qt.QLabel()
+        self.label.setSizePolicy(qt.QSizePolicy.Ignored, qt.QSizePolicy.Ignored)
+        self.label.setMinimumSize(80, 60)
+        self.filter = _EventForwarder(self._onEvent)
+        self.label.installEventFilter(self.filter)
+
+    def setCurves(self, labels, series, titleText="", message="", mode="percent", band=10.0, unit="", xTitle="frame"):
+        """labels: x axis labels; series: [(name, values, (r, g, b), legend text[, dashed])]."""
+        self.labels = [str(v) for v in labels]
+        self.series = []
+        for entry in series:
+            name, values, color, legend = entry[:4]
+            dashed = bool(entry[4]) if len(entry) > 4 else False
+            values = np.array([np.nan if v is None else float(v) for v in values], dtype=float)
+            self.series.append((name, values, color, legend, dashed))
+        self.titleText, self.message, self.mode = titleText, message, mode
+        self.band, self.unit, self.xTitle = float(band), unit, xTitle
+        self.paint()
+
+    def setMarker(self, index):
+        """Mark one x position (the frame shown in a cine) with a vertical line; None removes it."""
+        if index != self.marker:
+            self.marker = index
+            self.paint()
+
+    def clear(self):
+        self.pointLabels = {}
+        self.overlayText = ""
+        self.marker = None
+        self.setCurves([], [], "", "")
+
+    def plotted(self):
+        """[(series, values on the axis)] of the series with numbers."""
+        out = []
+        for entry in self.series:
+            values = entry[1]
+            if not len(values) or not np.any(np.isfinite(values)):
+                continue
+            if self.mode == "percent":
+                mean = float(np.nanmean(values))
+                values = 100.0 * values / mean if mean > 0 else values * np.nan
+            out.append((entry, values))
+        return out
+
+    def paint(self):
+        label = self.label
+        ratio = devicePixelRatio(label)
+        rect = label.contentsRect()
+        if rect.width() < 40 or rect.height() < 40:
+            return
+        width, height = int(round(rect.width() * ratio)), int(round(rect.height() * ratio))
+        pixmap = qt.QPixmap(width, height)
+        pixmap.fill(qt.QColor(0, 0, 0))
+        painter = qt.QPainter(pixmap)
+        painter.setRenderHint(qt.QPainter.Antialiasing, True)
+        painter.setRenderHint(qt.QPainter.TextAntialiasing, True)
+        font = painter.font()
+        fontSize = max(9, int(round(11 * ratio)))
+        font.setPixelSize(fontSize)
+        line = 1.5 * fontSize
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(qt.QColor(230, 230, 230))
+        painter.drawText(qt.QRectF(0, 0, width, line), qt.Qt.AlignCenter, self.titleText)
+        font.setBold(False)
+        painter.setFont(font)
+        plotted = self.plotted()
+        if not plotted or not self.labels:
+            if self.message:
+                painter.setPen(qt.QColor(170, 170, 170))
+                painter.drawText(qt.QRectF(fontSize, line, width - 2 * fontSize, height - line),
+                                 qt.Qt.AlignCenter | qt.Qt.TextWordWrap, self.message)
+            painter.end()
+            self._show(pixmap, ratio)
+            return
+        finite = np.concatenate([v[np.isfinite(v)] for _, v in plotted])
+        low, high = float(finite.min()), float(finite.max())
+        if self.mode == "percent":
+            low, high = min(low, 100.0 - 1.5 * self.band), max(high, 100.0 + 1.5 * self.band)
+        span = max(high - low, 1e-6)
+        if self.mode != "percent":
+            low, high = low - 0.08 * span, high + 0.08 * span
+            span = high - low
+        rawStep = span / 5.0
+        magnitude = 10.0 ** math.floor(math.log10(rawStep))
+        step = next(m * magnitude for m in (1, 2, 2.5, 5, 10) if m * magnitude >= rawStep)
+        low, high = math.floor(low / step) * step, math.ceil(high / step) * step
+        legendEntries = [entry for entry, _ in plotted if entry[0]]
+        legendHeight = line * len(legendEntries) + 0.3 * line
+        suffix = "%" if self.mode == "percent" else ""
+        tickText = lambda v: f"{v:.0f}{suffix}" if step >= 1 else f"{v:.1f}{suffix}"
+        left = max(painter.fontMetrics().horizontalAdvance(tickText(t)) if hasattr(painter.fontMetrics(), "horizontalAdvance")
+                   else painter.fontMetrics().width(tickText(t)) for t in (low, high)) + 1.2 * fontSize
+        right = width - 0.8 * fontSize
+        top, bottom = 1.6 * line, height - 1.7 * line - legendHeight
+        overlayTop = top
+        if self.overlayText:   # its own band above the plot, so it never covers a point
+            top += 2.0 * fontSize
+        if bottom - top < 20 or right - left < 20:
+            painter.end()
+            self._show(pixmap, ratio)
+            return
+        n = len(self.labels)
+
+        def x(index):
+            return left + (right - left) * (index + 0.5) / n
+
+        def y(value):
+            return bottom - (bottom - top) * (value - low) / max(high - low, 1e-9)
+
+        grid = qt.QPen(qt.QColor(65, 65, 65))
+        grid.setWidthF(max(1.0, 0.8 * ratio))
+        tick = low
+        while tick <= high + 1e-6 * step:
+            painter.setPen(grid)
+            painter.drawLine(qt.QPointF(left, y(tick)), qt.QPointF(right, y(tick)))
+            painter.setPen(qt.QColor(180, 180, 180))
+            painter.drawText(qt.QRectF(0, y(tick) - fontSize, left - 0.4 * fontSize, 2 * fontSize),
+                             qt.Qt.AlignRight | qt.Qt.AlignVCenter, tickText(tick))
+            tick += step
+        if self.mode == "percent":
+            for level, style in ((100.0, qt.Qt.SolidLine), (100.0 - self.band, qt.Qt.DashLine),
+                                 (100.0 + self.band, qt.Qt.DashLine)):
+                pen = qt.QPen(qt.QColor(150, 150, 150))
+                pen.setStyle(style)
+                pen.setWidthF(max(1.0, ratio))
+                painter.setPen(pen)
+                painter.drawLine(qt.QPointF(left, y(level)), qt.QPointF(right, y(level)))
+        painter.setPen(qt.QColor(180, 180, 180))
+        every = max(1, int(math.ceil(n / max(1.0, (right - left) / (3.0 * fontSize)))))
+        for index, text in enumerate(self.labels):
+            if index % every and index != n - 1:
+                continue
+            painter.drawText(qt.QRectF(x(index) - 2 * fontSize, bottom + 0.2 * fontSize, 4 * fontSize, line),
+                             qt.Qt.AlignHCenter | qt.Qt.AlignTop, text)
+        axisTitle = self.xTitle + (f"   ({self.unit})" if self.unit else "")
+        painter.drawText(qt.QRectF(left, bottom + line, right - left, line), qt.Qt.AlignCenter, axisTitle)
+        if self.marker is not None and 0 <= self.marker < n:
+            pen = qt.QPen(qt.QColor(255, 255, 255, 150))
+            pen.setWidthF(max(1.0, 1.5 * ratio))
+            painter.setPen(pen)
+            painter.drawLine(qt.QPointF(x(self.marker), top), qt.QPointF(x(self.marker), bottom))
+        markers = n <= 32
+        radius = 3.0 * ratio
+        for (name, _, color, legend, dashed), values in plotted:
+            pen = qt.QPen(qt.QColor(*color))
+            pen.setWidthF((1.3 if dashed else 2.0) * ratio)
+            if dashed:
+                pen.setStyle(qt.Qt.DashLine)
+            painter.setPen(pen)
+            points = [qt.QPointF(x(i), y(v)) if np.isfinite(v) else None for i, v in enumerate(values)]
+            for a, b in zip(points[:-1], points[1:]):
+                if a is not None and b is not None:
+                    painter.drawLine(a, b)
+            if markers and not dashed:
+                painter.setBrush(qt.QBrush(qt.QColor(*color)))
+                for i, point in enumerate(points):
+                    if point is None:
+                        continue
+                    outside = self.mode == "percent" and abs(values[i] - 100.0) > self.band
+                    painter.setPen(qt.QPen(qt.QColor(255, 255, 255) if outside else qt.QColor(*color)))
+                    r = radius * (1.6 if outside else 1.0)
+                    painter.drawEllipse(point, r, r)
+                painter.setBrush(qt.QBrush())
+        if self.pointLabels and plotted:
+            values = plotted[0][1]
+            painter.setPen(qt.QColor(235, 235, 235))
+            for index, text in self.pointLabels.items():
+                if 0 <= index < n and np.isfinite(values[index]):
+                    yy = y(values[index])
+                    above = yy - 1.4 * line > top - line
+                    rectTop = yy - 1.3 * line if above else yy + 0.3 * line
+                    painter.drawText(qt.QRectF(x(index) - 3 * fontSize, rectTop, 6 * fontSize, line),
+                                     qt.Qt.AlignCenter, text)
+        if self.overlayText:
+            big = qt.QFont(font)
+            big.setPixelSize(int(round(fontSize * 1.6)))
+            big.setBold(True)
+            painter.setFont(big)
+            painter.setPen(qt.QColor(255, 255, 255))
+            painter.drawText(qt.QRectF(left, overlayTop - 0.6 * fontSize, right - left, 2.0 * big.pixelSize()),
+                             qt.Qt.AlignLeft | qt.Qt.AlignTop, self.overlayText)
+            painter.setFont(font)
+        legendTop = height - legendHeight
+        for index, (name, _, color, legend, dashed) in enumerate(legendEntries):
+            yy = legendTop + index * line
+            painter.fillRect(qt.QRectF(left, yy + 0.4 * line, 1.4 * fontSize, 0.2 * line), qt.QColor(*color))
+            painter.setPen(qt.QColor(220, 220, 220))
+            painter.drawText(qt.QRectF(left + 2.0 * fontSize, yy, width - left, line), qt.Qt.AlignLeft | qt.Qt.AlignVCenter,
+                             f"{name}   {legend}".rstrip())
+        painter.end()
+        self._show(pixmap, ratio)
+
+    def _show(self, pixmap, ratio):
+        try:
+            pixmap.setDevicePixelRatio(ratio)
+        except Exception:
+            pass
+        self.label.setPixmap(pixmap)
+
+    def _onEvent(self, obj, event):
+        if event.type() == qt.QEvent.Resize:
+            self.paint()
+            if self.onResized:
+                self.onResized()
+        return False
+
+
+class CountCurvePanel:
+    """A CurveChart on its own place of a layout: Gated QC counts per gate frame (in % of the mean),
+    Gated Review LV cavity volume per frame."""
+
+    def __init__(self):
+        self.widget = qt.QWidget()
+        self.widget.setObjectName("MPICountCurve")
+        self.widget.setStyleSheet("QWidget#MPICountCurve { background-color: black; }")
+        layout = qt.QVBoxLayout(self.widget)
+        layout.setContentsMargins(4, 4, 4, 4)
+        self.chart = CurveChart()
+        layout.addWidget(self.chart.label, 1)
+
+    def setCurves(self, *args, **kwargs):
+        self.chart.setCurves(*args, **kwargs)
+
+    def clear(self):
+        self.chart.clear()
+
+
+class GatingInfoPanel:
+    """Gated QC, bottom right: a chart of the gating over the acquisition (R-R per projection view,
+    shown when the scanner stores it per view) above the gating information as text."""
+
+    def __init__(self):
+        self.widget = qt.QWidget()
+        self.widget.setObjectName("MPIGatingInfo")
+        self.widget.setStyleSheet("QWidget#MPIGatingInfo { background-color: black; }")
+        layout = qt.QVBoxLayout(self.widget)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(4)
+        self.chart = CurveChart()
+        layout.addWidget(self.chart.label, 2)
+        self.text = qt.QTextBrowser()
+        self.text.setOpenLinks(False)
+        self.text.setStyleSheet("QTextBrowser { background-color: black; color: #e0e0e0; border: none; }")
+        layout.addWidget(self.text, 3)
+
+    def setInfo(self, html, chart=None):
+        """html: the information; chart: CurveChart.setCurves keyword arguments, or None to hide it."""
+        self.text.setHtml(html or "")
+        self.chart.label.setVisible(chart is not None)
+        if chart is not None:
+            self.chart.setCurves(**chart)
+
+    def clear(self):
+        self.setInfo("", None)
+
+
 def _singletonPanel(attribute, tag, panelClass):
     """A panel and its view factory live for the whole Slicer session (also across module reloads),
     because the layout manager keeps using the factory registered first. After a module update the
@@ -650,6 +948,33 @@ def _singletonPanel(attribute, tag, panelClass):
 def mosaicPanel():
     from MyocardialPerfusionSPECTLib.views import MOSAIC_TAG
     return _singletonPanel("_mpiSliceMosaicState", MOSAIC_TAG, SliceMosaicPanel)
+
+
+def gatedMosaicPanel():
+    """Slice rows of Gated QC: its own panel, so the Perfusion slice rows keep their state."""
+    from MyocardialPerfusionSPECTLib.views import GATED_MOSAIC_TAG
+    return _singletonPanel("_mpiGatedMosaicState", GATED_MOSAIC_TAG, SliceMosaicPanel)
+
+
+def countCurvePanel():
+    from MyocardialPerfusionSPECTLib.views import GATED_CURVE_TAG
+    return _singletonPanel("_mpiCountCurveState", GATED_CURVE_TAG, CountCurvePanel)
+
+
+def gatingInfoPanel():
+    from MyocardialPerfusionSPECTLib.views import GATED_INFO_TAG
+    return _singletonPanel("_mpiGatingInfoState", GATED_INFO_TAG, GatingInfoPanel)
+
+
+def gatedReviewMosaicPanel():
+    """Cine slice rows of Gated Review (its own panel: Perfusion and Gated QC keep theirs)."""
+    from MyocardialPerfusionSPECTLib.views import GATED_REVIEW_MOSAIC_TAG
+    return _singletonPanel("_mpiGatedReviewMosaicState", GATED_REVIEW_MOSAIC_TAG, SliceMosaicPanel)
+
+
+def volumeCurvePanel():
+    from MyocardialPerfusionSPECTLib.views import GATED_VOLUME_TAG
+    return _singletonPanel("_mpiGatedVolumeState", GATED_VOLUME_TAG, CountCurvePanel)
 
 
 def polarPanelState(tag):

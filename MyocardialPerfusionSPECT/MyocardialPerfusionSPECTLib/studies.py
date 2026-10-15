@@ -22,7 +22,8 @@ import logging
 import re
 import traceback
 
-ROLES = ("Stress", "Rest", "Redistribution", "Viability", "Other")
+ROLES = ("Stress", "Rest", "Redistribution", "Viability", "Other", "None")
+EXCLUDED_ROLE = "None"   # set in Data roles to leave a volume out of the analysis (never guessed)
 UNKNOWN_ROLE = "Other"
 
 ROLE_ATTRIBUTE = "MPI.StudyRole"
@@ -59,6 +60,11 @@ def studyRole(node):
     if node is None:
         return UNKNOWN_ROLE, True
     return guessRole(node.GetName(), _seriesDescription(node), _shParentAndStudyName(node)[1]), True
+
+
+def isExcluded(node):
+    """True for a volume given the role None in Data roles."""
+    return node is not None and node.GetAttribute(ROLE_ATTRIBUTE) == EXCLUDED_ROLE
 
 
 def looksGated(*texts):

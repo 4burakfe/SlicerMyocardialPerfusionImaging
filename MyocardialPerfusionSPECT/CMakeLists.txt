@@ -8,6 +8,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/__init__.py
   ${MODULE_NAME}Lib/geometry.py
   ${MODULE_NAME}Lib/myocardium.py
+  ${MODULE_NAME}Lib/gating.py
   ${MODULE_NAME}Lib/resampling.py
   ${MODULE_NAME}Lib/views.py
   ${MODULE_NAME}Lib/colortables.py
@@ -20,6 +21,7 @@ set(MODULE_PYTHON_SCRIPTS
 
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/${MODULE_NAME}.png
+  Resources/Images/Banner.jpg
   )
 
 slicerMacroBuildScriptedModule(
@@ -31,7 +33,7 @@ slicerMacroBuildScriptedModule(
 
 #-----------------------------------------------------------------------------
 # Workflow steps (hidden modules, shown inside the hub)
-foreach(STEP_MODULE MPIDataRoles MPIProcessing MPIMyocardium MPIReview MPIGated)
+foreach(STEP_MODULE MPIDataRoles MPIProcessing MPIMyocardium MPIReview MPIGatedQC MPIGated)
   slicerMacroBuildScriptedModule(
     NAME ${STEP_MODULE}
     SCRIPTS ${STEP_MODULE}.py
@@ -44,7 +46,7 @@ if(BUILD_TESTING)
 
   # Register the unittest subclasses in the module scripts as ctests.
   # Note that the tests will also be available at runtime.
-  foreach(TEST_MODULE ${MODULE_NAME} MPIDataRoles MPIProcessing MPIMyocardium MPIReview MPIGated)
+  foreach(TEST_MODULE ${MODULE_NAME} MPIDataRoles MPIProcessing MPIMyocardium MPIReview MPIGatedQC MPIGated)
     slicer_add_python_unittest(SCRIPT ${TEST_MODULE}.py)
   endforeach()
 

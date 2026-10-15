@@ -1,6 +1,6 @@
 """Workflow toolbar of the MPI modules, at the top of the Slicer main window.
 
-    [icon] Myocardial Perfusion | Study: [role · volume v] | (1) Data roles  >  (2) Processing  >  (3) Perfusion  >  (4) Gated
+    [icon] Myocardial Perfusion | Study: [role · volume v] | (1) Data roles  >  (2) Processing  >  ...  >  (5) Gated QC  >  (6) Gated Review
 
 Shown only while the Myocardial Perfusion SPECT hub is the current module. The step buttons show
 that step in the hub; their badge shows the step's state (done, available, locked). The study box
@@ -104,14 +104,14 @@ class WorkflowToolbar:
         tb = self.toolbar
         # Hub button: logo and name, opens the Myocardial Perfusion SPECT overview
         self.hubButton = qt.QToolButton()
-        self.hubButton.setText("Myocardial Perfusion")
+        self.hubButton.setText("Tarvos")
         if os.path.exists(ICON_PATH):
             self.hubButton.setIcon(qt.QIcon(ICON_PATH))
             self.hubButton.setIconSize(qt.QSize(28, 28))
         self.hubButton.setToolButtonStyle(qt.Qt.ToolButtonTextBesideIcon)
         self.hubButton.setAutoRaise(True)
         self.hubButton.checkable = True
-        self.hubButton.toolTip = "Overview of the Myocardial Perfusion SPECT workflow"
+        self.hubButton.toolTip = "Tarvos - Myocardial Perfusion Imaging: overview of the workflow"
         self.hubButton.setStyleSheet(
             "QToolButton { border-radius: 5px; padding: 2px 8px; font-weight: bold; }"
             "QToolButton:checked { background-color: rgba(47, 126, 216, 0.28); border: 1px solid #2f7ed8; }")
@@ -184,7 +184,8 @@ class WorkflowToolbar:
     # -- State --
     def refresh(self):
         try:
-            studies = [s for s in studiesLib.scanStudies() if s.staticNode is not None]
+            studies = [s for s in studiesLib.scanStudies()
+                       if s.staticNode is not None and s.role != studiesLib.EXCLUDED_ROLE]
         except Exception:
             logging.warning("MPI toolbar: could not list the studies:\n" + traceback.format_exc())
             studies = []
