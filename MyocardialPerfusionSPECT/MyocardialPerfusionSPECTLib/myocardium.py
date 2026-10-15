@@ -61,7 +61,7 @@ DEFAULTS = {
 class WallGrid:
     """Ray grid in the cardiac frame. rows: cylinder rows (base -> center), then cap rows (-> apex)."""
 
-    def __init__(self, center, u, w, radius, params=None):
+    def __init__(self, center, u, w, radius, params=None, length=None):
         p = dict(DEFAULTS, **(params or {}))
         self.params = p
         self.center = np.asarray(center, dtype=float)
@@ -72,7 +72,8 @@ class WallGrid:
         self.nTheta = int(p["angles"])
         self.theta = np.arange(self.nTheta) * (2.0 * math.pi / self.nTheta)
         self.dz = float(p["rowSpacing"])
-        nCyl = int(math.ceil(self.radius / self.dz)) + 1
+        self.length = float(radius if length is None else length)   # cylinder reach toward the base
+        nCyl = int(math.ceil(self.length / self.dz)) + 1
         self.z = -self.dz * np.arange(nCyl)[::-1]           # -zMax ... 0 (0 = LV center)
         self.nCyl = nCyl
         self.nCap = int(p["capRows"])
@@ -134,8 +135,40 @@ def fitWall(sample, center, u, w, radius, params=None):
 
     Returns a dict with the WallGrid ("grid"), maps over [rows, angles]: "mid", "endo", "epi"
     (distance along each ray, mm), "thickness" (mm), "peak" (counts at the mid-wall, the polar map
-    data), and "baseZ" (valve plane position along the axis, mm from the LV center, negative)."""
-    grid = WallGrid(center, u, w, radius, params)
+    data), and "baseZ" (valve plane position along the axis, mm from the LV center, negative).
+
+    Only the axis and its direction are taken from the user's frame. The grid's own center (where
+    the cylinder rows end and the apical cap starts) is moved along the axis to the middle between
+    the valve plane and the apical endocardium found by a first fit, and the wall is fitted again
+    there: a center placed close to the base (or the apex) would otherwise leave a steep valve plane
+    nowhere to cut the wall on one side. "centerShift" is that move (mm toward the apex); the
+    distances of the result ("baseZ", "valvePlane", the maps) are from the moved center."""
+    center = np.asarray(center, dtype=float)
+    u = _unit(u)
+    result = _fitOnGrid(sample, WallGrid(center, u, w, radius, params))
+    grid = result["grid"]
+    apex = float(np.median(result["endo"][-1]))                    # apical endocardium on the axis
+    a, gw, gs = result["valvePlane"]
+    radiusAtBase = np.array([np.interp(a, grid.z, result["epi"][:grid.nCyl, c]) for c in range(grid.nTheta)])
+    rise = float(np.max((gw * np.cos(grid.theta) + gs * np.sin(grid.theta)) * radiusAtBase))
+    # the middle of the LV, or further toward the apex when the steep side of the valve plane needs
+    # it, but the cap keeps at least 8 mm of cavity in front of the apical endocardium
+    shift = max(0.5 * (a + apex), a + max(rise, 0.0) + 3.0 * grid.dz)
+    shift = float(np.clip(min(shift, apex - 8.0), -0.3 * radius, 0.3 * radius))
+    if abs(shift) >= 2.0:
+        try:
+            result = _fitOnGrid(sample, WallGrid(center + shift * u, u, w, radius, params,
+                                                 length=radius + max(shift, 0.0)))
+        except ValueError:
+            shift = 0.0
+    else:
+        shift = 0.0
+    result["centerShift"] = shift
+    return result
+
+
+def _fitOnGrid(sample, grid):
+    """fitWall on one grid (fixed center)."""
     p = grid.params
     origins, directions = grid.rays()
     points = origins[:, :, None, :] + grid.t[None, None, :, None] * directions[:, :, None, :]
@@ -552,6 +585,13 @@ def _limitBasalNarrowing(grid, distance, maxDegrees):
     return distance
 
 
+def wallReach(result, point=None):
+    """Largest distance (mm) of the epicardium from point (default: the grid center), base rim included."""
+    grid = result["grid"]
+    point = grid.center if point is None else np.asarray(point, dtype=float)
+    return float(np.max(np.linalg.norm(surfaceGrid(result, "epi") - point, axis=-1)))
+
+
 def valvePlane(result):
     """(a, gw, gs) of the valve plane z = a + gw * x + gs * y after the user's offset and tilt."""
     grid = result["grid"]
@@ -559,7 +599,29 @@ def valvePlane(result):
     a, gw, gs = result["valvePlane"]
     gw = math.tan(np.clip(math.atan(gw) + math.radians(p["valveTiltAnterior"]), -1.2, 1.2))
     gs = math.tan(np.clip(math.atan(gs) + math.radians(p["valveTiltSeptal"]), -1.2, 1.2))
-    return (float(np.clip(a + p["valveOffset"], grid.z[0], -grid.dz)), gw, gs)
+    a = float(np.clip(a + p["valveOffset"], grid.z[0], -grid.dz))
+    scale = _tiltScale(grid, result.get("epi"), a, gw, gs)
+    return (a, gw * scale, gs * scale)
+
+
+def _tiltScale(grid, epi, a, gw, gs):
+    """Factor (0..1) on the valve tilt so the plane meets the epicardium of every column inside the
+    sampled cylinder: below the LV center and above the base end. A steep plane in a small or basally
+    centered LV would otherwise reach past the LV center on one side and past the sampled region on
+    the other; both are clipped, the wall is cut flat there and the endo- and epicardium end at
+    different places (a notch or hole at the base)."""
+    if epi is None or (gw == 0.0 and gs == 0.0):
+        return 1.0
+    nCyl = grid.nCyl
+    radius = np.array([np.interp(a, grid.z, epi[:nCyl, c]) for c in range(grid.nTheta)])
+    rise = (gw * np.cos(grid.theta) + gs * np.sin(grid.theta)) * radius       # plane z - a at the epicardium
+    top, bottom = -2.0 * grid.dz - a, float(grid.z[0]) + grid.dz - a
+    scale = 1.0
+    if rise.max() > 1e-9:
+        scale = min(scale, max(top, 0.0) / float(rise.max()))
+    if rise.min() < -1e-9:
+        scale = min(scale, min(bottom, 0.0) / float(rise.min()))
+    return float(np.clip(scale, 0.0, 1.0))
 
 
 def valvePlaneZ(result):

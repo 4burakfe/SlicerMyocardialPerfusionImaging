@@ -35,12 +35,16 @@ if globals().get("__file__") and _MODULE_DIR not in sys.path:
 
 from MyocardialPerfusionSPECTLib.resampling import DEFAULT_INTERPOLATION, zoomInPlane  # noqa: E402
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
-    RESULT_LAYOUT_ID, SLICES_LAYOUT_ID, DUAL_RESULT_LAYOUT_ID, POLAR_LAYOUT_ID, ORIENTATIONS, ORIENTATION_TITLES,
+    RESULT_LAYOUT_ID, SLICES_LAYOUT_ID, DUAL_RESULT_LAYOUT_ID, POLAR_LAYOUT_ID, PERF_DUAL_LAYOUT_ID,
+    DUAL_PERF_DUAL_LAYOUT_ID, PERFUSION_MONITOR2_TITLE, perfusionDualMonitorLayoutXml, placeMonitor2Window,
+    ORIENTATIONS, ORIENTATION_TITLES, secondaryScreen,
     POLAR_TAG, POLAR_REST_TAG, POLAR_DIFF_TAG, PERFUSION_3D_VIEW, PERFUSION_3D_VIEW_REST,
-    resultLayoutXml, slicesLayoutXml, dualResultLayoutXml, polarLayoutXml, registerLayout, threeDWidgetByTag)
+    resultLayoutXml, slicesLayoutXml, dualResultLayoutXml, polarLayoutXml, registerLayout, threeDWidgetByTag,
+    CameraLink)
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
-    setVolumeDisplay, rgbToQImage, mosaicPanel, polarPanel, polarPanelState, existingPanel)
+    setVolumeDisplay, rgbToQImage, mosaicPanel, polarPanel, polarPanelState, existingPanel, DEFAULT_FOV_CM, fovCrop,
+    REFIT_DELAY_MS, lastFirstSlice, cropStack, tilePixelsToIjk, bestGrid)
 from MyocardialPerfusionSPECTLib.geometry import worldToLocalMatrix  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import StudyPairSelector  # noqa: E402
@@ -50,27 +54,42 @@ from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 STRESS, REST, DIFF = "stress", "rest", "diff"
 SLOT_TITLES = {STRESS: "STRESS", REST: "REST"}
 LAYOUT_XML = {RESULT_LAYOUT_ID: resultLayoutXml, SLICES_LAYOUT_ID: slicesLayoutXml,
-              DUAL_RESULT_LAYOUT_ID: dualResultLayoutXml, POLAR_LAYOUT_ID: polarLayoutXml}
+              DUAL_RESULT_LAYOUT_ID: dualResultLayoutXml, POLAR_LAYOUT_ID: polarLayoutXml,
+              PERF_DUAL_LAYOUT_ID: lambda: perfusionDualMonitorLayoutXml(False),
+              DUAL_PERF_DUAL_LAYOUT_ID: lambda: perfusionDualMonitorLayoutXml(True)}
+DUAL_MONITOR_LAYOUT_IDS = (PERF_DUAL_LAYOUT_ID, DUAL_PERF_DUAL_LAYOUT_ID)
+MONITOR2_PLACE_DELAY_MS = 300   # the second window is placed after the layout manager made its views
 # key: (button text, layout ID, studies of the slice rows, {polar map tag: study or DIFF}, {3D view tag: study}, tooltip)
 MODES = {
     "stressPerf": ("STRESS PERF", RESULT_LAYOUT_ID, (STRESS,), {POLAR_TAG: STRESS}, {PERFUSION_3D_VIEW: STRESS},
                    "Stress study: SA / HLA / VLA slices, polar map and 3D uptake"),
     "stressSlices": ("STRESS SLICES", SLICES_LAYOUT_ID, (STRESS,), {}, {}, "Stress study: only the slices"),
+    "stressPerfDual": ("STRESS DUAL", PERF_DUAL_LAYOUT_ID, (STRESS,), {POLAR_TAG: STRESS}, {PERFUSION_3D_VIEW: STRESS},
+                       "Stress study on two monitors: the slices on this window, the polar map and 3D uptake "
+                       "in a second window on the second monitor"),
     "restPerf": ("REST PERF", RESULT_LAYOUT_ID, (REST,), {POLAR_TAG: REST}, {PERFUSION_3D_VIEW: REST},
                  "Rest study: SA / HLA / VLA slices, polar map and 3D uptake"),
     "restSlices": ("REST SLICES", SLICES_LAYOUT_ID, (REST,), {}, {}, "Rest study: only the slices"),
+    "restPerfDual": ("REST DUAL", PERF_DUAL_LAYOUT_ID, (REST,), {POLAR_TAG: REST}, {PERFUSION_3D_VIEW: REST},
+                     "Rest study on two monitors: the slices on this window, the polar map and 3D uptake in a "
+                     "second window on the second monitor"),
     "stressRestPerf": ("STRESS-REST PERF", DUAL_RESULT_LAYOUT_ID, (STRESS, REST),
                        {POLAR_TAG: STRESS, POLAR_REST_TAG: REST},
                        {PERFUSION_3D_VIEW: STRESS, PERFUSION_3D_VIEW_REST: REST},
                        "Stress and rest slices row by row, with both polar maps and 3D uptake views"),
     "stressRestSlices": ("STRESS-REST SLICES", SLICES_LAYOUT_ID, (STRESS, REST), {}, {},
                          "Stress and rest slices row by row"),
+    "stressRestPerfDual": ("STRESS-REST DUAL", DUAL_PERF_DUAL_LAYOUT_ID, (STRESS, REST),
+                           {POLAR_TAG: STRESS, POLAR_REST_TAG: REST, POLAR_DIFF_TAG: DIFF},
+                           {PERFUSION_3D_VIEW: STRESS, PERFUSION_3D_VIEW_REST: REST},
+                           "Stress and rest on two monitors: the slices row by row on this window; the stress, "
+                           "rest and difference polar maps and both 3D uptake views on the second monitor"),
     "stressRestPolar": ("STRESS REST POLAR", POLAR_LAYOUT_ID, (), {POLAR_TAG: STRESS, POLAR_REST_TAG: REST,
                                                                    POLAR_DIFF_TAG: DIFF}, {},
                         "Stress, rest and difference (rest - stress, ischemia) polar maps"),
 }
-MODE_GRID = (("stressPerf", "stressSlices"), ("restPerf", "restSlices"),
-             ("stressRestPerf", "stressRestSlices"), ("stressRestPolar",))   # rows of layout buttons
+MODE_GRID = (("stressPerf", "stressSlices", "stressPerfDual"), ("restPerf", "restSlices", "restPerfDual"),
+             ("stressRestPerf", "stressRestSlices", "stressRestPerfDual"), ("stressRestPolar",))   # rows of layout buttons
 OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "segments"), ("None", ""))
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}   # myocardium contours on the slices
 CONTOUR_MAX_SIZE = 160    # contours are computed at most at this tile size and enlarged above it
@@ -136,6 +155,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.studies = {STRESS: None, REST: None}   # static volume of each study shown
         self.outputs = {STRESS: {}, REST: {}}       # its reoriented volumes {orientation: node}
         self.mode = "stressPerf"
+        self.chosenMode = None      # (layout the user picked, studies ready then): kept while those do not change
         self.grids = {"single": [DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS], "dual": [1, DEFAULT_GRID_COLUMNS]}
         self.polarCache = {}         # study ID -> (wall key, polar map)
         self.tileCache = {}          # row key -> (key, [QImage per slice]): rendered once, scrolling reuses them
@@ -143,6 +163,9 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarImageCache = {}    # polar map tag -> (key, (QImage, segment values))
         self.centerCache = {}        # study ID -> (wall key, myocardium mass center in world coordinates)
         self.surfaceKeys = {}        # 3D view tag -> wall its uptake model and camera were made for
+        self.extentCache = {}        # (slot, orientation) -> (key, (first, last) slice with myocardium or None)
+        self.cameraLink = CameraLink()   # stress and rest 3D views moved together
+        self.scrollOffsets = {}      # (slot, orientation) -> slices the mouse wheel moved a fitted row
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
@@ -182,6 +205,22 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         gridRow.addWidget(qt.QLabel("×"))
         gridRow.addWidget(self.gridColumnsSpin)
         form.addRow("Grid per row:", gridRow)
+        self.autoFitCheck = qt.QCheckBox("Fit to the myocardium")
+        self.autoFitCheck.checked = True
+        self.autoFitCheck.toolTip = ("Show every slice with myocardium on the grid giving the largest tiles for the "
+                                     "screen (fewest rows), each row filled with the neighbouring slices as far as "
+                                     "the tiles fit (set again when the view is resized). "
+                                     "Changing the grid or the slices by hand turns it off")
+        form.addRow("", self.autoFitCheck)
+        self.fovSpin = qt.QDoubleSpinBox()
+        self.fovSpin.setRange(4.0, 30.0)
+        self.fovSpin.setSingleStep(0.5)
+        self.fovSpin.setDecimals(1)
+        self.fovSpin.setSuffix(" cm")
+        self.fovSpin.setValue(DEFAULT_FOV_CM)
+        self.fovSpin.toolTip = ("Field of view of every tile, centered on the LV: the same for stress and rest, so "
+                                "both show at the same zoom")
+        form.addRow("Field of view:", self.fovSpin)
 
         showRow = qt.QHBoxLayout()
         self.contoursButton = self._toggleButton("Myocardium contours", False,
@@ -191,8 +230,12 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                              "Stress and rest rows show the same place: slices and panning matched "
                                              "on the center of each study's segmented myocardium, scrolling moves "
                                              "both. Off: each row scrolls on its own and is not moved")
+        self.link3DButton = self._toggleButton("Link 3D views", True,
+                                               "Rotating, zooming or panning the stress or rest 3D view moves the "
+                                               "other the same way, around its own heart")
         showRow.addWidget(self.contoursButton)
         showRow.addWidget(self.syncButton)
+        showRow.addWidget(self.link3DButton)
         form.addRow("Show:", showRow)
 
         # Polar map
@@ -264,7 +307,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 button = qt.QPushButton(MODES[key][0])
                 button.checkable = True
                 button.toolTip = MODES[key][5]
-                grid.addWidget(button, row, column, 1, 2 // len(keys))
+                grid.addWidget(button, row, column * (6 // len(keys)), 1, 6 // len(keys))
                 self.layoutGroup.addButton(button)
                 self.layoutButtons[key] = button
         self.layout.addWidget(layoutBox)
@@ -272,7 +315,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.mosaicResizeTimer = qt.QTimer()
         self.mosaicResizeTimer.setSingleShot(True)
-        self.mosaicResizeTimer.setInterval(150)
+        self.mosaicResizeTimer.setInterval(REFIT_DELAY_MS)
 
         self.mosaicResizeTimer.connect("timeout()", self.refreshMosaic)
         self.colormapCombo.connect("currentIndexChanged(int)", self.onColormapChanged)
@@ -281,17 +324,20 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.polarWindowRanges[slot].connect("valuesChanged(double,double)", lambda a, b: self.refreshPolar())
         self.diffWindowRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolar())
         self.polarLinkCheck.connect("toggled(bool)", lambda _: self.onPolarLinkToggled())
-        self.gridRowsSpin.connect("valueChanged(int)", lambda _: self.onGridChanged())
-        self.gridColumnsSpin.connect("valueChanged(int)", lambda _: self.onGridChanged())
+        self.gridRowsSpin.connect("valueChanged(int)", lambda _: self.onGridChanged(manual=True))
+        self.gridColumnsSpin.connect("valueChanged(int)", lambda _: self.onGridChanged(manual=True))
+        self.autoFitCheck.connect("toggled(bool)", lambda _: self.onAutoFitToggled())
+        self.fovSpin.connect("valueChanged(double)", lambda _: self.refreshMosaic(polar=False))
         self.contoursButton.connect("toggled(bool)", lambda _: self.refreshMosaic(polar=False))
         self.syncButton.connect("toggled(bool)", lambda _: self.onSyncToggled())
+        self.link3DButton.connect("toggled(bool)", lambda _: self.updateCameraLink())
         self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onPolarOverlaysChanged())
         self.scoresButton.connect("toggled(bool)", lambda _: self.onPolarOverlaysChanged())
-        self.stepSpin.connect("valueChanged(int)", lambda _: self.refreshMosaic(polar=False))
+        self.stepSpin.connect("valueChanged(int)", lambda _: self.onSlicesChangedByHand())
         for spin in self.firstSliceSpins.values():
-            spin.connect("valueChanged(int)", lambda _: self.refreshMosaic(polar=False))
+            spin.connect("valueChanged(int)", lambda _: self.onSlicesChangedByHand())
         for key, button in self.layoutButtons.items():
-            button.connect("clicked(bool)", lambda _, k=key: self.showResults(k))
+            button.connect("clicked(bool)", lambda _, k=key: self.chooseMode(k))
         self.backButton.connect("clicked(bool)", lambda: session.selectStep("processing"))
 
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneClosed)
@@ -318,13 +364,140 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         button.toolTip = toolTip
         return button
 
+    # --- workflow toolbar (second row) -----------------------------------------------------------------
+    def buildToolbar(self, bar):
+        """Most used controls in the toolbar (toolbar.StepBar); they drive the controls of this panel."""
+        self.toolbarBar = bar
+        self.tbMax = bar.spin("Max", 10, 150, 5, " %", "Top of the slice color window (% of the myocardial maximum) "
+                              "of the studies shown", self.onToolbarMax)
+        self.tbFov = bar.spin("FOV", 4.0, 30.0, 0.5, " cm", self.fovSpin.toolTip,
+                              lambda v: self.fromToolbar(lambda: self.fovSpin.setValue(v)), decimals=1)
+        bar.separator()
+        self.tbContours = bar.toggle("Contours", self.contoursButton.toolTip,
+                                     lambda c: self.fromToolbar(lambda: setattr(self.contoursButton, "checked", c)))
+        self.tbSync = bar.toggle("Sync", self.syncButton.toolTip,
+                                 lambda c: self.fromToolbar(lambda: setattr(self.syncButton, "checked", c)))
+        bar.separator()
+        self.tbOverlay = bar.choice([("Vessels", "vessels", "Coronary territories (LAD / RCA / LCX) on the polar maps"),
+                                     ("17 seg", "segments", "The 17 segments on the polar maps")],
+                                    self.onToolbarOverlay)
+        self.tbScores = bar.toggle("Scores", self.scoresButton.toolTip,
+                                   lambda c: self.fromToolbar(lambda: setattr(self.scoresButton, "checked", c)))
+        bar.separator()
+        self.tbLayouts = bar.buttons([(key, self.shortLayoutName(key), MODES[key][5]) for row in MODE_GRID
+                                      for key in row], lambda key: self.fromToolbar(lambda: self.chooseMode(key)))
+        if not getattr(self, "_toolbarFollows", False):   # the toolbar follows this panel's controls
+            self._toolbarFollows = True
+            for slot in (STRESS, REST):
+                self.windowRanges[slot].connect("valuesChanged(double,double)", lambda a, b: self.syncToolbar())
+            self.fovSpin.connect("valueChanged(double)", lambda _: self.syncToolbar())
+            for button in (self.contoursButton, self.syncButton, self.scoresButton):
+                button.connect("toggled(bool)", lambda _: self.syncToolbar())
+            self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.syncToolbar())
+
+    @staticmethod
+    def shortLayoutName(key):
+        text = MODES[key][0]
+        for prefix in ("STRESS-REST ", "STRESS REST ", "STRESS ", "REST "):
+            if text.startswith(prefix):
+                return text[len(prefix):]
+        return text
+
+    def toolbarLayouts(self):
+        """Layouts offered in the toolbar: the stress-rest ones when both studies are ready, else those of the
+        one study that is."""
+        if self.ready(STRESS) and self.ready(REST):
+            return [key for row in MODE_GRID[2:] for key in row]
+        if self.ready(STRESS):
+            return list(MODE_GRID[0])
+        if self.ready(REST):
+            return list(MODE_GRID[1])
+        return []
+
+    def toolbarSlots(self):
+        _, _, slots, polars, views, _ = MODES[self.mode]
+        shown = set(slots) | {s for s in list(polars.values()) + list(views.values()) if s != DIFF}
+        if DIFF in polars.values():
+            shown |= {STRESS, REST}
+        return [slot for slot in (STRESS, REST) if slot in shown and self.ready(slot)] or \
+            [slot for slot in (STRESS, REST) if self.ready(slot)]
+
+    def fromToolbar(self, action):
+        action()
+        self.syncToolbar()   # e.g. a click on the checked overlay button changed nothing: check it again
+
+    def onToolbarMax(self, value):
+        for slot in self.toolbarSlots():
+            window = self.windowRanges[slot]
+            window.maximumValue = max(float(value), window.minimumValue + 1.0)
+        self.syncToolbar()
+
+    def onToolbarOverlay(self, value):
+        index = self.overlayCombo.findData(value)
+        if index >= 0:
+            self.overlayCombo.setCurrentIndex(index)
+        self.syncToolbar()
+
+    def syncToolbar(self):
+        bar = getattr(self, "toolbarBar", None)
+        if bar is None:
+            return
+        try:
+            slots = self.toolbarSlots()
+            anyReady = bool(slots)
+            if slots:
+                bar.setValue(self.tbMax, self.windowRanges[slots[0]].maximumValue)
+            bar.setValue(self.tbFov, self.fovSpin.value)
+            bar.setChecked(self.tbContours, self.contoursButton.checked)
+            bar.setChecked(self.tbSync, self.syncButton.checked)
+            bar.setChoice(self.tbOverlay, self.overlay())
+            bar.setChecked(self.tbScores, self.scoresButton.checked)
+            for widget in [self.tbMax, self.tbFov, self.tbContours, self.tbScores] + list(self.tbOverlay.values()):
+                widget.enabled = anyReady
+            self.tbSync.enabled = self.syncButton.enabled
+            offered = self.toolbarLayouts()
+            for key, button in self.tbLayouts.items():
+                button.setVisible(key in offered)
+                button.enabled = self.modeAvailable(key)
+                bar.setChecked(button, key == self.mode)
+        except Exception:
+            logging.debug("MPI: could not update the toolbar:\n" + traceback.format_exc())
+
     def enter(self):
         self.studySelector.refresh()
         self.loadOutputs()
-        self.showResults()
+        self.showResults(self.preferredMode())
+
+    # --- default layout ---------------------------------------------------------------
+    def readyStudies(self):
+        return tuple(slot for slot in (STRESS, REST) if self.ready(slot))
+
+    def defaultMode(self):
+        """Slices and plots of the studies there: stress-rest when both are ready, on two monitors when there
+        is a second screen."""
+        dual = secondaryScreen() is not None
+        ready = self.readyStudies()
+        if len(ready) == 2:
+            return "stressRestPerfDual" if dual else "stressRestPerf"
+        if ready:
+            return f"{ready[0]}PerfDual" if dual else f"{ready[0]}Perf"
+        return self.mode
+
+    def preferredMode(self):
+        """The layout the user picked while the same studies are ready, else the default one."""
+        if self.chosenMode is not None:
+            mode, ready = self.chosenMode
+            if ready == self.readyStudies() and self.modeAvailable(mode):
+                return mode
+        return self.defaultMode()
+
+    def chooseMode(self, mode):
+        self.chosenMode = (mode, self.readyStudies())
+        self.showResults(mode)
 
     def cleanup(self):
         self.mosaicResizeTimer.stop()
+        self.cameraLink.unlink()
         session.removeListener(self.onSessionChanged)
         self.studySelector.cleanup()
         for tag in (POLAR_TAG, POLAR_REST_TAG, POLAR_DIFF_TAG):
@@ -359,13 +532,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.loadOutputs()
         if any(self.studies[s] is not before[s] for s in self.studies) or \
                 any(self.studies[s] is None for s in self.studies):
-            active = session.activeStudy()
-            singles = {STRESS: ("stressPerf", "stressSlices"), REST: ("restPerf", "restSlices")}
-            for slot, other in ((STRESS, REST), (REST, STRESS)):   # follow the study chosen in the toolbar
-                if active is not None and self.studies[slot] is active and self.mode in singles[other]:
-                    self.mode = singles[slot][singles[other].index(self.mode)]
             if self.parent.isVisible():
-                self.showResults()
+                self.showResults(self.preferredMode())
 
     def onSceneClosed(self, caller=None, event=None):
         self.studies = {STRESS: None, REST: None}
@@ -375,6 +543,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarCache = {}
         self.polarImageCache = {}
         self.centerCache = {}
+        self.extentCache = {}
+        self.scrollOffsets = {}
         self.surfaceKeys = {}
         panel = existingPanel("_mpiSliceMosaicState")
         if panel is not None:
@@ -419,6 +589,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.firstSliceSpins[(slot, name)].enabled = self.ready(slot) and not (slot == REST and self.synced())
         for key, button in self.layoutButtons.items():
             button.enabled = self.modeAvailable(key)
+        self.syncToolbar()
 
     # --- slice panel ----------------------------------------------------------
     def rowSlots(self, mode=None):
@@ -437,7 +608,21 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def cellsSpan(self):
         return (self.cellCount() - 1) * self.stepSpin.value + 1
 
-    def onGridChanged(self):
+    def onAutoFitToggled(self):
+        self.scrollOffsets = {}
+        self.refreshMosaic(polar=False)
+
+    def onSlicesChangedByHand(self):
+        wasBlocked = self.autoFitCheck.blockSignals(True)
+        self.autoFitCheck.checked = False
+        self.autoFitCheck.blockSignals(wasBlocked)
+        self.refreshMosaic(polar=False)
+
+    def onGridChanged(self, manual=False):
+        if manual:
+            wasBlocked = self.autoFitCheck.blockSignals(True)
+            self.autoFitCheck.checked = False
+            self.autoFitCheck.blockSignals(wasBlocked)
         self.grids[self.gridKind()] = [self.gridRowsSpin.value, self.gridColumnsSpin.value]
         panel = existingPanel("_mpiSliceMosaicState")
         if panel is not None:
@@ -456,7 +641,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             n = slicer.util.arrayFromVolume(node).shape[0]
             spin = self.firstSliceSpins[(slot, name)]
             wasBlocked = spin.blockSignals(True)
-            spin.setRange(1, n)
+            spin.setRange(1, lastFirstSlice(n))   # past the end, until a few slices are left
             spin.setValue(max(0, (n - self.cellsSpan()) // 2) + 1)
             spin.blockSignals(wasBlocked)
 
@@ -493,8 +678,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def showResults(self, mode=None):
         mode = mode or self.mode
         if not self.modeAvailable(mode):
-            mode = next((key for key in ("stressPerf", "restPerf") if self.modeAvailable(key)), None)
-            if mode is None:
+            mode = self.defaultMode()
+            if not self.modeAvailable(mode):
                 return
         self.setMode(mode)
         # Leave place mode in case the user was placing the ROI
@@ -506,6 +691,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             panel = mosaicPanel()
             panel.onScroll = self.onMosaicScroll
             panel.onResized = self.mosaicResizeTimer.start
+            panel.pairRows = len(slots) > 1     # each grid row of stress followed by that of rest
             panel.gridRows, panel.gridColumns = self.gridRowsSpin.value, self.gridColumnsSpin.value
             panel.setRowKeys(self.rowKeys(mode))
         for tag in polars:
@@ -515,6 +701,9 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         registerLayout(layoutId, LAYOUT_XML[layoutId]())
         slicer.app.layoutManager().setLayout(layoutId)
         slicer.app.processEvents()
+        if layoutId in DUAL_MONITOR_LAYOUT_IDS:
+            qt.QTimer.singleShot(MONITOR2_PLACE_DELAY_MS,
+                                 lambda: placeMonitor2Window(PERFUSION_3D_VIEW, PERFUSION_MONITOR2_TITLE))
         self.surfaceKeys = {}   # place the 3D cameras again
         self.refreshMosaic()
 
@@ -524,6 +713,10 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         slot, name = key.split(":", 1)
         if self.synced():
             slot = STRESS   # the rest rows follow
+        if self.autoFitCheck.checked:   # keep fitting (to the viewport size) with the row moved
+            self.scrollOffsets[(slot, name)] = self.scrollOffsets.get((slot, name), 0) + direction
+            self.refreshMosaic(polar=False)
+            return
         spin = self.firstSliceSpins.get((slot, name))
         if spin:
             spin.setValue(spin.value + direction * self.stepSpin.value)
@@ -592,18 +785,85 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         stress, rest, spacing = mapping
         return int(round(rest[2] + (k - stress[2]) * spacing))
 
-    def panShift(self, mapping, name, size):
-        """Tile pixels (right, down) to move the rest tiles so its myocardium center sits where the
-        stress one does."""
-        if mapping is None or not size:
-            return 0, 0
+    def fovMm(self):
+        return 10.0 * float(self.fovSpin.value)
 
-        def pixel(node, ijk):   # the mapping of zoomInPlane, rows flipped (top = highest j)
-            w, h = node.GetImageData().GetDimensions()[:2]
-            return (ijk[0] + 0.5) * size / w - 0.5, (h - 1 - ijk[1] + 0.5) * size / h - 0.5
-        xs, ys = pixel(self.outputs[STRESS][name], mapping[0])
-        xr, yr = pixel(self.outputs[REST][name], mapping[1])
-        return int(round(xs - xr)), int(round(ys - yr))
+    def tileCrop(self, slot, name, node):
+        """Window of a row's slices shown in the tiles (fovCrop): the field of view around the LV center
+        of the study, so stress and rest show the same size at the same place."""
+        center = self.centerIjk(slot, name)
+        array = slicer.util.arrayFromVolume(node)
+        return fovCrop(array.shape, node.GetSpacing()[:2], None if center is None else center[:2], self.fovMm())
+
+    def myocardiumSlices(self, slot, name, node=None):
+        """(first, last) slice index (0-based) of a reoriented volume holding the myocardium detected in
+        Myocardium, or None. Made once per wall and volume."""
+        node = node or self.outputs[slot].get(name)
+        state = self.wallState(self.studies.get(slot))
+        if node is None or state is None:
+            return None
+        key = (state[0], node.GetID())
+        cached = self.extentCache.get((slot, name))
+        if cached and cached[0] == key:
+            return cached[1]
+        result = state[1]
+        array = slicer.util.arrayFromVolume(node)
+        slices, h, w = array.shape
+        n = 48
+        ii, jj = tilePixelsToIjk(n, None, array.shape)
+        ijkToRas = vtk.vtkMatrix4x4()
+        node.GetIJKToRASMatrix(ijkToRas)
+        localToWorld = vtk.vtkMatrix4x4()
+        vtk.vtkMatrix4x4.Invert(worldToLocalMatrix(node), localToWorld)
+        matrix = slicer.util.arrayFromVTKMatrix(localToWorld) @ slicer.util.arrayFromVTKMatrix(ijkToRas)
+        grid = result["grid"]
+        reach = wallLib.wallReach(result) + 3.0
+        found = []
+        for k in range(slices):
+            points = np.column_stack([ii.ravel(), jj.ravel(), np.full(ii.size, float(k))]) @ matrix[:3, :3].T + matrix[:3, 3]
+            near = np.einsum("ij,ij->i", points - grid.center, points - grid.center) <= reach * reach
+            if np.any(near) and np.any(wallLib.classify(result, points[near]) == wallLib.LABEL_MYOCARDIUM):
+                found.append(k)
+        extent = (found[0], found[-1]) if found else None
+        self.extentCache[(slot, name)] = (key, extent)
+        return extent
+
+    def autoFit(self, panel, slots):
+        """Fit to the myocardium: the grid and first slices showing every slice with myocardium at the
+        largest tile size the rows' area allows, the rows filled with neighbouring slices (bestGrid)."""
+        rows = {}
+        for slot in slots:
+            if self.synced() and slot == REST:
+                continue    # the rest rows follow the stress rows
+            for name in ORIENTATIONS:
+                node = self.outputs[slot].get(name)
+                extent = self.myocardiumSlices(slot, name)
+                if node is None or extent is None:
+                    continue
+                count = slicer.util.arrayFromVolume(node).shape[0]
+                rows[(slot, name)] = (extent[0], extent[1], count)
+        width, height = panel.rowArea()
+        if not rows or width < 20 or height < 20:
+            return
+        needed = max(last - first + 1 for first, last, _ in rows.values())
+        gridRows, gridColumns = bestGrid(needed, width, height, rowOverhead=panel.stripOverhead())
+        cells = gridRows * gridColumns
+        widgets = [self.gridRowsSpin, self.gridColumnsSpin, self.stepSpin] + list(self.firstSliceSpins.values())
+        blocked = [w.blockSignals(True) for w in widgets]
+        try:
+            self.gridRowsSpin.setValue(gridRows)
+            self.gridColumnsSpin.setValue(gridColumns)
+            self.stepSpin.setValue(1)
+            for (slot, name), (first, last, count) in rows.items():
+                centered = first - (cells - (last - first + 1)) // 2    # the myocardium in the middle of the grid
+                start = centered + self.scrollOffsets.get((slot, name), 0)
+                start = int(min(max(start, 0), lastFirstSlice(count) - 1))   # past the end: black tiles
+                self.scrollOffsets[(slot, name)] = start - centered     # no scrolling past the ends
+                self.firstSliceSpins[(slot, name)].setValue(start + 1)
+        finally:
+            for w, b in zip(widgets, blocked):
+                w.blockSignals(b)
+        self.grids[self.gridKind()] = [gridRows, gridColumns]
 
     # --- rendering --------------------------------------------------------------------
     def refreshMosaic(self, polar=True):
@@ -619,8 +879,11 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.refreshPolar()
 
     def renderRows(self, panel, slots):
-        panel.gridRows, panel.gridColumns = self.gridRowsSpin.value, self.gridColumnsSpin.value
+        panel.pairRows = len(slots) > 1
         panel.setRowKeys(self.rowKeys())
+        if self.autoFitCheck.checked:
+            self.autoFit(panel, slots)
+        panel.gridRows, panel.gridColumns = self.gridRowsSpin.value, self.gridColumnsSpin.value
         colorTable = colorTableArray(self.colormapCombo.currentText)
         step, cells = self.stepSpin.value, self.cellCount()
         synced = self.synced()
@@ -643,9 +906,9 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 size = panel.tileSize(key)
                 images = []
                 if size:
-                    shift = self.panShift(mapping, name, size) if (synced and slot == REST) else (0, 0)
+                    # each study cropped around its own LV center: stress and rest line up without panning
                     images = self.sliceImages(key, slot, node, size, self.sliceWindow(slot), colorTable,
-                                              panel.pixelRatio(), shift)
+                                              panel.pixelRatio(), crop=self.tileCrop(slot, name, node))
                 tiles = [(images[k], k + 1) if images and 0 <= k < count else (None, None) for k in shown]
                 valid = [k for k in shown if 0 <= k < count]
                 text = f"{SLOT_TITLES[slot]}  ·  {ORIENTATION_TITLES[name]}"
@@ -656,22 +919,25 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         panel.setLegends([(colorTable, self.windowRanges[slot].minimumValue, self.windowRanges[slot].maximumValue,
                            SLOT_TITLES[slot] if dual else "") for slot in slots])
 
-    def sliceImages(self, rowKey, slot, node, size, window, colorTable, ratio=1.0, shift=(0, 0)):
+    def sliceImages(self, rowKey, slot, node, size, window, colorTable, ratio=1.0, shift=(0, 0), crop=None):
         """Every slice of one row rendered at the tile size (resized in the data domain, then colour
-        mapped, so Qt draws them 1:1), with the myocardium contours when they are on, moved by
-        shift tile pixels. Made once per volume, tile size, colour map, window, contours and shift;
-        scrolling only picks tiles from this list."""
+        mapped, so Qt draws them 1:1), cut to crop (fovCrop; None: the whole slice), with the myocardium
+        contours when they are on, moved by shift tile pixels. Made once per volume, tile size, colour
+        map, window, contours, crop and shift; scrolling only picks tiles from this list."""
         imageData = node.GetImageData()
-        contours = self.contourMasks(rowKey, slot, node, size, ratio) if self.contoursButton.checked else None
+        contours = self.contourMasks(rowKey, slot, node, size, ratio, crop) if self.contoursButton.checked else None
         key = (node.GetID(), imageData.GetMTime() if imageData else 0, int(size), self.colormapCombo.currentText,
                tuple(round(float(v), 6) for v in window),
                node.GetAttribute("MPI.Interpolation") or DEFAULT_INTERPOLATION,
-               self.contourCache.get(rowKey, (None,))[0] if contours is not None else None, tuple(shift))
+               self.contourCache.get(rowKey, (None,))[0] if contours is not None else None, tuple(shift),
+               None if crop is None else tuple(crop))
         cached = self.tileCache.get(rowKey)
         if cached and cached[0] == key:
             return cached[1]
         interpolation = key[5]
         array = slicer.util.arrayFromVolume(node)  # [k, j, i]; i = screen right, j = screen up
+        if crop is not None:
+            array = cropStack(array, crop)
         stack = zoomInPlane(np.asarray(array[:, ::-1, :]), size, size, interpolation)  # top row = highest j
         images = []
         for k, values in enumerate(stack):
@@ -684,7 +950,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return images
 
     # --- myocardium contours on the slices ----------------------------------------
-    def contourMasks(self, rowKey, slot, node, size, ratio=1.0):
+    def contourMasks(self, rowKey, slot, node, size, ratio=1.0, crop=None):
         """(epicardium, endocardium) contour masks [slices, size, size] of one row, from the wall
         detected in Myocardium, classified at the tiles' own pixels (smooth at any zoom).
         None when the myocardium was not detected."""
@@ -692,24 +958,22 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if state is None:
             return None
         wallKey, result = state[0], state[1]
-        key = (wallKey, node.GetID(), int(size), round(float(ratio), 2))
+        key = (wallKey, node.GetID(), int(size), round(float(ratio), 2), None if crop is None else tuple(crop))
         cached = self.contourCache.get(rowKey)
         if cached and cached[0] == key:
             return cached[1]
         array = slicer.util.arrayFromVolume(node)
         slices, h, w = array.shape
         n = int(min(size, CONTOUR_MAX_SIZE))
-        # tile pixel centers -> volume (i, j): the same mapping as zoomInPlane, rows flipped (top = highest j)
-        i = (np.arange(n) + 0.5) * (w / float(n)) - 0.5
-        j = (h - 1) - ((np.arange(n) + 0.5) * (h / float(n)) - 0.5)
-        ii, jj = np.meshgrid(i, j)
+        # tile pixel centers -> volume (i, j): the same mapping as cropStack + zoomInPlane, rows flipped
+        ii, jj = tilePixelsToIjk(n, crop, array.shape)
         ijkToRas = vtk.vtkMatrix4x4()
         node.GetIJKToRASMatrix(ijkToRas)
         localToWorld = vtk.vtkMatrix4x4()
         vtk.vtkMatrix4x4.Invert(worldToLocalMatrix(node), localToWorld)
         matrix = slicer.util.arrayFromVTKMatrix(localToWorld) @ slicer.util.arrayFromVTKMatrix(ijkToRas)
         grid = result["grid"]
-        reach = float(np.max(result["epi"])) + 3.0     # only pixels this close to the LV center can be wall
+        reach = wallLib.wallReach(result) + 3.0     # only pixels this close to the LV center can be wall
         labels = np.zeros((slices, n, n), dtype=np.uint8)
         for k in range(slices):
             ijk = np.column_stack([ii.ravel(), jj.ravel(), np.full(ii.size, float(k))])
@@ -834,6 +1098,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.refreshPolarPanel(panel, tag, slot, *maps[slot])
         for tag, slot in views.items():
             self.updateSurfaceView(tag, slot, maps[slot][0])
+        self.updateCameraLink()
 
     def refreshPolarPanel(self, panel, tag, slot, polar, message):
         title = f"{SLOT_TITLES[slot]} polar map"
@@ -848,7 +1113,9 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             return
         low, top = self.polarWindow(slot)
         table = colorTableArray(self.colormapCombo.currentText)
-        own = self.mode == "stressRestPolar" or not self.polarLinkCheck.checked   # not the slice legend's window
+        # its own color bar when the slice legend is not on the same screen or shows another window
+        own = (self.mode == "stressRestPolar" or MODES[self.mode][1] in DUAL_MONITOR_LAYOUT_IDS
+               or not self.polarLinkCheck.checked)
         panel.setLegend(table if own else None, low, top)
         size = panel.polarSize()
         if not size:
@@ -862,7 +1129,26 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             cached = (key, (rgbToQImage(rgb), {k: [float(v) for v in values] for k, values in segments.items()}))
             self.polarImageCache[tag] = cached
         qimage, segments = cached[1]
-        panel.setPolar(qimage, segments, title, note=volumeText(session.myocardiumForStudy(study)))
+        panel.setPolar(qimage, segments, title, note=volumeText(session.myocardiumForStudy(study)),
+                       corner=self.tidText() if slot == STRESS else "")
+
+    def tidText(self):
+        """'TID 1.08' (transient ischemic dilation: stress / rest LV cavity volume of Myocardium) when the
+        layout shows both studies and both have their cavity volume, else ''."""
+        if REST not in MODES[self.mode][3].values() and REST not in MODES[self.mode][4].values():
+            return ""
+        volumes = []
+        for slot in (STRESS, REST):
+            study = self.studies.get(slot)
+            segmentation = session.myocardiumForStudy(study) if study is not None else None
+            try:
+                volumes.append(float(segmentation.GetAttribute("MPI.LVCavityMlExact")
+                                     or segmentation.GetAttribute("MPI.LVCavityMl")))
+            except (AttributeError, TypeError, ValueError):
+                return ""
+        if volumes[1] <= 0:
+            return ""
+        return f"TID {volumes[0] / volumes[1]:.2f}"
 
     def refreshDiffPanel(self, panel, tag, maps):
         title = "Difference (rest − stress)"
@@ -903,12 +1189,13 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 if node.GetAttribute("MPI.PerfusionOf") and node.GetAttribute("MPI.PerfusionView") == viewTag]
 
     @staticmethod
-    def setCornerText(widget, text):
-        """Text in the lower left corner of a 3D view (study and volumes)."""
+    def setCornerText(widget, text, upperLeft=""):
+        """Text in the lower left corner of a 3D view (study and volumes), and in the upper left one."""
         try:
             view = widget.threeDView()
             corner = view.cornerAnnotation()
             corner.SetText(vtk.vtkCornerAnnotation.LowerLeft, text)
+            corner.SetText(vtk.vtkCornerAnnotation.UpperLeft, upperLeft)
             corner.SetMaximumFontSize(14)
             corner.SetMinimumFontSize(9)
             corner.GetTextProperty().SetColor(0.9, 0.9, 0.9)
@@ -958,7 +1245,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             display.SetScalarRangeFlag(slicer.vtkMRMLDisplayNode.UseManualScalarRange)
             display.SetScalarRange(*self.polarWindow(slot))
             self.updateSegmentBorders()
-            self.setCornerText(widget, f"{SLOT_TITLES[slot]}\n{volumeText(segmentation)}")
+            self.setCornerText(widget, f"{SLOT_TITLES[slot]}\n{volumeText(segmentation)}",
+                               self.tidText() if slot == STRESS else "")
             if placeCamera or self.surfaceKeys.get(viewTag) != key:
                 self.surfaceKeys[viewTag] = key
                 self.placeSurfaceCamera(viewTag, slot, key)
@@ -984,12 +1272,29 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                       parallelScale=self.parallelScale(state[1]))
         except Exception:
             logging.warning("MPI: could not place the 3D camera:\n" + traceback.format_exc())
+        self.updateCameraLink()
+
+    def updateCameraLink(self):
+        """Link the stress and rest 3D views of the layout (Link 3D views), each around its own heart."""
+        anchors = {}
+        try:
+            import MPIMyocardium
+            if self.link3DButton.checked:
+                for tag, slot in MODES[self.mode][4].items():
+                    study = self.studies.get(slot)
+                    state = self.wallState(study) if study is not None else None
+                    frame = MPIMyocardium.cardiacFrame(study) if state is not None else None
+                    if frame is not None and threeDWidgetByTag(tag) is not None:
+                        anchors[tag] = MPIMyocardium.cameraAnchor(frame, state[1])
+        except Exception:
+            logging.warning("MPI: could not link the 3D views:\n" + traceback.format_exc())
+        self.cameraLink.link(anchors)
 
     @staticmethod
     def parallelScale(result):
         """Half the height of the orthographic 3D view, mm: the LV and its floating labels fit in."""
         import MPIMyocardium
-        return 0.75 * (float(np.max(result["epi"])) + MPIMyocardium.LABEL_DISTANCE_MM) + 10.0
+        return 0.75 * (wallLib.wallReach(result) + MPIMyocardium.LABEL_DISTANCE_MM) + 10.0
 
     @staticmethod
     def makeSegmentBorderModel(study, result, viewId, overlay="segments"):

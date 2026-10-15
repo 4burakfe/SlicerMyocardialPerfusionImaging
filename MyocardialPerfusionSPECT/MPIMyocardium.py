@@ -181,10 +181,10 @@ def wallShellPolyData(result, frame, spacing=SHELL_SPACING_MM):
     joined by a rim in the valve plane (the zero level of myocardium.wallField on a grid aligned
     with the cardiac frame, so the surface is smooth without a voxel staircase)."""
     from vtk.util import numpy_support
-    reach = float(np.max(result["epi"])) + 3.0 * spacing
+    reach = wallLib.wallReach(result) + 3.0 * spacing
     n = int(np.ceil(2.0 * reach / spacing)) + 1
     axes = (frame["w"], frame["s"], frame["u"])   # right-handed: w x s = u
-    origin = frame["center"] - reach * (axes[0] + axes[1] + axes[2])
+    origin = result["grid"].center - reach * (axes[0] + axes[1] + axes[2])
     k, j, i = np.meshgrid(np.arange(n), np.arange(n), np.arange(n), indexing="ij")
     points = (origin[None, :] + spacing * (i.reshape(-1, 1) * axes[0] + j.reshape(-1, 1) * axes[1]
                                            + k.reshape(-1, 1) * axes[2]))
@@ -295,20 +295,37 @@ def style3DView(viewNode):
     viewNode.SetBackgroundColor2(0.0, 0.0, 0.0)
     viewNode.SetBoxVisible(False)
     viewNode.SetAxisLabelsVisible(False)
-    viewNode.SetRenderMode(slicer.vtkMRMLViewNode.Perspective)
+    viewNode.SetRenderMode(slicer.vtkMRMLViewNode.Orthographic)   # no perspective distortion of the wall
     try:
         viewNode.SetOrientationMarkerType(slicer.vtkMRMLAbstractViewNode.OrientationMarkerTypeNone)
     except AttributeError:
         pass
 
 
+def cameraAnchor(frame, result=None):
+    """(center, axes) the 3D camera is placed around: the middle of the LV (of the wall when detected) and
+    the cardiac frame axes as columns (u, w, s). Linked 3D views copy the camera in these coordinates."""
+    center = np.asarray(frame["center"], dtype=float)
+    if result is not None:
+        center = np.asarray(result["grid"].center, dtype=float)
+        apex = float(np.mean(result["epi"][-1]))
+        center = center + 0.5 * (apex + wallLib.valvePlaneZ(result)) * frame["u"]
+    return center, np.column_stack([frame["u"], frame["w"], frame["s"]])
+
+
+def defaultParallelScale(frame, result=None):
+    """Half the height of the orthographic 3D view, mm: the LV and its floating labels fit in."""
+    if result is not None:
+        return 0.75 * (wallLib.wallReach(result) + LABEL_DISTANCE_MM) + 10.0
+    return 1.6 * float(frame.get("radius", 55.0))
+
+
 def placeCamera(viewNode, frame, result=None, distance=330.0, parallelScale=None):
     """Look at the LV from superior-anterior: the camera sits in front of the heart (anterior wall
     of the cardiac frame) and above it (patient superior), aimed at the middle of the LV."""
-    center = np.asarray(frame["center"], dtype=float)
-    if result is not None:
-        apex = float(np.mean(result["epi"][-1]))
-        center = center + 0.5 * (apex + wallLib.valvePlaneZ(result)) * frame["u"]
+    center, _ = cameraAnchor(frame, result)
+    if parallelScale is None:
+        parallelScale = defaultParallelScale(frame, result)
     superior = np.array([0.0, 0.0, 1.0])
     direction = unit(unit(frame["w"]) + superior)
     up = unit(superior - np.dot(superior, direction) * direction)
@@ -363,10 +380,10 @@ def _cameraNode(viewNode):
 def labelGrid(result, frame, spacing=LABEL_SPACING_MM):
     """Labels (0 / myocardium / cavity) on a grid aligned with the cardiac frame around the LV.
     Returns (labels [k, j, i] uint8, IJK->RAS vtkMatrix4x4)."""
-    reach = float(np.max(result["epi"])) + 2.0 * spacing
+    reach = wallLib.wallReach(result) + 2.0 * spacing
     n = int(np.ceil(2.0 * reach / spacing)) + 1
     axes = (frame["w"], frame["s"], frame["u"])   # right-handed: w x s = u
-    origin = frame["center"] - reach * (axes[0] + axes[1] + axes[2])
+    origin = result["grid"].center - reach * (axes[0] + axes[1] + axes[2])
     k, j, i = np.meshgrid(np.arange(n), np.arange(n), np.arange(n), indexing="ij")
     points = (origin[None, :] + spacing * (i.reshape(-1, 1) * axes[0] + j.reshape(-1, 1) * axes[1]
                                            + k.reshape(-1, 1) * axes[2]))
@@ -547,6 +564,23 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         _installToolbar()
         self.updateState()
 
+    # --- workflow toolbar (second row) -----------------------------------------------------------------
+    def buildToolbar(self, bar):
+        self.toolbarBar = bar
+        bar.mirror(self.detectButton, "Detect")
+        bar.separator()
+        bar.label("Show")
+        for key, check in self.showChecks.items():
+            bar.mirror(check, SURFACES[key][0].capitalize(), f"Show the {SURFACES[key][0]} in the views")
+        bar.separator()
+        bar.mirror(self.singleButton, "ACTIVE STUDY")
+        bar.mirror(self.dualButton, "STRESS-REST")
+
+    def syncToolbar(self):
+        bar = getattr(self, "toolbarBar", None)
+        if bar is not None:
+            bar.syncMirrors()
+
     def enter(self):
         self.studySelector.refresh()
         self.updateState()
@@ -627,6 +661,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.statsLabel.text = self.statsText(segmentation)
         self.perfusionButton.enabled = len(session.outputsForStudy(self.studyNode)) == len(ORIENTATIONS)
         self.dualButton.enabled = self.dualAvailable()
+        self.syncToolbar()
 
     @staticmethod
     def statsText(segmentation):
@@ -875,6 +910,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         segmentation.SetAttribute("MPI.DetectedOn", detectionVolume(study).GetID())
         segmentation.SetAttribute("MPI.MyocardiumParams", json.dumps(result["grid"].params))
         segmentation.SetAttribute("MPI.LVCavityMl", f"{stats['cavityMl']:.0f}")
+        segmentation.SetAttribute("MPI.LVCavityMlExact", f"{stats['cavityMl']:.3f}")   # for ratios (TID)
         segmentation.SetAttribute("MPI.MyocardiumMl", f"{stats['myocardiumMl']:.0f}")
         segmentation.SetAttribute("MPI.MyocardiumG", f"{stats['massG']:.0f}")
         segmentation.SetAttribute("MPI.MeanThicknessMm", f"{stats['meanThicknessMm']:.1f}")
@@ -973,7 +1009,7 @@ class MPIMyocardiumTest(ScriptedLoadableModuleTest):
         grid = result["grid"]
         middle = result["mid"][np.searchsorted(grid.z, -20.0):grid.nCyl]
         self.assertAlmostEqual(float(np.median(middle)), midRadius, delta=2.0)
-        self.assertAlmostEqual(result["baseZ"], base, delta=6.0)
+        self.assertAlmostEqual(result["baseZ"] + result["centerShift"], base, delta=6.0)
         self.assertAlmostEqual(result["valvePlane"][1], slope, delta=0.12)
         self.assertAlmostEqual(result["valvePlane"][2], 0.0, delta=0.12)
         frame = {"center": center, "u": u, "w": w, "s": np.cross(u, w), "radius": 55.0}

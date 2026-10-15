@@ -1,5 +1,9 @@
 """Layouts and slice/3D view helpers of the reorientation and result screens."""
 
+import logging
+
+import numpy as np
+import qt
 import vtk
 import slicer
 
@@ -11,11 +15,26 @@ RESULT_LAYOUT_ID = 5711          # slices, polar map and 3D uptake of one study 
 SLICES_LAYOUT_ID = 5720          # slices only (STRESS SLICES / REST SLICES / STRESS-REST SLICES)
 DUAL_RESULT_LAYOUT_ID = 5721     # stress and rest slices, polar maps and 3D uptake (STRESS-REST PERF)
 POLAR_LAYOUT_ID = 5722           # stress, rest and difference polar maps (STRESS REST POLAR)
+PERF_DUAL_LAYOUT_ID = 5723       # one study on two monitors: slices / polar map and 3D uptake
+DUAL_PERF_DUAL_LAYOUT_ID = 5724  # stress and rest on two monitors: slices / polar maps, difference, 3D uptake
 DUAL_REORIENT_LAYOUT_ID = 5712   # two studies stacked (stress over rest)
 MYOCARDIUM_LAYOUT_ID = 5713      # wall contours on SA / HLA / VLA and the 3D wall
 DUAL_MYOCARDIUM_LAYOUT_ID = 5714  # the same for stress (top row) and rest (bottom row)
 GATED_QC_LAYOUT_ID = 5730        # gate frames in SA / HLA / VLA rows, count curve and gating information
 GATED_REVIEW_LAYOUT_ID = 5731    # cine slices, perfusion / thickening / motion polar maps, LV volume curve, cine 3D
+# Gated Review layouts: (studies, kind) -> layout ID. Kinds: "full" (slices and plots), "slices", "plots",
+# "dual" (slices on the main window, the plots in a second window on the second monitor), "dualFull" (the same
+# with all slices; "full" and "dual" show three representative slices per axis, see MPIGated)
+GATED_LAYOUT_IDS = {(("stress",), "full"): GATED_REVIEW_LAYOUT_ID, (("stress",), "slices"): 5732,
+                    (("stress",), "plots"): 5733, (("stress",), "dual"): 5734,
+                    (("rest",), "full"): 5735, (("rest",), "slices"): 5736,
+                    (("rest",), "plots"): 5737, (("rest",), "dual"): 5738,
+                    (("stress", "rest"), "full"): 5739, (("stress", "rest"), "slices"): 5740,
+                    (("stress", "rest"), "plots"): 5741, (("stress", "rest"), "dual"): 5742,
+                    (("stress",), "dualFull"): 5743, (("rest",), "dualFull"): 5744,
+                    (("stress", "rest"), "dualFull"): 5745}
+GATED_MONITOR2_TITLE = "Gated Review - Monitor 2"
+PERFUSION_MONITOR2_TITLE = "Perfusion - Monitor 2"
 
 EDIT_ORDER = ("TA", "VLA", "SA")
 EDIT_VIEWS = {"TA": "MPIEditTA", "VLA": "MPIEditVLA", "SA": "MPIEditSA"}
@@ -43,6 +62,7 @@ GATED_THICKENING_TAG = "mpigatedthickening"        # Gated Review: wall thickeni
 GATED_MOTION_TAG = "mpigatedmotion"                # Gated Review: wall motion polar map
 GATED_VOLUME_TAG = "mpigatedvolume"                # Gated Review: LV cavity volume per frame
 GATED_3D_VIEW = "MPIGated3D"                       # Gated Review: cine 3D wall with the perfusion colors
+GATED_PLOT_KINDS = ("polar", "thickening", "motion", "volume", "3d")   # the plots of one study, in layout order
 
 ORIENTATION_TITLES = {
     "SA": "Short axis (apex \u2192 base)",
@@ -174,6 +194,41 @@ def dualResultLayoutXml():
             '</layout>')
 
 
+def _twoMonitorXml(main, second, name, title, mainViewport=None):
+    """Main window layout and a floating second window (a dock widget, as in Slicer's own dual monitor
+    layouts), placed on the second monitor by placeMonitor2Window."""
+    attributes = _mainViewportAttributes() if mainViewport is None else mainViewport
+    return ('<viewports>'
+            f'<layout type="horizontal"{attributes}><item>{main}</item></layout>'
+            f'<layout name="{name}" type="horizontal" label="{title}" dockable="true" dockPosition="floating">'
+            f'<item>{second}</item></layout>'
+            '</viewports>')
+
+
+def perfusionDualMonitorLayoutXml(twoStudies=False, mainViewport=None):
+    """STRESS / REST PERF DUAL: the slice rows on the main window; the polar map next to the 3D uptake
+    on the second monitor. STRESS-REST PERF DUAL: the stress, rest and difference polar maps (top) over
+    the stress and rest 3D uptake views (bottom) on the second monitor."""
+    if twoStudies:
+        second = ('<layout type="vertical" split="true">'
+                  '<item splitSize="500"><layout type="horizontal" split="true">'
+                  + "".join(f'<item splitSize="500"><{tag}></{tag}></item>'
+                            for tag in (POLAR_TAG, POLAR_REST_TAG, POLAR_DIFF_TAG))
+                  + '</layout></item>'
+                  '<item splitSize="500"><layout type="horizontal" split="true">'
+                  f'<item splitSize="500">{_threeDXml(PERFUSION_3D_VIEW, "Stress")}</item>'
+                  f'<item splitSize="500">{_threeDXml(PERFUSION_3D_VIEW_REST, "Rest")}</item>'
+                  '</layout></item>'
+                  '</layout>')
+    else:
+        second = ('<layout type="horizontal" split="true">'
+                  f'<item splitSize="500"><{POLAR_TAG}></{POLAR_TAG}></item>'
+                  f'<item splitSize="500">{_threeDXml(PERFUSION_3D_VIEW)}</item>'
+                  '</layout>')
+    return _twoMonitorXml(f"<{MOSAIC_TAG}></{MOSAIC_TAG}>", second, "MPIPerfusionMonitor2",
+                          PERFUSION_MONITOR2_TITLE, mainViewport)
+
+
 def polarLayoutXml():
     """STRESS REST POLAR: stress, rest and difference polar maps in one row."""
     return ('<layout type="horizontal" split="true">'
@@ -193,21 +248,154 @@ def gatedQcLayoutXml():
             '</layout>')
 
 
-def gatedReviewLayoutXml():
-    """Gated Review: the cine slice rows on the left; on the right the perfusion, wall thickening and
-    wall motion polar maps side by side (top), the LV volume curve and the cine 3D wall side by side
-    (bottom)."""
-    def pair(*views, size=500):
-        items = "".join(f'<item splitSize="500">{view}</item>' for view in views)
-        return f'<item splitSize="{size}"><layout type="horizontal" split="true">{items}</layout></item>'
+def gatedTags(slot):
+    """Panel / view tags of the Gated Review plots of one study: {kind: tag}. The stress study uses the
+    plain tags and the rest study its own ones, so both can be shown together."""
+    suffix = "rest" if slot == "rest" else ""
+    return {"polar": GATED_POLAR_TAG + suffix, "thickening": GATED_THICKENING_TAG + suffix,
+            "motion": GATED_MOTION_TAG + suffix, "volume": GATED_VOLUME_TAG + suffix,
+            "3d": GATED_3D_VIEW + ("Rest" if suffix else "")}
+
+
+def gatedPlotKinds(slots, kind):
+    """The plots shown of every study in a Gated Review layout. STRESS-REST GATED (slices and plots on
+    one screen) leaves out the perfusion polar map and the volume curve to make room; the plots-only
+    and dual monitor layouts show all of them."""
+    if kind == "slices":
+        return ()
+    if kind == "full" and len(slots) > 1:
+        return ("thickening", "motion", "3d")
+    return GATED_PLOT_KINDS
+
+
+def _gatedPlotXml(slot, kind):
+    tag = gatedTags(slot)[kind]
+    if kind == "3d":
+        return _threeDXml(tag, f"{'Rest' if slot == 'rest' else 'Stress'} gated 3D")
+    return f"<{tag}></{tag}>"
+
+
+def _items(views, size=500):
+    return "".join(f'<item splitSize="{size}">{view}</item>' for view in views)
+
+
+def _gatedPlotsXml(slots, kinds):
+    """The plots of the studies: one study as its polar maps (top row) over the volume curve and the
+    3D wall (bottom row); two studies as one row per study."""
+    if len(slots) == 1:
+        top = [_gatedPlotXml(slots[0], k) for k in kinds if k in ("polar", "thickening", "motion")]
+        bottom = [_gatedPlotXml(slots[0], k) for k in kinds if k in ("volume", "3d")]
+        rows = [(top, 400), (bottom, 600)]
+    else:
+        rows = [([_gatedPlotXml(slot, k) for k in kinds], 500) for slot in slots]
+    return ('<layout type="vertical" split="true">'
+            + "".join(f'<item splitSize="{size}"><layout type="horizontal" split="true">{_items(views)}</layout></item>'
+                      for views, size in rows if views)
+            + '</layout>')
+
+
+def _mosaicXml():
+    return f"<{GATED_REVIEW_MOSAIC_TAG}></{GATED_REVIEW_MOSAIC_TAG}>"
+
+
+def _mainViewportAttributes():
+    """XML attributes of the main window viewport, copied from Slicer's own dual monitor layouts (as
+    in SlicerPETReviewCompare), so the first <layout> of <viewports> is shown in the main window."""
+    import xml.etree.ElementTree as ElementTree
+    try:
+        layoutNode = slicer.app.layoutManager().layoutLogic().GetLayoutNode()
+        for attributeName in dir(slicer.vtkMRMLLayoutNode):
+            if "DualMonitor" not in attributeName:
+                continue
+            layoutId = getattr(slicer.vtkMRMLLayoutNode, attributeName)
+            if not isinstance(layoutId, int) or not layoutNode.IsLayoutDescription(layoutId):
+                continue
+            root = ElementTree.fromstring(layoutNode.GetLayoutDescription(layoutId))
+            if root.tag != "viewports":
+                continue
+            for element in root.findall("layout"):
+                if (element.get("dockable") or "").lower() != "true":
+                    name = element.get("name")
+                    return f' name="{name}"' if name is not None else ""
+    except Exception as e:
+        logging.debug(f"MPI: could not read Slicer's dual monitor layouts: {e}")
+    return ""
+
+
+def gatedLayoutXml(slots, kind, mainViewport=None):
+    """Gated Review layout of the studies (("stress",), ("rest",) or ("stress", "rest")):
+    full    the cine slice rows on the left, the plots on the right;
+    slices  only the slice rows;
+    plots   only the plots;
+    dual    the slice rows on the main window and the plots in a floating window (a dock widget, as in
+            Slicer's own dual monitor layouts), placed on the second monitor by placeMonitor2Window;
+    dualFull  the same (MPIGated shows all slices in it, three per axis in full and dual)."""
+    slots = tuple(slots)
+    plots = _gatedPlotsXml(slots, gatedPlotKinds(slots, kind))
+    if kind == "slices":
+        return f'<layout type="horizontal"><item>{_mosaicXml()}</item></layout>'
+    if kind == "plots":
+        return plots
+    if kind in ("dual", "dualFull"):
+        return _twoMonitorXml(_mosaicXml(), plots, "MPIGatedMonitor2", GATED_MONITOR2_TITLE, mainViewport)
     return ('<layout type="horizontal" split="true">'
-            f'<item splitSize="560"><{GATED_REVIEW_MOSAIC_TAG}></{GATED_REVIEW_MOSAIC_TAG}></item>'
-            '<item splitSize="700"><layout type="vertical" split="true">'
-            + pair(f"<{GATED_POLAR_TAG}></{GATED_POLAR_TAG}>", f"<{GATED_THICKENING_TAG}></{GATED_THICKENING_TAG}>",
-                   f"<{GATED_MOTION_TAG}></{GATED_MOTION_TAG}>", size=400)
-            + pair(f"<{GATED_VOLUME_TAG}></{GATED_VOLUME_TAG}>", _threeDXml(GATED_3D_VIEW, "Gated 3D"), size=600)
-            + '</layout></item>'
+            f'<item splitSize="{560 if len(slots) == 1 else 640}">{_mosaicXml()}</item>'
+            f'<item splitSize="{700 if len(slots) == 1 else 620}">{plots}</item>'
             '</layout>')
+
+
+def gatedReviewLayoutXml():
+    """STRESS GATED (see gatedLayoutXml)."""
+    return gatedLayoutXml(("stress",), "full")
+
+
+def secondaryScreen():
+    """A screen other than the one showing the main window, or None with a single screen."""
+    mainWindow = slicer.util.mainWindow()
+    screens = list(qt.QGuiApplication.screens())
+    if mainWindow is None or len(screens) < 2:
+        return None
+    center = mainWindow.frameGeometry.center()
+    return next((screen for screen in screens if not screen.geometry.contains(center)), None)
+
+
+def placeMonitor2Window(viewTag=None, title=GATED_MONITOR2_TITLE):
+    """Give the floating second window of a dual monitor layout normal window buttons and show it
+    maximized on the second screen (as in SlicerPETReviewCompare), changing only what is not so
+    already; with one screen it is only shown and raised. The window is found as the one holding the
+    3D view viewTag, or by its title."""
+    try:
+        candidates = []
+        widget = threeDWidgetByTag(viewTag) if viewTag else None
+        if widget is not None:
+            candidates.append(widget.window())
+        candidates += [w for w in qt.QApplication.topLevelWidgets() if w.windowTitle == title]
+        window = next((w for w in candidates if w is not None and not w.inherits("QMainWindow")
+                       and not (w.inherits("QDockWidget") and not getattr(w, "floating", True))), None)
+        if window is None:
+            return
+        flags = (qt.Qt.Window | qt.Qt.CustomizeWindowHint | qt.Qt.WindowTitleHint | qt.Qt.WindowSystemMenuHint
+                 | qt.Qt.WindowMinMaxButtonsHint | qt.Qt.WindowCloseButtonHint)
+        try:
+            missing = (int(window.windowFlags()) & int(flags)) != int(flags)
+        except (TypeError, ValueError):
+            missing = True
+        if missing:
+            window.setWindowFlags(flags)
+        screen = secondaryScreen()
+        if screen is None:
+            if not window.visible:
+                window.show()
+            window.raise_()
+            return
+        onSecond = screen.geometry.contains(window.frameGeometry.center())
+        if not onSecond:
+            window.setGeometry(screen.availableGeometry)
+        if not (onSecond and window.isMaximized() and window.visible):
+            window.showMaximized()
+        window.raise_()
+    except Exception:
+        logging.exception("MPI: could not place the second window; drag it to the second monitor")
 
 
 def registerLayout(layoutId, xml):
@@ -234,6 +422,97 @@ def threeDWidgetByTag(tag):
         if widget and widget.mrmlViewNode().GetLayoutName() == tag:
             return widget
     return None
+
+
+class CameraLink:
+    """3D views moved together (stress and rest): a rotation, zoom or pan of one view is copied to the
+    others in each view's own anchor coordinates (center and axes of its study's cardiac frame, see
+    MPIMyocardium.cameraAnchor), so every view shows its heart from the same side at the same zoom."""
+
+    TOLERANCE = 1e-4   # pose change (mm, unit vectors) below which a camera event is not passed on
+
+    def __init__(self):
+        self.anchors = {}    # view tag -> (center, 3 x 3 axes as columns)
+        self.observed = {}   # view tag -> (vtkCamera, observer id)
+        self.poses = {}      # view tag -> last pose seen or set, in anchor coordinates
+        self.busy = False
+
+    def link(self, anchors):
+        """anchors: {view tag: (center, axes)}; with fewer than two views nothing is linked."""
+        self.anchors = {tag: (np.asarray(center, dtype=float), np.asarray(axes, dtype=float))
+                        for tag, (center, axes) in anchors.items()}
+        if len(self.anchors) < 2:
+            self.unlink()
+            return
+        for tag in list(self.observed):
+            if tag not in self.anchors or self._renderer(tag)[1] is None \
+                    or self._renderer(tag)[1].GetActiveCamera() is not self.observed[tag][0]:
+                self._release(tag)
+        for tag in self.anchors:
+            if tag in self.observed:
+                continue
+            renderer = self._renderer(tag)[1]
+            if renderer is None:
+                continue
+            camera = renderer.GetActiveCamera()
+            observer = camera.AddObserver(vtk.vtkCommand.ModifiedEvent,
+                                          lambda caller, event, tag=tag: self.onModified(tag))
+            self.observed[tag] = (camera, observer)
+        self.poses = {}
+
+    def unlink(self):
+        for tag in list(self.observed):
+            self._release(tag)
+        self.anchors, self.poses = {}, {}
+
+    def _release(self, tag):
+        camera, observer = self.observed.pop(tag)
+        try:
+            camera.RemoveObserver(observer)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _renderer(tag):
+        widget = threeDWidgetByTag(tag)
+        if widget is None:
+            return None, None
+        return widget, widget.threeDView().renderWindow().GetRenderers().GetFirstRenderer()
+
+    def _pose(self, tag, camera):
+        center, axes = self.anchors[tag]
+        local = lambda point: axes.T @ (np.asarray(point, dtype=float) - center)   # noqa: E731
+        return np.concatenate([local(camera.GetFocalPoint()), local(camera.GetPosition()),
+                               axes.T @ np.asarray(camera.GetViewUp(), dtype=float), [camera.GetParallelScale()]])
+
+    def onModified(self, tag):
+        if self.busy or tag not in self.anchors or tag not in self.observed:
+            return
+        pose = self._pose(tag, self.observed[tag][0])
+        last = self.poses.get(tag)
+        if last is not None and np.allclose(pose, last, atol=self.TOLERANCE):
+            return   # e.g. only the clipping range changed while rendering
+        self.poses[tag] = pose
+        self.busy = True
+        try:
+            for other, (center, axes) in self.anchors.items():
+                if other == tag:
+                    continue
+                widget, renderer = self._renderer(other)
+                if renderer is None:
+                    continue
+                camera = renderer.GetActiveCamera()
+                camera.SetFocalPoint(*(center + axes @ pose[0:3]))
+                camera.SetPosition(*(center + axes @ pose[3:6]))
+                camera.SetViewUp(*(axes @ pose[6:9]))
+                camera.SetParallelScale(float(pose[9]))
+                renderer.ResetCameraClippingRange()
+                self.poses[other] = pose
+                widget.threeDView().scheduleRender()
+        except Exception:
+            logging.debug("MPI: could not link the 3D cameras", exc_info=True)
+        finally:
+            self.busy = False
 
 
 def showVolumeInView(tag, volumeNode):

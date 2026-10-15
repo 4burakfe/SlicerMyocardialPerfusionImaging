@@ -50,7 +50,7 @@ from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
     GATED_QC_LAYOUT_ID, ORIENTATIONS, ORIENTATION_TITLES, gatedQcLayoutXml, registerLayout)
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     COLORMAPS, colorTableArray, colorize, rgbToQImage, gatedMosaicPanel, countCurvePanel, gatingInfoPanel,
-    existingPanel)
+    existingPanel, tilePixelsToIjk)
 from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
@@ -208,7 +208,7 @@ class GatedStudy:
         self.attributes = gatingLib.attributes(gates[0][1])
         mask = maskOf(outputs["SA"], frame)
         center = np.asarray(frame["center"], dtype=float)
-        reach = float(np.max(staticResult["epi"])) + 5.0
+        reach = wallLib.wallReach(staticResult, center) + 5.0
         self.slices = {name: [] for name in ORIENTATIONS}
         frames = []
         for label, node in gates:
@@ -404,6 +404,20 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         _installToolbar()
         self.updateState()
 
+    # --- workflow toolbar (second row) -----------------------------------------------------------------
+    def buildToolbar(self, bar):
+        self.toolbarBar = bar
+        bar.mirror(self.segmentButton, "Segment again", "Segment the frames again with the current settings")
+        bar.mirror(self.contoursButton, "Contours")
+        bar.separator()
+        for slot, button in self.layoutButtons.items():
+            bar.mirror(button, SLOT_TITLES[slot], f"Gated frames of the {SLOT_TITLES[slot].lower()} study")
+
+    def syncToolbar(self):
+        bar = getattr(self, "toolbarBar", None)
+        if bar is not None:
+            bar.syncMirrors()
+
     def enter(self):
         self.studySelector.refresh()
         self.updateState()
@@ -474,6 +488,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.studyLabel.text = "<br>".join(lines)
         if self.slot in self.layoutButtons:
             self.layoutButtons[self.slot].checked = True
+        self.syncToolbar()
 
     def params(self):
         return {"maxWallShift": float(self.wallShiftSpin.value), "maxValveShift": float(self.valveShiftSpin.value),
@@ -597,20 +612,18 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.tileCache[key] = image
         return image
 
-    def contourMasks(self, data, name, index, k, size, ratio):
+    def contourMasks(self, data, name, index, k, size, ratio, crop=None):
         """(epicardium, endocardium) contour masks [size, size] of one frame on one slice, classified
-        at the tile's own pixels (as the Perfusion contours)."""
-        key = (id(data), name, index, k, int(size), round(float(ratio), 2))
+        at the tile's own pixels (as the Perfusion contours); crop: the window of the slices shown
+        (display.fovCrop, None: the whole slice)."""
+        key = (id(data), name, index, k, int(size), round(float(ratio), 2), None if crop is None else tuple(crop))
         cached = self.contourCache.get(key)
         if cached is not None:
             return cached
         result = data.results[index]
         node = data.reference[name]
-        nk, h, w = data.slices[name][index].shape
         n = int(min(size, CONTOUR_MAX_SIZE))
-        i = (np.arange(n) + 0.5) * (w / float(n)) - 0.5
-        j = (h - 1) - ((np.arange(n) + 0.5) * (h / float(n)) - 0.5)
-        ii, jj = np.meshgrid(i, j)
+        ii, jj = tilePixelsToIjk(n, crop, data.slices[name][index].shape)
         ijkToRas = vtk.vtkMatrix4x4()
         node.GetIJKToRASMatrix(ijkToRas)
         localToWorld = vtk.vtkMatrix4x4()
@@ -618,7 +631,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         matrix = slicer.util.arrayFromVTKMatrix(localToWorld) @ slicer.util.arrayFromVTKMatrix(ijkToRas)
         points = np.column_stack([ii.ravel(), jj.ravel(), np.full(ii.size, float(k))]) @ matrix[:3, :3].T + matrix[:3, 3]
         grid = result["grid"]
-        reach = float(np.max(result["epi"])) + 3.0
+        reach = wallLib.wallReach(result) + 3.0
         near = np.einsum("ij,ij->i", points - grid.center, points - grid.center) <= reach * reach
         labels = np.zeros(ii.size, dtype=np.uint8)
         if np.any(near):

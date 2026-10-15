@@ -22,7 +22,7 @@ from MyocardialPerfusionSPECTLib.views import ORIENTATIONS, ORIENTATION_TITLES
 
 DEFAULT_GRID_ROWS = 2
 DEFAULT_GRID_COLUMNS = 12
-MOSAIC_PANEL_VERSION = 12  # bump when SliceMosaicPanel changes, so a reload replaces the old panel
+MOSAIC_PANEL_VERSION = 13  # bump when SliceMosaicPanel changes, so a reload replaces the old panel
 
 # (combo label, color node name or ID); the first one is the default. "MPI ..." tables are this
 # extension's own (colortables.py), made in the scene when first used.
@@ -118,6 +118,41 @@ def colorTableArray(label):
     if table is None:
         table = _sampleColorNode(colorNodeForLabel(label), np.linspace(0.0, 1.0, 256))
     return np.clip(np.round(table * 255.0), 0, 255).astype(np.uint8)
+
+
+OUTWARD_MOTION_MM = 4.0          # outward (dyskinetic) wall motion shown at full color from this many mm
+OUTWARD_COLORS = {"Jotun": (255, 0, 0), "Vanaheim": (255, 0, 0), "PET-DICOM": (255, 0, 0)}  # maps with turquoise
+OUTWARD_COLOR = (64, 224, 208)  # turquoise
+
+
+def signedMotionTable(table, label, low, top):
+    """(table, low, top) of the wall motion maps: the color map over the window from max(low, 0) to top for
+    inward motion, and below 0 a ramp from black at 0 to full turquoise (red for color maps that hold
+    turquoise) at -OUTWARD_MOTION_MM for outward (dyskinetic) motion; the returned window starts there."""
+    table = np.asarray(table, dtype=float)
+    color = np.asarray(OUTWARD_COLORS.get(label, OUTWARD_COLOR), dtype=float)
+    start, top = max(float(low), 0.0), float(top)
+    top = max(top, start + 1e-6)
+    values = np.linspace(-OUTWARD_MOTION_MM, top, len(table))
+    index = np.clip(np.round((values - start) / (top - start) * (len(table) - 1)), 0, len(table) - 1).astype(int)
+    combined = table[index]
+    outward = values < 0.0
+    combined[outward] = np.clip(-values[outward] / OUTWARD_MOTION_MM, 0.0, 1.0)[:, None] * color
+    return np.round(combined).astype(np.uint8), -OUTWARD_MOTION_MM, top
+
+
+def legendTicks(low, high):
+    """Values marked under a color bar: five evenly spaced ones, or for a window across 0 (the signed wall
+    motion) the ends, 0 itself and the middle of the positive side, so the 0 mark sits on the black."""
+    low, high = float(low), float(high)
+    if low < 0.0 < high:
+        return [low, 0.0, high / 2.0, high]
+    return [low + k * (high - low) / 4.0 for k in range(5)]
+
+
+def tickText(value):
+    text = f"{value:.0f}" if abs(value - round(value)) < 0.05 else f"{value:.1f}"
+    return "0" if text in ("-0", "-0.0") else text
 
 
 def colorize(values, top, table, low=0.0):
@@ -216,16 +251,21 @@ class SliceMosaicPanel:
     """Rows of slice tiles with slice numbers: SA, HLA and VLA of one study, or of two studies
     interleaved (setRowKeys). Mouse wheel over a row scrolls that row (onScroll(key, direction)). Tiles are supplied at tileSize() device pixels;
     after a resize the panel shows the old tiles rescaled and calls onResized so the owner
-    can render them again at the new size."""
+    can render them again at the new size.
+    With pairRows (two studies, the row keys in stress / rest pairs) and a grid of more than one row,
+    each grid row of a study is followed by the same grid row of the other study (every row of a pair is
+    split into one-row strips, shown alternately)."""
 
     GAP = 3
     LEGEND_WIDTH = 62
+    TITLE_PIXELS = 11      # row title font size (logical pixels)
 
     def __init__(self):
         self.onScroll = None
         self.onResized = None
-        self.gridRows = DEFAULT_GRID_ROWS
+        self._gridRows = DEFAULT_GRID_ROWS
         self.gridColumns = DEFAULT_GRID_COLUMNS
+        self._pairRows = False
         self.widget = qt.QWidget()
         self.widget.setObjectName("MPISliceMosaic")
         self.widget.setStyleSheet("QWidget#MPISliceMosaic { background-color: black; }"
@@ -243,85 +283,202 @@ class SliceMosaicPanel:
         outer.addWidget(self.legendImage)
         self.legend = None   # (256 x 3 uint8 table, low %, high %)
         self.rowsLayout = qt.QVBoxLayout()
-        self.rowsLayout.setSpacing(2)
+        self.rowsLayout.setSpacing(1)
+        self.rowsLayout.setContentsMargins(0, 0, 0, 0)
         outer.addLayout(self.rowsLayout, 1)
-        self.rows = {}
-        self.rowKeys = []
+        self.rows = {}         # strip key -> {"title", "image", "tiles", "row" (logical key), "part"}
+        self.rowKeys = []      # logical rows (one per study and orientation)
+        self.titles = {}       # logical row -> title
+        self.strips = {}       # logical row -> [strip keys] (one strip, or one per grid row when split)
+        self.stripKeys = None  # strip layout built (to rebuild only when it changes)
         self.setRowKeys([(name, ORIENTATION_TITLES[name]) for name in ORIENTATIONS])
 
+    # --- rows and strips ----------------------------------------------------------------
+    @property
+    def gridRows(self):
+        return self._gridRows
+
+    @gridRows.setter
+    def gridRows(self, value):
+        value = int(value)
+        if value != self._gridRows:
+            self._gridRows = value
+            self._buildStrips()
+
+    @property
+    def pairRows(self):
+        return self._pairRows
+
+    @pairRows.setter
+    def pairRows(self, value):
+        if bool(value) != self._pairRows:
+            self._pairRows = bool(value)
+            self._buildStrips()
+
+    def split(self):
+        return self._pairRows and self._gridRows > 1 and len(self.rowKeys) % 2 == 0 and len(self.rowKeys) > 0
+
+    def stripRows(self):
+        """Grid rows of one strip."""
+        return 1 if self.split() else self._gridRows
+
     def setRowKeys(self, keys):
-        """keys: [(row key, title)] from top to bottom. Rows are made again only when the keys change."""
-        if [k for k, _ in keys] == self.rowKeys:
+        """keys: [(row key, title)] from top to bottom (in stress / rest pairs for pairRows)."""
+        self.titles = {k: t for k, t in keys}
+        self.rowKeys = [k for k, _ in keys]
+        self._buildStrips()
+
+    def _layoutOrder(self):
+        """[(strip key, logical row, part)] from top to bottom."""
+        if not self.split():
+            return [(key, key, 0) for key in self.rowKeys]
+        order = []
+        for first, second in zip(self.rowKeys[0::2], self.rowKeys[1::2]):
+            for part in range(self._gridRows):
+                order += [(f"{first}#{part}", first, part), (f"{second}#{part}", second, part)]
+        return order
+
+    def _buildStrips(self):
+        order = self._layoutOrder()
+        if [k for k, _, _ in order] == self.stripKeys:
             return
+        old = {row["row"]: row["tiles"] for row in self.rows.values() if row["part"] == 0}
         for row in self.rows.values():
             for widget in (row["title"], row["image"]):
                 self.rowsLayout.removeWidget(widget)
                 widget.removeEventFilter(self.filter)
                 widget.setParent(None)
                 widget.deleteLater()
-        self.rows = {}
-        self.rowKeys = [k for k, _ in keys]
-        for key, titleText in keys:
-            title = qt.QLabel(titleText)
-            title.setStyleSheet("font-weight: bold;")
+        self.rows, self.strips = {}, {key: [] for key in self.rowKeys}
+        self.stripKeys = [k for k, _, _ in order]
+        for strip, key, part in order:
+            title = qt.QLabel(self._stripTitle(key, part))
+            title.setStyleSheet(f"font-weight: bold; font-size: {self.TITLE_PIXELS}px; padding: 0px; margin: 0px;")
+            title.setContentsMargins(0, 0, 0, 0)
+            title.setSizePolicy(qt.QSizePolicy.Ignored, qt.QSizePolicy.Fixed)
             image = qt.QLabel()
-            image.setObjectName(f"MPIMosaic_{key}")
+            image.setObjectName(f"MPIMosaic_{strip}")
             image.setSizePolicy(qt.QSizePolicy.Ignored, qt.QSizePolicy.Ignored)  # pixmap must not drive the size
             image.setMinimumSize(50, 20)
             image.setAlignment(qt.Qt.AlignCenter)
             image.installEventFilter(self.filter)
             self.rowsLayout.addWidget(title)
             self.rowsLayout.addWidget(image, 1)
-            self.rows[key] = {"title": title, "image": image, "tiles": []}
+            self.rows[strip] = {"title": title, "image": image, "tiles": [], "row": key, "part": part}
+            self.strips[key].append(strip)
+        # lay the new strips out now, so that tileSize is right before the next event loop
+        for row in self.rows.values():
+            row["title"].show()
+            row["image"].show()
+        self.widget.layout().activate()
+        for key, tiles in old.items():
+            if key in self.strips:
+                self._distribute(key, tiles)
 
-    def _geometry(self, name):
-        """(tile size in logical pixels, device pixel ratio) for a row, or (0, ratio) if too small."""
-        label = self.rows[name]["image"]
+    def _stripTitle(self, key, part):
+        title = self.titles.get(key, "")
+        if part > 0:   # later strips of a split row: only the study ("STRESS  ·  ...")
+            title = title.split("  ·  ")[0]
+        return title
+
+    def _distribute(self, key, tiles):
+        strips = self.strips.get(key, [])
+        columns = self.gridColumns
+        for strip in strips:
+            row = self.rows[strip]
+            row["tiles"] = tiles[row["part"] * columns:(row["part"] + 1) * columns] if len(strips) > 1 else tiles
+            self.paintRow(strip)
+
+    def _geometry(self, strip):
+        """(tile size in logical pixels, device pixel ratio) for a strip, or (0, ratio) if too small."""
+        label = self.rows[strip]["image"]
         ratio = devicePixelRatio(label)
         rect = label.contentsRect()
         width, height = rect.width(), rect.height()
+        if self.split():   # one tile size for all strips (their heights can differ by a pixel)
+            height = min(row["image"].contentsRect().height() for row in self.rows.values())
         if width < 10 or height < 10:
             return 0, ratio
-        gap, rows, columns = self.GAP, self.gridRows, self.gridColumns
+        gap, rows, columns = self.GAP, self.stripRows(), self.gridColumns
         tile = min((width - gap * (columns - 1)) // columns, (height - gap * (rows - 1)) // rows)
         return max(tile, 4), ratio
 
+    def _firstStrip(self, name):
+        if name is None:
+            name = self.rowKeys[0] if self.rowKeys else None
+        strips = self.strips.get(name) or ([name] if name in self.rows else [])
+        return strips[0] if strips else None
+
+    def rowArea(self, name=None):
+        """(width, height) in logical pixels for all grid rows of a row (the first row by default), as if
+        it were one block: a split row counts its strips and their titles but one."""
+        strip = self._firstStrip(name)
+        if strip is None:
+            return 0, 0
+        strips = self.strips.get(self.rows[strip]["row"], [strip])
+        width = self.rows[strip]["image"].contentsRect().width()
+        height = sum(self.rows[s]["image"].contentsRect().height() for s in strips)
+        if len(strips) > 1:
+            height += (len(strips) - 1) * self.stripOverhead()
+        return width, height
+
+    def stripOverhead(self):
+        """Height (logical pixels) one more grid row costs beyond its tiles when the rows are split into
+        strips (its title and the layout spacing), else 0 (the tile gap is counted by bestGrid)."""
+        if not (self._pairRows and len(self.rowKeys) % 2 == 0 and self.rowKeys):
+            return 0
+        strip = self._firstStrip(None)
+        title = self.rows[strip]["title"] if strip else None
+        titleHeight = title.contentsRect().height() if title is not None else 0
+        if titleHeight <= 0:
+            titleHeight = self.TITLE_PIXELS + 3
+        spacing = self.rowsLayout.spacing   # a property in PythonQt, a method in PySide
+        return titleHeight + 2 * int(spacing() if callable(spacing) else spacing)
+
     def tileSize(self, name):
         """Edge of one tile in device pixels: render tile images at this size."""
-        tile, ratio = self._geometry(name)
+        strip = self._firstStrip(name)
+        if strip is None:
+            return 0
+        tile, ratio = self._geometry(strip)
         return int(round(tile * ratio)) if tile else 0
 
     def pixelRatio(self):
-        return devicePixelRatio(self.rows[self.rowKeys[0]]["image"]) if self.rowKeys else devicePixelRatio(self.widget)
+        strip = self._firstStrip(None)
+        return devicePixelRatio(self.rows[strip]["image"]) if strip else devicePixelRatio(self.widget)
 
     def setRow(self, name, tiles, titleText):
         """tiles: list of (QImage or None, slice number or None), row-major."""
-        row = self.rows.get(name)
-        if row is None:
+        if name not in self.strips:
             return
-        row["tiles"] = tiles
-        row["title"].setText(titleText)
-        self.paintRow(name)
+        self.titles[name] = titleText
+        for strip in self.strips[name]:
+            self.rows[strip]["title"].setText(self._stripTitle(name, self.rows[strip]["part"]))
+        self._distribute(name, tiles)
 
     def setGrid(self, rows, columns):
-        self.gridRows, self.gridColumns = int(rows), int(columns)
-        for name in self.rowKeys:
-            self.paintRow(name)
+        self.gridColumns = int(columns)
+        self.gridRows = rows
+        for strip in self.rows:
+            self.paintRow(strip)
 
     def clear(self):
+        self.pairRows = False
         self.setRowKeys([(name, ORIENTATION_TITLES[name]) for name in ORIENTATIONS])
         for name in ORIENTATIONS:
             self.setRow(name, [], ORIENTATION_TITLES[name])
         self.legend = None
         self.paintLegend()
 
-    def paintRow(self, name):
-        row = self.rows[name]
+    def paintRow(self, strip):
+        row = self.rows.get(strip)
+        if row is None:
+            return
         label = row["image"]
-        tile, ratio = self._geometry(name)
+        tile, ratio = self._geometry(strip)
         if not tile:
             return
-        gap, rows, columns = self.GAP, self.gridRows, self.gridColumns
+        gap, rows, columns = self.GAP, self.stripRows(), self.gridColumns
         # Paint in device pixels, so the label shows the pixmap 1:1 on scaled displays
         tileDevice = int(round(tile * ratio))
         gapDevice = int(round(gap * ratio))
@@ -410,9 +567,11 @@ class SliceMosaicPanel:
             return False
         if not objectName.startswith("MPIMosaic_"):
             return False
-        name = objectName.split("_", 1)[1]
+        strip = objectName.split("_", 1)[1]
+        row = self.rows.get(strip)
+        name = row["row"] if row else strip
         if event.type() == qt.QEvent.Resize:
-            self.paintRow(name)
+            self.paintRow(strip)
             if self.onResized:
                 self.onResized()
             return False
@@ -505,12 +664,11 @@ class PolarPanel:
         pen.setWidthF(max(1.0, ratio))
         painter.setPen(pen)
         y0 = int(round(2 * ratio)) + barHeight
-        for k in range(5):
-            x = margin + int(round(k * (barWidth - 1) / 4.0))
-            value = low + k * (high - low) / 4.0
+        for value in legendTicks(low, high):
+            x = margin + int(round((value - low) / max(high - low, 1e-9) * (barWidth - 1)))
             painter.drawLine(x, y0, x, y0 + int(round(3 * ratio)))
             painter.drawText(qt.QRectF(x - 3 * font.pixelSize(), y0 + 3 * ratio, 6 * font.pixelSize(),
-                                       1.4 * font.pixelSize()), qt.Qt.AlignCenter, f"{value:.0f}{unit}")
+                                       1.4 * font.pixelSize()), qt.Qt.AlignCenter, f"{tickText(value)}{unit}")
         painter.end()
         try:
             pixmap.setDevicePixelRatio(ratio)
@@ -542,11 +700,12 @@ class PolarPanel:
         self.setLegend(None)
         self.setPolar(None, None, "Polar map")
 
-    def setPolar(self, qimage, segments, titleText, note="", message=""):
+    def setPolar(self, qimage, segments, titleText, note="", message="", corner=""):
         """qimage: bullseye (square, outside the disk black) or None; segments: the values written
         on the regions, {overlay: values} (17 for "segments", one per vessel for "vessels"), or None
-        to hide them; message: shown instead of the map when there is no image."""
-        self.polar = {"image": qimage, "segments": segments, "message": message}
+        to hide them; message: shown instead of the map when there is no image; corner: text in the
+        upper left corner of the map (e.g. the TID ratio)."""
+        self.polar = {"image": qimage, "segments": segments, "message": message, "corner": corner}
         self.polarTitle.setText(titleText)
         self.polarNote.setText(note)
         self.paintPolar()
@@ -629,6 +788,17 @@ class PolarPanel:
                 painter.rotate(angle)
                 painter.drawText(qt.QRectF(-sideDevice / 2.0, -margin / 2.0, sideDevice, margin), qt.Qt.AlignCenter, text)
                 painter.restore()
+            corner = self.polar.get("corner")
+            if corner:
+                cornerFont = qt.QFont(font)
+                cornerFont.setPixelSize(int(round(font.pixelSize() * 1.2)))
+                cornerFont.setBold(True)
+                painter.setFont(cornerFont)
+                painter.setPen(qt.QColor(240, 240, 240))
+                pad = max(2.0, 3.0 * ratio)
+                painter.drawText(qt.QRectF(pad, pad, sideDevice / 2.0, sideDevice / 4.0),
+                                 qt.Qt.AlignLeft | qt.Qt.AlignTop, corner)
+                painter.setFont(font)
         else:
             painter.setPen(qt.QColor(160, 160, 160))
             painter.drawText(qt.QRectF(0, 0, sideDevice, sideDevice), qt.Qt.AlignCenter | qt.Qt.TextWordWrap,
@@ -927,6 +1097,76 @@ class GatingInfoPanel:
         self.setInfo("", None)
 
 
+DEFAULT_FOV_CM = 13.0     # field of view of the slice tiles (stress and rest alike)
+MIN_VISIBLE_SLICES = 8   # a row scrolls past its last slice (black tiles) until this many slices are left
+REFIT_DELAY_MS = 1000    # wait after the last resize before the slice tiles are fitted and made again
+
+
+def fovCrop(shape, spacing, center, fovMm):
+    """In-plane window of a slice stack [k, j, i] showing fovMm around center (i, j) (the LV center;
+    None: the middle of the slices): (i0, j0, ni, nj) in pixels, partly outside the stack when the
+    field of view is larger than the volume."""
+    _, h, w = shape
+    ni = max(2, int(round(float(fovMm) / max(float(spacing[0]), 1e-6))))
+    nj = max(2, int(round(float(fovMm) / max(float(spacing[1]), 1e-6))))
+    ci, cj = (0.5 * (w - 1), 0.5 * (h - 1)) if center is None else (float(center[0]), float(center[1]))
+    return int(round(ci - 0.5 * (ni - 1))), int(round(cj - 0.5 * (nj - 1))), ni, nj
+
+
+def cropStack(stack, crop):
+    """The window of fovCrop cut out of a stack [k, j, i] (zero outside the volume)."""
+    stack = np.asarray(stack)
+    i0, j0, ni, nj = crop
+    k, h, w = stack.shape
+    out = np.zeros((k, nj, ni), dtype=stack.dtype)
+    si0, si1 = max(i0, 0), min(i0 + ni, w)
+    sj0, sj1 = max(j0, 0), min(j0 + nj, h)
+    if si1 > si0 and sj1 > sj0:
+        out[:, sj0 - j0:sj1 - j0, si0 - i0:si1 - i0] = stack[:, sj0:sj1, si0:si1]
+    return out
+
+
+def tilePixelsToIjk(size, crop, shape):
+    """(i, j) volume coordinates of the centers of an n x n tile (rows from the top = highest j), the
+    mapping of cropStack + zoomInPlane; crop None: the whole slice."""
+    _, h, w = shape
+    i0, j0, ni, nj = crop if crop is not None else (0, 0, w, h)
+    n = int(size)
+    i = i0 + (np.arange(n) + 0.5) * (ni / float(n)) - 0.5
+    j = j0 + (nj - 1) - ((np.arange(n) + 0.5) * (nj / float(n)) - 0.5)
+    return np.meshgrid(i, j)
+
+
+def lastFirstSlice(count):
+    """Highest first slice (1-based) of a row of a count-slice volume: past the end until MIN_VISIBLE_SLICES
+    are left."""
+    return max(int(count) - min(MIN_VISIBLE_SLICES, int(count)) + 1, 1)
+
+
+def bestGrid(count, width, height, gap=SliceMosaicPanel.GAP, maxRows=8, maxColumns=30, rowOverhead=0):
+    """(rows, columns) of a tile grid showing count tiles in a width x height area: the largest tiles (of the
+    grids with nearly those tiles, the one with the fewest rows), then as many columns as fit at that tile
+    size, so that the rows show more slices without making the tiles smaller.
+    rowOverhead: height taken between grid rows instead of the gap (a strip title, see
+    SliceMosaicPanel.stripOverhead), 0 for the gap."""
+    count = max(int(count), 1)
+    candidates = []
+    for rows in range(1, maxRows + 1):
+        columns = max(2, int(np.ceil(count / rows)))
+        if columns > maxColumns:
+            continue
+        between = rowOverhead if rowOverhead > 0 and rows > 1 else gap
+        tile = min((width - gap * (columns - 1)) / columns, (height - between * (rows - 1)) / rows)
+        candidates.append((tile, rows, columns))
+    if not candidates:
+        return 1, min(count, maxColumns)
+    largest = max(c[0] for c in candidates)
+    tile, rows, columns = min((c for c in candidates if c[0] >= 0.95 * largest), key=lambda c: c[1])
+    if tile > 0:   # fill the rows: more columns at the same tile size
+        columns = max(columns, min(int((width + gap) // (tile + gap)), maxColumns))
+    return rows, columns
+
+
 def _singletonPanel(attribute, tag, panelClass):
     """A panel and its view factory live for the whole Slicer session (also across module reloads),
     because the layout manager keeps using the factory registered first. After a module update the
@@ -972,9 +1212,17 @@ def gatedReviewMosaicPanel():
     return _singletonPanel("_mpiGatedReviewMosaicState", GATED_REVIEW_MOSAIC_TAG, SliceMosaicPanel)
 
 
-def volumeCurvePanel():
+def volumeCurvePanelState(tag=None):
+    """Attribute name of slicer holding the LV volume curve panel of a tag (stress: GATED_VOLUME_TAG)."""
     from MyocardialPerfusionSPECTLib.views import GATED_VOLUME_TAG
-    return _singletonPanel("_mpiGatedVolumeState", GATED_VOLUME_TAG, CountCurvePanel)
+    return "_mpiGatedVolumeState" if tag in (None, GATED_VOLUME_TAG) else "_mpiGatedVolumeState_" + tag
+
+
+def volumeCurvePanel(tag=None):
+    """LV volume curve of Gated Review: GATED_VOLUME_TAG (stress, the default) or the rest study's tag."""
+    from MyocardialPerfusionSPECTLib.views import GATED_VOLUME_TAG
+    tag = tag or GATED_VOLUME_TAG
+    return _singletonPanel(volumeCurvePanelState(tag), tag, CountCurvePanel)
 
 
 def polarPanelState(tag):

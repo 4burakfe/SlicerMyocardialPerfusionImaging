@@ -1657,6 +1657,19 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.refreshPanel(self.currentLane)
         self.updateButtonStates()
 
+    # --- workflow toolbar (second row) -----------------------------------------------------------------
+    def buildToolbar(self, bar):
+        self.toolbarBar = bar
+        bar.mirror(self.placeButton, "Place ROI")
+        bar.mirror(self.resetAxesButton, "Reset axes", "Back to the axes found automatically")
+        bar.separator()
+        bar.mirror(self.createButton, "Create SA / HLA / VLA")
+
+    def syncToolbar(self):
+        bar = getattr(self, "toolbarBar", None)
+        if bar is not None:
+            bar.syncMirrors()
+
     def enter(self):
         self.studySelector.refresh()
         self.loadStudies(showLayout=True)
@@ -1829,6 +1842,7 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.createButton.text = ("Create SA / HLA / VLA volumes (stress and rest)" if dual
                                   else "Create SA / HLA / VLA volumes")
         self.reviewButton.enabled = len(session.outputsForStudy(session.activeStudy())) == len(ORIENTATIONS)
+        self.syncToolbar()
 
     def forLanes(self, method):
         for lane in self.activeLanes():
