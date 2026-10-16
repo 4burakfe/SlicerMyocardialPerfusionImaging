@@ -54,7 +54,7 @@ from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     COLORMAPS, colorTableArray, colorize, rgbToQImage, gatedMosaicPanel, countCurvePanel, gatingInfoPanel,
     existingPanel, tilePixelsToIjk, BoundedCache, packMask, unpackMask)
-from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
 SLOT_TITLES = {STRESS: "STUDY 1 (STRESS) GATED", REST: "STUDY 2 (REST) GATED"}
@@ -300,8 +300,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
         self.studySelector = StudyPairSelector(self.layout)
-        self.studyLabel = qt.QLabel()
-        self.studyLabel.wordWrap = True
+        self.studyLabel = narrowLabel(qt.QLabel())
         self.layout.addWidget(self.studyLabel)
 
         section = ctk.ctkCollapsibleButton()
@@ -503,9 +502,10 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if study is None:
                 continue
             sequence = gatedSequenceOf(study)
-            text = f"{title}: <b>{study.GetName()}</b>"
+            text = f"{title}: <b>{breakable(study.GetName())}</b>"
             if sequence is not None:
-                text += f", gated <b>{sequence.GetName()}</b> ({sequence.GetNumberOfDataNodes()} frames)"
+                text += (f", gated <b>{breakable(sequence.GetName())}</b> "
+                         f"({sequence.GetNumberOfDataNodes()} frames)")
             if not ready:
                 text += f" <span style='color:#d08030'>({reason})</span>"
             lines.append(text)

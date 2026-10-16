@@ -49,7 +49,7 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
     rgbToQImage, gatedReviewMosaicPanel, gatedReviewMosaic2Panel, volumeCurvePanel, volumeCurvePanelState, polarPanel, polarPanelState,
     existingPanel, DEFAULT_FOV_CM, REFIT_DELAY_MS, lastFirstSlice, fovCrop, cropStack, bestGrid, signedMotionTable)
-from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
 SLOT_TITLES = {STRESS: "STRESS", REST: "REST"}
@@ -72,7 +72,7 @@ for _prefix, _slots, _title in (("stress", (STRESS,), "STRESS"), ("rest", (REST,
                                         f"{_what} gated on two monitors: all cine slices on this window, all plots "
                                         "in a second window on the second monitor (heavier on the graphics card)")
 MODE_GRID = tuple(tuple(p + k for k in ("Gated", "GatedSlices", "GatedPlots", "GatedDual", "GatedDualFull"))
-                  for p in ("stress", "rest", "stressRest"))   # rows of layout buttons
+                  for p in ("stress", "rest", "stressRest"))   # columns of layout buttons
 KIND_LABELS = {"full": "GATED", "slices": "SLICES", "plots": "PLOTS", "dual": "DUAL MONITOR",
                "dualFull": "DUAL FULL SLICES"}
 TOOLBAR_KIND_LABELS = {"full": "GATED", "slices": "SLICES", "plots": "PLOTS", "dual": "DUAL", "dualFull": "DUAL FULL"}
@@ -325,8 +325,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
         self.studySelector = StudyPairSelector(self.layout)
-        self.studyLabel = qt.QLabel()
-        self.studyLabel.wordWrap = True
+        self.studyLabel = narrowLabel(qt.QLabel())
         self.layout.addWidget(self.studyLabel)
 
         # Cine
@@ -502,22 +501,24 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                     "its own heart")
         threeDForm.addRow("", self.link3DCheck)
 
-        # Layouts: one row per study (stress, rest, both), one column per kind
+        # Layouts: one column per study (stress, rest, both), one row per kind (five kinds side by side
+        # would make the panel wider than Slicer lets it be)
         self.layoutButtons = {}
         self.layoutGroup = qt.QButtonGroup()
         self.layoutGroup.exclusive = True
         layoutBox = qt.QGroupBox("Layout")
         layoutGrid = qt.QGridLayout(layoutBox)
-        for row, keys in enumerate(MODE_GRID):
-            title = MODES[keys[0]][0].replace(" GATED", "")
-            layoutGrid.addWidget(qt.QLabel(f"<b>{title}</b>"), row, 0)
-            for column, key in enumerate(keys):
+        for column, keys in enumerate(MODE_GRID):
+            title = qt.QLabel(f"<b>{MODES[keys[0]][0].replace(' GATED', '')}</b>")
+            title.alignment = qt.Qt.AlignCenter
+            layoutGrid.addWidget(title, 0, column)
+            for row, key in enumerate(keys):
                 text, _, kind, toolTip = MODES[key]
                 button = qt.QPushButton(KIND_LABELS[kind])
                 button.checkable = True
                 button.toolTip = f"{text}: {toolTip}"
                 self.layoutGroup.addButton(button)
-                layoutGrid.addWidget(button, row, column + 1)
+                layoutGrid.addWidget(button, row + 1, column)
                 self.layoutButtons[key] = button
         self.layout.addWidget(layoutBox)
         self.backButton = qt.QPushButton("‹ Gated QC")
@@ -840,9 +841,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 continue
             ready, reason = self.qcWidget().available(slot)
             sequence = gatedSequenceOf(study)
-            text = f"{title}: <b>{study.GetName()}</b>"
+            text = f"{title}: <b>{breakable(study.GetName())}</b>"
             if sequence is not None:
-                text += f", gated <b>{sequence.GetName()}</b> ({sequence.GetNumberOfDataNodes()} frames)"
+                text += (f", gated <b>{breakable(sequence.GetName())}</b> "
+                         f"({sequence.GetNumberOfDataNodes()} frames)")
             if not ready:
                 text += f" <span style='color:#d08030'>({reason})</span>"
             lines.append(text)

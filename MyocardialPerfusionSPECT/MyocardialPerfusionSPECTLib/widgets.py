@@ -8,6 +8,28 @@ BUTTON_COLORS = {
 }
 
 
+ZERO_WIDTH_SPACE = "\u200b"
+
+
+def breakable(text):
+    """Text that may wrap after _ - . / : long node names without spaces would otherwise not wrap."""
+    for character in "_-./":
+        text = text.replace(character, character + ZERO_WIDTH_SPACE)
+    return text
+
+
+def narrowLabel(label):
+    """A wrapped label that takes the width it is given and never widens the module panel (a long node
+    name would otherwise make the panel wider than Slicer lets it be, cutting off the controls)."""
+    import qt
+    label.wordWrap = True
+    policy = label.sizePolicy
+    policy.setHorizontalPolicy(qt.QSizePolicy.Ignored)
+    label.setSizePolicy(policy)
+    label.setMinimumWidth(0)
+    return label
+
+
 def styleButton(button, kind="primary"):
     """Coloured main action button (white bold text, grey when disabled)."""
     normal, hover, pressed = BUTTON_COLORS[kind]

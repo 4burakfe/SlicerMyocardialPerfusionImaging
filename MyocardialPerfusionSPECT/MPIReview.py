@@ -48,7 +48,7 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
 from MyocardialPerfusionSPECTLib.geometry import worldToLocalMatrix  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
 from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import StudyPairSelector, styleButton  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, StudyPairSelector, styleButton  # noqa: E402
 from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 
 
@@ -172,8 +172,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.setup(self)
 
         self.studySelector = StudyPairSelector(self.layout)
-        self.studyLabel = qt.QLabel("No study selected.")
-        self.studyLabel.wordWrap = True
+        self.studyLabel = narrowLabel(qt.QLabel("No study selected."))
         self.layout.addWidget(self.studyLabel)
 
         # Slices
@@ -597,7 +596,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for slot in (STRESS, REST):
             study = self.studies[slot]
             if study is not None and not self.ready(slot):
-                lines.append(f"<b>{study.GetName()}</b> has no reoriented volumes yet (create them in Processing)")
+                lines.append(f"<b>{breakable(study.GetName())}</b> has no reoriented volumes yet (create them in Processing)")
         if self.studies[STRESS] is None and self.studies[REST] is None:
             lines = ["No study selected. Pick Study 1 / Study 2 above or set the roles in Data roles."]
         self.studyLabel.text = "<br>".join(lines)

@@ -83,7 +83,7 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
 from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 DEFAULT_PIXEL_SIZE_MM = 2.0       # in-plane
 DEFAULT_SLICE_THICKNESS_MM = 5.0
@@ -1462,8 +1462,7 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         modeRow.addStretch(1)
         form.addRow("Screen:", modeRow)
 
-        self.studyLabel = qt.QLabel()
-        self.studyLabel.wordWrap = True
+        self.studyLabel = narrowLabel(qt.QLabel())
         self.studyLabel.toolTip = "Change the active study in the toolbar and the roles in Data roles"
         form.addRow("Study:", self.studyLabel)
 
@@ -1816,10 +1815,10 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def updateStudyLabel(self):
         lanes = [lane for lane in self.activeLanes() if lane.inputNode is not None]
         if self.mode == MODE_DUAL and lanes:
-            self.studyLabel.text = "<br>".join(f"<b>{lane.title()}</b>" for lane in lanes)
+            self.studyLabel.text = "<br>".join(f"<b>{breakable(lane.title())}</b>" for lane in lanes)
         else:
             active = session.activeStudy()
-            self.studyLabel.text = f"<b>{studyTitle(active)}</b>" if active is not None else "<i>none</i>"
+            self.studyLabel.text = f"<b>{breakable(studyTitle(active))}</b>" if active is not None else "<i>none</i>"
         if self.layoutShown():
             for lane in lanes:
                 lane.updateViewAnnotations()

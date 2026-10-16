@@ -39,7 +39,7 @@ import MyocardialPerfusionSPECTLib  # noqa: E402
 MyocardialPerfusionSPECTLib.reloadInDeveloperMode()
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import styleButton  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton  # noqa: E402
 
 ICON_PATH = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
 BANNER_PATH = os.path.join(_MODULE_DIR, "Resources", "Images", "Banner.jpg")
@@ -55,7 +55,7 @@ def _installToolbar():
         return None
 
 
-PANEL_MAX_WIDTH = 600   # px, module panel width while the hub is open
+PANEL_MAX_WIDTH = 900   # px, module panel width while the hub is open
 
 
 class MyocardialPerfusionSPECT(ScriptedLoadableModule):
@@ -162,8 +162,7 @@ class MyocardialPerfusionSPECTWidget(ScriptedLoadableModuleWidget, VTKObservatio
         studyBox.text = "Active study"
         layout.addWidget(studyBox)
         studyLayout = qt.QVBoxLayout(studyBox)
-        self.studyLabel = qt.QLabel("-")
-        self.studyLabel.wordWrap = True
+        self.studyLabel = narrowLabel(qt.QLabel("-"))
         studyLayout.addWidget(self.studyLabel)
 
         stepsBox = ctk.ctkCollapsibleButton()
@@ -312,7 +311,7 @@ class MyocardialPerfusionSPECTWidget(ScriptedLoadableModuleWidget, VTKObservatio
         else:
             role = active.GetAttribute(studiesLib.ROLE_ATTRIBUTE) or "role not set"
             outputs = session.outputsForStudy(active)
-            self.studyLabel.text = (f"<b>{role}</b>: {active.GetName()}<br>"
+            self.studyLabel.text = (f"<b>{role}</b>: {breakable(active.GetName())}<br>"
                                     + ("Reoriented volumes: " + ", ".join(sorted(outputs)) if outputs
                                        else "Not reoriented yet."))
         states = session.stepStates(studies, active)

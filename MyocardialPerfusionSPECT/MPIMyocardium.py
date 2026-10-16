@@ -37,7 +37,7 @@ from MyocardialPerfusionSPECTLib.geometry import unit, worldToLocalMatrix, sampl
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
     MYOCARDIUM_LAYOUT_ID, DUAL_MYOCARDIUM_LAYOUT_ID, LANE_SUFFIXES, ORIENTATIONS, myocardiumLayoutXml,
     dualMyocardiumLayoutXml, myocardiumViews, registerLayout, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry)
-from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 LABEL_SPACING_MM = 1.5      # grid of the myocardium / cavity segmentation
 # 3D view, styled as Taranis' segmentation layout: segments as flat wireframes, low opacity (dense meshes)
@@ -418,8 +418,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.setup(self)
 
         self.studySelector = StudyPairSelector(self.layout)
-        self.studyLabel = qt.QLabel()
-        self.studyLabel.wordWrap = True
+        self.studyLabel = narrowLabel(qt.QLabel())
         self.layout.addWidget(self.studyLabel)
 
         self.detectButton = styleButton(qt.QPushButton("Detect myocardium"), "create")
@@ -662,14 +661,14 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if self.studyNode is None:
             self.studyLabel.text = "No active study. Choose one in Data roles or in the toolbar."
         elif self.frame is None:
-            self.studyLabel.text = (f"<b>{self.studyNode.GetName()}</b><br>Not processed yet: create the "
+            self.studyLabel.text = (f"<b>{breakable(self.studyNode.GetName())}</b><br>Not processed yet: create the "
                                     "SA / HLA / VLA volumes in Processing first.")
         else:
             source = detectionVolume(self.studyNode)
             mask = source.GetAttribute("MPI.Mask")
             maskText = "no mask" if not mask or mask == "none" else "masked"
-            self.studyLabel.text = (f"<b>{self.studyNode.GetName()}</b><br>"
-                                    f"<span style='color:#7d868d'>Detected on {source.GetName()} ({maskText})</span>")
+            self.studyLabel.text = (f"<b>{breakable(self.studyNode.GetName())}</b><br>"
+                                    f"<span style='color:#7d868d'>Detected on {breakable(source.GetName())} ({maskText})</span>")
         self.detectButton.enabled = self.frame is not None
         result = self.results.get(self.studyNode.GetID()) if self.studyNode is not None else None
         self.valveSlider.enabled = result is not None
