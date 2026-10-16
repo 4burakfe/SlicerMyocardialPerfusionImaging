@@ -27,6 +27,7 @@ import MyocardialPerfusionSPECTLib  # noqa: E402
 MyocardialPerfusionSPECTLib.reloadInDeveloperMode()
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
+from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import styleButton  # noqa: E402
 
 
@@ -109,6 +110,8 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.nextButton.enabled = False
         self.layout.addWidget(self.nextButton)
 
+        self.parameterPanel = parametersLib.ParameterPanel(
+            "roles", self.layout, onChanged=lambda key: self.refreshStudies())
         self.layout.addStretch(1)
 
         # Studies are detected again shortly after volumes or sequences are added (e.g. a DICOM load)
@@ -121,6 +124,7 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.sumGatesButton.connect("clicked(bool)", self.onSumGates)
         self.nextButton.connect("clicked(bool)", self.onProcess)
         self.studiesTable.connect("itemSelectionChanged()", self.onStudySelected)
+        self.parameterPanel.loadSaved()   # saved settings of this step, as if set by hand
 
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeAddedEvent, self.onNodeAdded)
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeRemovedEvent, self.onNodeAdded)
@@ -310,3 +314,6 @@ class MPIDataRolesTest(ScriptedLoadableModuleTest):
         session.setActiveStudy(None)
         self.assertIsNone(session.activeStudy())
         self.delayDisplay("Data roles test passed")
+
+# saved Advanced parameters of every step, this module's constants included (see parameters.py)
+parametersLib.applySaved()

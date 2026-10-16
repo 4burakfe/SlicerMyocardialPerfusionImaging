@@ -41,7 +41,7 @@ DEFAULTS = {
     "capRows": 12,             # rows of the apical cap (90 deg / capRows apart)
     "step": 1.0,               # mm between samples along a ray
     "iterations": 3,
-    "smoothing": 2.0,          # Gaussian sigma of the surface smoothing, in grid samples (0 = none)
+    "smoothing": 1.25,         # Gaussian sigma of the surface smoothing, in grid samples (0 = none)
     "thicknessSmoothing": 3.0, # Gaussian sigma of the wall thickness map, in grid samples
     "baseFraction": 0.55,      # wall ends where its counts fall below this fraction of its column's wall counts
     "maxValveTilt": 40.0,      # deg, largest tilt of the valve plane against the short-axis plane
@@ -244,32 +244,38 @@ def _fitOnGrid(sample, grid):
 GATE_DEFAULTS = {
     "maxWallShift": 25.0,      # mm, the mid-wall of a gate is searched this far from the static mid-wall
     "maxValveShift": 25.0,     # mm, the valve plane of a gate stays this close to the static one (base descent ~1 cm)
-    "gateSmoothing": 2.0,      # Gaussian sigma of the gate surface smoothing (grid samples)
-    "thicknessModel": "mid",     # "mid": only the mid-wall moves, every ray keeps its ED thickness,
-                                 # "ray": each ray keeps its wall volume of the static fit,
+    "gateSmoothing": 1.25,     # Gaussian sigma of the gate surface smoothing (grid samples)
+    "thicknessModel": "ray",     # "ray": each ray keeps its wall volume of the static fit,
+                                 # "mid": only the mid-wall moves, every ray keeps its ED thickness,
                                  # "volume": every frame keeps the myocardial volume of ED (QGS-like),
                                  # "es": the same with end-systole as the reference
     "maxThicknessChange": 0.5,   # "volume": a ray's thickness stays within ED / (1 + x) .. ED x (1 + x)
 }
-THICKNESS_MODELS = (("Mid-wall only (ED wall thickness)", "mid"),
+THICKNESS_MODELS = (("Per ray, from the static wall", "ray"),
+                    ("Mid-wall only (ED wall thickness)", "mid"),
                     ("Constant myocardial volume (ES reference)", "es"),
-                    ("Constant myocardial volume (ED reference)", "volume"),
-                    ("Per ray, from the static wall", "ray"))
+                    ("Constant myocardial volume (ED reference)", "volume"))
 
 
 MIN_DEFECT_SHIFT = 0.3      # share of maxWallShift searched on rays through a defect
 DEFECT_MOTION_SIGMA = 3.0   # x gateSmoothing: width of the motion field that rays through a defect follow
 DEFECT_PRIOR_WEIGHT = 0.03  # weight of that motion field against the rays' own peaks (weights 0..1)
+RELIABILITY_LOW = 0.25      # static peak / bright walls below which a ray counts as deep defect (scar)
+RELIABILITY_HIGH = 0.60     # ... and from which it counts as normal wall
+THICKENING_SMOOTHING = 2.5        # thickeningMap: smoothing of the % map (map cells)
+THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES count maps
+MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
 
 
 def _staticReliability(reference):
     """0..1 per ray: how well the wall is seen in the static image (its peak counts against the bright
-    walls), 0 in a deep defect (below 25 % of them), 1 from 60 %."""
+    walls), 0 in a deep defect (below RELIABILITY_LOW of them, 25 %), 1 from RELIABILITY_HIGH (60 %)."""
     peak = np.asarray(reference["peak"], dtype=float)
     top = float(np.percentile(peak[np.isfinite(peak)], 90)) if np.isfinite(peak).any() else 0.0
     if top <= 0:
         return np.ones_like(peak)
-    return np.clip((np.nan_to_num(peak) / top - 0.25) / 0.35, 0.0, 1.0)
+    low, high = float(RELIABILITY_LOW), max(float(RELIABILITY_HIGH), float(RELIABILITY_LOW) + 1e-3)
+    return np.clip((np.nan_to_num(peak) / top - low) / (high - low), 0.0, 1.0)
 
 
 def fitGate(sample, reference, params=None):
@@ -490,7 +496,7 @@ def endSystoleDiastole(volumes):
     return max(known)[1], min(known)[1]
 
 
-def thickeningMap(gatePolars, ed, es, smoothing=2.5, countSmoothing=3.0):
+def thickeningMap(gatePolars, ed, es, smoothing=None, countSmoothing=None):
     """Count-based wall thickening polar map (partial volume effect: a thicker wall looks brighter),
     in % = (ES counts / ED counts - 1) x 100. The wall counts of every ray (polarMap of each frame)
     are fitted with the first harmonic over the cardiac cycle, so all frames count and the ED / ES
@@ -498,7 +504,10 @@ def thickeningMap(gatePolars, ed, es, smoothing=2.5, countSmoothing=3.0):
     (countSmoothing, in map cells), since the ratio of two noisy maps is far noisier than either,
     and the % map is smoothed again (smoothing); both are count weighted, so a defect does not
     pull its neighbours down. This gives a coarser map than the wall motion, on purpose.
-    Returns a polar map dict like polarMap (on the rows of the ED frame) with "values" in %."""
+    Returns a polar map dict like polarMap (on the rows of the ED frame) with "values" in %.
+    smoothing / countSmoothing default to THICKENING_SMOOTHING / THICKENING_COUNT_SMOOTHING."""
+    smoothing = THICKENING_SMOOTHING if smoothing is None else smoothing
+    countSmoothing = THICKENING_COUNT_SMOOTHING if countSmoothing is None else countSmoothing
     stack = np.array([np.asarray(p["values"], dtype=float) for p in gatePolars])     # [frames, rows, angles]
     mean, edCounts, esCounts = _firstHarmonic(stack, ed, es)
     weights = np.clip(mean / max(float(np.nanmax(mean)), 1e-9), 0.0, 1.0) ** 2
@@ -526,7 +535,7 @@ def _firstHarmonic(stack, ed, es):
     return mean, fitted(ed), fitted(es)
 
 
-def motionMap(gateResults, ed, es, weights=None, smoothing=1.5):
+def motionMap(gateResults, ed, es, weights=None, smoothing=None):
     """Wall motion polar map (QGS-like endocardial excursion), in mm: how far the endocardium of every
     polar map ray moves from ED to ES. The rays of each frame run from its own valve plane to the apex
     (polarRays), so a basal point follows the valve descent and the longitudinal shortening counts too.
@@ -535,7 +544,9 @@ def motionMap(gateResults, ed, es, weights=None, smoothing=1.5):
     over the cycle, like the thickening; weights (e.g. the mean wall counts of each ray) let rays through
     a defect follow their neighbours when the map is smoothed. The rays are those of the static fit
     (fixed LV center and axis), so a translation of the whole heart is not corrected.
-    Returns a polar map dict like polarMap (rho of the ED frame) with "values" in mm."""
+    Returns a polar map dict like polarMap (rho of the ED frame) with "values" in mm.
+    smoothing defaults to MOTION_SMOOTHING."""
+    smoothing = MOTION_SMOOTHING if smoothing is None else smoothing
     points, rhos, directions = [], [], []
     for result in gateResults:
         origins, rays, endo, _, rho = polarRays(result)
@@ -1016,6 +1027,17 @@ def segmentValues(polar, resolution=181):
     image, segments = bullseye(polar, resolution)
     return np.array([float(np.nanmean(image[segments == n])) if np.any(segments == n) else float("nan")
                      for n in range(1, 18)])
+
+
+def segmentBullseye(polar, size, resolution=181):
+    """Bullseye of the 17 segment means: every pixel of a segment shows its mean (segmentValues),
+    NaN outside the circle and in a segment without values. Also returns the 17 means."""
+    values = segmentValues(polar, resolution)
+    _, segments = bullseye(polar, size)
+    image = np.full(segments.shape, np.nan)
+    inside = segments > 0
+    image[inside] = values[segments[inside] - 1]
+    return image, values
 
 
 def polarToWorld(result, radius, angle, outsideMm=1.5):

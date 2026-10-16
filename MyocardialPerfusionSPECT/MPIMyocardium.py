@@ -31,6 +31,7 @@ if globals().get("__file__") and _MODULE_DIR not in sys.path:
 
 from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
+from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.geometry import unit, worldToLocalMatrix, sampleTrilinear  # noqa: E402
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
@@ -176,11 +177,12 @@ def surfacePolyData(result, which, closeBase=False, rings=None, meridians=None):
     return normals.GetOutput()
 
 
-def wallShellPolyData(result, frame, spacing=SHELL_SPACING_MM):
+def wallShellPolyData(result, frame, spacing=None):
     """The left ventricle as one closed surface in world RAS: epicardium outside, endocardium inside,
     joined by a rim in the valve plane (the zero level of myocardium.wallField on a grid aligned
     with the cardiac frame, so the surface is smooth without a voxel staircase)."""
     from vtk.util import numpy_support
+    spacing = SHELL_SPACING_MM if spacing is None else spacing
     reach = wallLib.wallReach(result) + 3.0 * spacing
     n = int(np.ceil(2.0 * reach / spacing)) + 1
     axes = (frame["w"], frame["s"], frame["u"])   # right-handed: w x s = u
@@ -238,10 +240,11 @@ def labelLeaderPolyData(positions):
     return polyData
 
 
-def addWallLabelNodes(result, study, viewIds, distanceMm=LABEL_DISTANCE_MM):
+def addWallLabelNodes(result, study, viewIds, distanceMm=None):
     """Floating labels (anterior, septal, inferior, lateral, apex, base) distanceMm outside the
     epicardium with thin leader lines, shown in the given 3D views only. Returns the two new nodes."""
     scene = slicer.mrmlScene
+    distanceMm = LABEL_DISTANCE_MM if distanceMm is None else distanceMm
     positions = wallLib.wallLabelPositions(result, distanceMm)
 
     labels = scene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", f"{study.GetName()} wall labels")
@@ -379,9 +382,10 @@ def _cameraNode(viewNode):
     return None
 
 
-def labelGrid(result, frame, spacing=LABEL_SPACING_MM):
+def labelGrid(result, frame, spacing=None):
     """Labels (0 / myocardium / cavity) on a grid aligned with the cardiac frame around the LV.
     Returns (labels [k, j, i] uint8, IJK->RAS vtkMatrix4x4)."""
+    spacing = LABEL_SPACING_MM if spacing is None else spacing
     reach = wallLib.wallReach(result) + 2.0 * spacing
     n = int(np.ceil(2.0 * reach / spacing)) + 1
     axes = (frame["w"], frame["s"], frame["u"])   # right-handed: w x s = u
@@ -442,7 +446,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.smoothingSlider.singleStep = 0.25
         self.smoothingSlider.decimals = 2
         self.smoothingSlider.value = defaults["smoothing"]
-        self.smoothingSlider.toolTip = ("Smoothing of the wall surface (rays), 2 by default. Higher values "
+        self.smoothingSlider.toolTip = ("Smoothing of the wall surface (rays), 1.25 by default. Higher values "
                                         "bridge perfusion defects more, lower values follow the counts more closely. "
                                         "The apex is kept consistent around the axis at any value.")
         form.addRow("Surface smoothing:", self.smoothingSlider)
@@ -546,6 +550,17 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.perfusionButton = styleButton(qt.QPushButton("Perfusion ›"), "primary")
         self.perfusionButton.toolTip = "Open the reoriented slices of this study"
         self.layout.addWidget(self.perfusionButton)
+        self.parameterPanel = parametersLib.ParameterPanel(
+            "myocardium", self.layout, onChanged=None,
+            hint=("The wall fit parameters apply the next time the myocardium is detected, the display ones the next time it is shown."))
+        self.parameterPanel.bind("angles", self.anglesSpin)
+        self.parameterPanel.bind("smoothing", self.smoothingSlider)
+        self.parameterPanel.bind("baseThreshold", self.baseSlider)
+        self.parameterPanel.bind("minThickness", self.minThicknessSpin)
+        self.parameterPanel.bind("maxThickness", self.maxThicknessSpin)
+        self.parameterPanel.bind("showEndo", self.showChecks["endo"])
+        self.parameterPanel.bind("showEpi", self.showChecks["epi"])
+        self.parameterPanel.bind("showMid", self.showChecks["mid"])
         self.layout.addStretch(1)
 
         self.valveTimer = qt.QTimer()
@@ -558,6 +573,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slider.connect("valueChanged(double)", lambda _: self.valveTimer.start())
         self.valveTimer.connect("timeout()", self.onValveMoved)
         self.perfusionButton.connect("clicked(bool)", lambda: session.selectStep("perfusion"))
+        self.parameterPanel.loadSaved()   # saved settings of this step, as if set by hand
         for button in (self.singleButton, self.dualButton):
             button.connect("clicked(bool)", lambda _: self.onLayoutChosen())
 
@@ -1033,3 +1049,6 @@ class MPIMyocardiumTest(ScriptedLoadableModuleTest):
         self.assertGreater(float(segments.min()), 50.0)    # uniform wall: no segment looks like a defect
         self.delayDisplay(f"Phantom wall OK: cavity {stats['cavityMl']:.0f} ml (truth {truth:.0f} ml), "
                           f"valve tilt {stats['valveTiltDeg']:.0f} deg (truth 20)")
+
+# saved Advanced parameters of every step, this module's constants included (see parameters.py)
+parametersLib.applySaved()

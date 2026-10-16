@@ -47,7 +47,8 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     REFIT_DELAY_MS, lastFirstSlice, cropStack, tilePixelsToIjk, bestGrid)
 from MyocardialPerfusionSPECTLib.geometry import worldToLocalMatrix  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import StudyPairSelector  # noqa: E402
+from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import StudyPairSelector, styleButton  # noqa: E402
 from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 
 
@@ -295,6 +296,9 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.backButton = qt.QPushButton("Back to reorientation")
         self.layout.addWidget(self.backButton)
+        self.gatedQCButton = styleButton(qt.QPushButton("Gated QC ›"), "primary")
+        self.gatedQCButton.toolTip = "Next step: segment and check the gate frames of the gated studies"
+        self.layout.addWidget(self.gatedQCButton)
 
         # Layouts
         self.layoutButtons = {}
@@ -311,6 +315,25 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.layoutGroup.addButton(button)
                 self.layoutButtons[key] = button
         self.layout.addWidget(layoutBox)
+        self.parameterPanel = parametersLib.ParameterPanel(
+            "perfusion", self.layout, onChanged=self.onParameterChanged)
+        self.parameterPanel.bind("colormap", self.colormapCombo)
+        self.parameterPanel.bind("stressWindow", self.windowRanges[STRESS])
+        self.parameterPanel.bind("restWindow", self.windowRanges[REST])
+        self.parameterPanel.bind("gridRows", self.gridRowsSpin)
+        self.parameterPanel.bind("gridColumns", self.gridColumnsSpin)
+        self.parameterPanel.bind("autoFit", self.autoFitCheck)
+        self.parameterPanel.bind("fov", self.fovSpin)
+        self.parameterPanel.bind("contours", self.contoursButton)
+        self.parameterPanel.bind("sync", self.syncButton)
+        self.parameterPanel.bind("link3D", self.link3DButton)
+        self.parameterPanel.bind("polarLink", self.polarLinkCheck)
+        self.parameterPanel.bind("stressPolarWindow", self.polarWindowRanges[STRESS])
+        self.parameterPanel.bind("restPolarWindow", self.polarWindowRanges[REST])
+        self.parameterPanel.bind("diffWindow", self.diffWindowRange)
+        self.parameterPanel.bind("overlay", self.overlayCombo)
+        self.parameterPanel.bind("scores", self.scoresButton)
+        self.parameterPanel.bind("sliceStep", self.stepSpin)
         self.layout.addStretch(1)
 
         self.mosaicResizeTimer = qt.QTimer()
@@ -339,6 +362,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for key, button in self.layoutButtons.items():
             button.connect("clicked(bool)", lambda _, k=key: self.chooseMode(k))
         self.backButton.connect("clicked(bool)", lambda: session.selectStep("processing"))
+        self.gatedQCButton.connect("clicked(bool)", lambda: session.selectStep("gatedqc"))
+        self.parameterPanel.loadSaved()   # saved settings of this step, as if set by hand
 
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneClosed)
         session.addListener(self.onSessionChanged)
@@ -866,6 +891,12 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.grids[self.gridKind()] = [gridRows, gridColumns]
 
     # --- rendering --------------------------------------------------------------------
+    def onParameterChanged(self, key):
+        """An Advanced parameter changed (None: all were restored): tiles and contours drawn again."""
+        self.tileCache = {}
+        self.contourCache = {}
+        self.refreshMosaic()
+
     def refreshMosaic(self, polar=True):
         """Render each row: tile t shows slice first + t * step of that row (rest rows follow the
         stress rows when synced)."""
@@ -1398,3 +1429,6 @@ class MPIReviewTest(ScriptedLoadableModuleTest):
         self.assertFalse(widget.modeAvailable("stressRestPerf"))
         self.assertEqual(shiftImage(np.arange(9).reshape(3, 3), 1, 0).tolist(), [[0, 0, 1], [0, 3, 4], [0, 6, 7]])
         self.delayDisplay("Review test passed")
+
+# saved Advanced parameters of every step, this module's constants included (see parameters.py)
+parametersLib.applySaved()

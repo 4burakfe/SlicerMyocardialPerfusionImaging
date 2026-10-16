@@ -82,6 +82,7 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     COLORMAPS, setVolumeDisplay, mosaicPanel)
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
+from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
 
 DEFAULT_PIXEL_SIZE_MM = 2.0       # in-plane
@@ -96,6 +97,12 @@ MIP_TITLES = {"ANT": "Anterior MIP", "LAT": "Left lateral MIP"}
 SNAP_THRESHOLD = 0.5   # samples below this fraction of the line maximum do not pull the snapped point
 CLICK_TOLERANCE_PX = 5
 RING_POINTS = 48   # control points of the ROI outline circle in each MIP
+DEFAULT_ROI_RADIUS_MM = 55.0      # heart ROI of a new study (also the half size of the output volumes)
+DEFAULT_AXIS_AZIMUTH_DEG = 45.0   # starting long axis: from patient left toward anterior ...
+DEFAULT_AXIS_ELEVATION_DEG = -25.0   # ... and this far toward inferior
+MAX_ELEVATION_DEG = 80.0          # the long axis stays within this of the transaxial plane
+MASK_LONG_FRACTION = 1.0          # semi-axes of a new mask ellipsoid in ROI radii: long axis ...
+MASK_SHORT_FRACTION = 0.85        # ... anterior-inferior and septal-lateral
 NO_STUDY_HINT = "No active study. Choose one in Data roles or in the study box of the toolbar."
 
 
@@ -166,20 +173,19 @@ class MPIProcessingLogic(ScriptedLoadableModuleLogic):
         s  toward the septum = u x w
     """
 
-    MAX_ELEVATION = math.radians(80.0)
-
     def __init__(self):
         ScriptedLoadableModuleLogic.__init__(self)
         self.center = np.zeros(3)
-        self.radius = 55.0
+        self.radius = DEFAULT_ROI_RADIUS_MM
         self.resetAxes()
         self.resetMaskEllipsoid()
 
     # --- axis state --------------------------------------------------------
     def resetAxes(self):
         """Typical LV orientation: apex toward patient left, anterior and slightly inferior."""
-        horizontal = unit([-1.0, 1.0, 0.0])  # RAS: -x = left, +y = anterior
-        elevation = math.radians(-25.0)
+        azimuth = math.radians(DEFAULT_AXIS_AZIMUTH_DEG)
+        horizontal = unit([-math.cos(azimuth), math.sin(azimuth), 0.0])  # RAS: -x = left, +y = anterior
+        elevation = math.radians(DEFAULT_AXIS_ELEVATION_DEG)
         self.longAxis = unit(math.cos(elevation) * horizontal + math.sin(elevation) * SUPERIOR)
         self.roll = 0.0
 
@@ -234,7 +240,8 @@ class MPIProcessingLogic(ScriptedLoadableModuleLogic):
         elif which == "VLA":
             d = self.horizontalDirection()
             elevation = math.atan2(np.dot(v, SUPERIOR), np.dot(v, d))
-            elevation = float(np.clip(elevation, -self.MAX_ELEVATION, self.MAX_ELEVATION))
+            limit = math.radians(MAX_ELEVATION_DEG)
+            elevation = float(np.clip(elevation, -limit, limit))
             self.longAxis = unit(math.cos(elevation) * d + math.sin(elevation) * SUPERIOR)
         elif which == "SA":
             f = self.frame()
@@ -256,7 +263,7 @@ class MPIProcessingLogic(ScriptedLoadableModuleLogic):
         """Semi-axes along (long axis, anterior-inferior, septal-lateral): generous around the LV,
         so the wall and the base stay well inside (the Myocardium step detects on the masked volume)."""
         r = self.radius
-        self.maskSemiAxes = np.array([1.0 * r, 0.85 * r, 0.85 * r])
+        self.maskSemiAxes = np.array([MASK_LONG_FRACTION * r, MASK_SHORT_FRACTION * r, MASK_SHORT_FRACTION * r])
 
     def maskAxes(self):
         f = self.frame()
@@ -311,10 +318,12 @@ class MPIProcessingLogic(ScriptedLoadableModuleLogic):
         return float(values.max()) if values.size else float(array.max())
 
     @staticmethod
-    def weightedCenterAlongLine(volumeNode, point, direction, threshold=SNAP_THRESHOLD):
+    def weightedCenterAlongLine(volumeNode, point, direction, threshold=None):
         """Count-weighted center of the volume on the line through point (world RAS) along direction.
         Only counts above threshold x the line maximum weigh in, so the hottest structure on the line
-        (the LV walls) sets the depth, not background or a fainter organ behind it. None if empty."""
+        (the LV walls) sets the depth, not background or a fainter organ behind it. None if empty.
+        threshold defaults to SNAP_THRESHOLD."""
+        threshold = SNAP_THRESHOLD if threshold is None else float(threshold)
         direction = unit(direction)
         point = np.asarray(point, dtype=float)
         array = slicer.util.arrayFromVolume(volumeNode)
@@ -1498,7 +1507,7 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.radiusSlider.maximum = self.RADIUS_MAX
         self.radiusSlider.singleStep = 1.0
         self.radiusSlider.decimals = 0
-        self.radiusSlider.value = 55.0
+        self.radiusSlider.value = DEFAULT_ROI_RADIUS_MM
         self.radiusSlider.suffix = " mm"
         self.radiusSlider.toolTip = ("Radius of the spherical ROI (also: drag the orange point in the MIPs). "
                                      "It is also the half size of the output volumes.")
@@ -1632,6 +1641,16 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.reviewButton.toolTip = "Open Perfusion with the reoriented volumes of the active study"
         self.layout.addWidget(self.reviewButton)   # outside the sections: usable before the ROI is placed
 
+        self.parameterPanel = parametersLib.ParameterPanel(
+            "processing", self.layout, onChanged=None,
+            hint=("Used for the next heart ROI, axes, ellipsoid or click; the cardiac axes and masks of the studies already processed are kept."))
+        self.parameterPanel.bind("colormap", self.colormapCombo)
+        self.parameterPanel.bind("maskPreview", self.maskCheckBox)
+        self.parameterPanel.bind("maskOutputs", self.maskOutputsCheckBox)
+        self.parameterPanel.bind("mipLevel", self.mipLevelSlider)
+        self.parameterPanel.bind("pixelSize", self.spacingSpin)
+        self.parameterPanel.bind("sliceThickness", self.thicknessSpin)
+        self.parameterPanel.bind("interpolation", self.interpolationCombo)
         self.layout.addStretch(1)
 
         self.lanes = [ProcessingLane(self, index) for index in range(len(LANE_SUFFIXES))]
@@ -1655,6 +1674,7 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.mipResetButton.connect("clicked(bool)", lambda: self.forLanes("resetMipCamera"))
         self.createButton.connect("clicked(bool)", self.onCreateVolumes)
         self.reviewButton.connect("clicked(bool)", lambda: session.selectStep("perfusion"))
+        self.parameterPanel.loadSaved()   # saved settings of this step, as if set by hand
 
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneClosed)
         session.addListener(self.onSessionChanged)
@@ -2115,3 +2135,6 @@ class MPIProcessingTest(ScriptedLoadableModuleTest):
             volume, lvCenter + np.array([-40.0, 0.0, 0.0]), MIP_CAMERAS["LAT"][0])
         self.assertLess(np.linalg.norm(snapped - lvCenter), 1.0, snapped)
         self.delayDisplay("Snapping along the projection line OK")
+
+# saved Advanced parameters of every step, this module's constants included (see parameters.py)
+parametersLib.applySaved()

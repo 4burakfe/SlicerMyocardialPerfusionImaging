@@ -5,11 +5,11 @@ Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before 
 
   - the myocardium is segmented in every gate frame, starting from the static wall detected in
     Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: mid-wall refitted per ray near the
-    static one, valve plane refitted within a limit; by default midWallGates keeps every ray at its
-    end-diastolic wall thickness, so only the mid-wall moves; selectable: constantVolumeGates, every frame with
-    the myocardial volume of the ES frame (or ED), whose thickness comes from its own profile widths at
-    the blur estimated from the frames, rays through a defect at their static thickness, or the per-ray
-    model of the static wall);
+    static one, valve plane refitted within a limit; by default every ray keeps its wall volume of the static
+    fit; selectable: midWallGates, every ray at its end-diastolic wall thickness, so only the mid-wall moves;
+    constantVolumeGates, every frame with the myocardial volume of the ES frame (or ED), whose thickness
+    comes from its own profile widths at the blur estimated from the frames, rays through a defect at their
+    static thickness);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
     frame's endo- and epicardium;
@@ -43,6 +43,7 @@ if globals().get("__file__") and _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
+from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import gating as gatingLib  # noqa: E402
@@ -359,7 +360,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.gateSmoothingSlider.singleStep = 0.25
         self.gateSmoothingSlider.decimals = 2
         self.gateSmoothingSlider.value = wallLib.GATE_DEFAULTS["gateSmoothing"]
-        self.gateSmoothingSlider.toolTip = ("Smoothing of the wall surface of every frame (rays), 2 by default. Higher "
+        self.gateSmoothingSlider.toolTip = ("Smoothing of the wall surface of every frame (rays), 1.25 by default. Higher "
                                             "values bridge defects and noise more, lower values follow the counts")
         advancedForm.addRow("Surface smoothing:", self.gateSmoothingSlider)
         self.thicknessModelCombo = qt.QComboBox()
@@ -368,15 +369,15 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.thicknessModelCombo.setCurrentIndex(
             max(0, self.thicknessModelCombo.findData(wallLib.GATE_DEFAULTS["thicknessModel"])))
         self.thicknessModelCombo.toolTip = (
-            "Wall thickness of the frames. Mid-wall only (default): only the mid-wall (the count peak, the surface "
+            "Wall thickness of the frames. Per ray (default): each ray keeps its wall volume of the static fit "
+            "(the summed image blurs the wall over the cycle, so the walls come out thicker and the EF higher, "
+            "most in small hearts). Mid-wall only: only the mid-wall (the count peak, the surface "
             "the gates show best) is taken from each frame and every ray keeps its end-diastolic wall thickness, "
             "so no thickening model enters the volumes; it reads lower than the others in hearts that thicken well and "
             "does not overestimate when the gates are too blurred to show the thickening. Constant myocardial "
             "volume, ES reference: every frame keeps the myocardial volume of end-systole, the thickest and "
             "brightest wall, whose thickness comes from its own count profiles (the blur estimated from the "
-            "frames). ED reference: the same from end-diastole. Per ray: each ray keeps its wall volume of the "
-            "static fit (the summed image blurs the wall over the cycle, so the walls come out thicker and the EF "
-            "higher, most in small hearts)")
+            "frames). ED reference: the same from end-diastole")
         advancedForm.addRow("Wall thickness:", self.thicknessModelCombo)
         self.segmentButton = styleButton(qt.QPushButton("Segment frames again"), "create")
         advancedForm.addRow(self.segmentButton)
@@ -395,6 +396,17 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.layout.addWidget(layoutBox)
         self.nextButton = styleButton(qt.QPushButton("Gated Review ›"), "primary")
         self.layout.addWidget(self.nextButton)
+        self.parameterPanel = parametersLib.ParameterPanel(
+            "gatedqc", self.layout, onChanged=self.onParameterChanged,
+            hint=("Frame segmentation and defect parameters apply when the frames are segmented again (Segment frames again)."))
+        self.parameterPanel.bind("colormap", self.colormapCombo)
+        self.parameterPanel.bind("window", self.windowRange)
+        self.parameterPanel.bind("scale", self.normalizationCombo)
+        self.parameterPanel.bind("contours", self.contoursButton)
+        self.parameterPanel.bind("wallShift", self.wallShiftSpin)
+        self.parameterPanel.bind("valveShift", self.valveShiftSpin)
+        self.parameterPanel.bind("gateSmoothing", self.gateSmoothingSlider)
+        self.parameterPanel.bind("thicknessModel", self.thicknessModelCombo)
         self.layout.addStretch(1)
 
         self.resizeTimer = qt.QTimer()
@@ -411,6 +423,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for slot, button in self.layoutButtons.items():
             button.connect("clicked(bool)", lambda _, s=slot: self.show(s))
         self.nextButton.connect("clicked(bool)", lambda: session.selectStep("gated"))
+        self.parameterPanel.loadSaved()   # saved settings of this step, as if set by hand
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneClosed)
         session.addListener(self.onSessionChanged)
         _installToolbar()
@@ -587,6 +600,14 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             references = [max(data.peaks)] * len(data.peaks)
         low, high = self.windowRange.minimumValue / 100.0, self.windowRange.maximumValue / 100.0
         return [(r * low, max(r * high, r * low + 1e-9)) for r in references]
+
+    def onParameterChanged(self, key):
+        """An Advanced parameter changed (None: all were restored): new cache budgets, redraw."""
+        self.tileCache.budget = int(TILE_CACHE_BYTES)
+        self.contourCache.budget = int(CONTOUR_CACHE_BYTES)
+        self.tileCache.clear()      # tiles and contours drawn with the old colors / sizes
+        self.contourCache.clear()
+        self.refresh()
 
     def refresh(self):
         data = self.current()
@@ -790,3 +811,6 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
                                delta=0.03 * wallLib.wallVolumeMl(walls[0]))
         self.assertGreater(float(np.median(walls[1]["thickness"][middle])), float(np.median(walls[0]["thickness"][middle])))
         self.delayDisplay("Gate fit test passed")
+
+# saved Advanced parameters of every step, this module's constants included (see parameters.py)
+parametersLib.applySaved()

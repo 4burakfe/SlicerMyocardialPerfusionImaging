@@ -83,18 +83,18 @@ an overview (active study, step status) and the five workflow steps inside its o
    is searched near the static one (rays through a defect, dim in the static image, only within a third
    of that distance and following the motion of the walls around them, so noise or a neighbouring organ
    in an infarct does not pull the wall), the valve plane is fitted again (static tilt, at most 25 mm away, the
-   base descends about 1 cm in systole). By default the wall thickness is **mid-wall only**: only the
+   base descends about 1 cm in systole). By default every ray keeps its **wall volume of the static fit**
+   (per ray; surface smoothing 1.25 here and in Myocardium). Selectable instead: **mid-wall only**, where only the
    mid-wall (the count peak, the surface a gate shows best) is taken from each frame and every ray keeps
    its end-diastolic wall thickness (that of the ES-reference constant-volume model below at ED; the
    static image is blurred by the motion and shows the wall thicker), so the endocardium follows the
    mid-wall at a fixed distance and no thickening model enters the volumes. It reads lower than the other models in hearts that thicken well,
    and it does not overestimate when the gated reconstruction is too smooth to show the thickening (gate
    profiles wider than about 20 mm keep the same width over the whole cycle, as with a Butterworth
-   0.30 cycles/cm gated filter). Selectable instead: every frame keeps the myocardial volume of
+   0.30 cycles/cm gated filter); every frame keeps the myocardial volume of
    end-systole, where the wall is thickest and brightest, with the ES wall thickness from its own count
    profiles and the image blur estimated from the frames (the summed static image is blurred by the
-   motion and overestimates the wall); the same with the ED volume as reference (QGS-like); or a per-ray
-   wall volume taken from the static fit. In the constant-volume models, rays through a defect (dim in the
+   motion and overestimates the wall); or the same with the ED volume as reference (QGS-like). In the constant-volume models, rays through a defect (dim in the
    static image) keep the wall thickness of the static fit in every frame: scar does not thicken, and their
    gate profiles show no wall to measure. Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in three rows,
    one tile per frame, all at the same slice (mouse wheel over a row scrolls), with its contours and one
@@ -108,7 +108,7 @@ an overview (active study, step status) and the five workflow steps inside its o
    the gate frames as a cine, with the same grid, slices, colors and window as Perfusion (taken over when
    the screen opens) and each frame's endo- and epicardium. On the right are three polar maps side by side: perfusion,
    count-based wall thickening (ES / ED wall counts of every ray, first harmonic over the cycle, smoothed
-   more than the others since a count ratio is noisy) and wall motion (mm the endocardium moves from ED
+   more than the others since a count ratio is noisy, shown as the mean of each of the 17 AHA segments) and wall motion (mm the endocardium moves from ED
    to ES, valve descent included; outward, dyskinetic motion below 0 goes from black at 0 to full turquoise
    at -4 mm, red with PET-DICOM, Jotun and Vanaheim), each with its own window. Below them
    are the LV cavity volume of every frame (EDV, ESV, EF, the frame shown marked) and the beating 3D wall in
@@ -150,6 +150,23 @@ and the per-frame gated values on the gated sequence; the wall fit, the polar ma
 segmentation are made again from them when a step needs them. Processing's interaction helpers (ROI
 center, rings, axis lines, mask handles and preview) are not saved.
 
+## Parameters
+
+Every step ends with **Advanced parameters** (collapsed) and two buttons. The advanced section lists the
+constants of that step that change a result or a display, grouped, each with its built-in default in the
+tooltip. Examples are the wall fit grid, valve and thickness limits, defect handling, QC thresholds,
+map smoothing, contour and plane colors, the three-slice positions and cache sizes. A change applies at
+once to the displays. Analysis parameters take effect the next time the step runs (Detect myocardium,
+Segment frames again). Parameters marked in their tooltip need a Slicer restart.
+
+- **Save parameters** keeps the step's own controls (color maps, windows, grid, smoothing, thickness
+  model, ...) and its advanced parameters as the starting values from then on, also after restarting
+  Slicer. The values go to the Slicer settings under `MyocardialPerfusionSPECT/Parameters/<step>`.
+- **Restore defaults** sets them back to the built-in values and forgets the saved ones.
+
+Saved analysis parameters are applied as soon as the extension loads, so a step uses them even before
+its panel is opened. The registry of all parameters is `MyocardialPerfusionSPECTLib/parameters.py`.
+
 ## Layout
 
 ```
@@ -173,6 +190,7 @@ MyocardialPerfusionSPECT/
     studies.py                       study roles, gated sequence recognition and pairing
     session.py                       active study shared by the modules, workflow steps
     toolbar.py                       workflow toolbar
+    parameters.py                    adjustable constants of every step, Save parameters / Restore defaults
     widgets.py                       coloured action buttons
   Resources/Icons/
   Testing/

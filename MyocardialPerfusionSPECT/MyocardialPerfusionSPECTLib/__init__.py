@@ -11,12 +11,13 @@ step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC,
     session     active study shared by the modules, workflow steps
     widgets     coloured action buttons
     toolbar     workflow toolbar (shown while the hub is open)
+    parameters  adjustable constants of every step (Advanced parameters, Save parameters / Restore defaults)
 """
 
 import logging
 import traceback
 
-SUBMODULES = ("geometry", "myocardium", "gating", "resampling", "views", "colortables", "display", "studies", "session", "widgets", "toolbar")  # dependency order
+SUBMODULES = ("geometry", "myocardium", "gating", "resampling", "views", "colortables", "display", "studies", "session", "widgets", "toolbar", "parameters")  # dependency order
 
 
 def reloadInDeveloperMode():

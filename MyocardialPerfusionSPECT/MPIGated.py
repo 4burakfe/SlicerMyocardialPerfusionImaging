@@ -6,7 +6,7 @@ STRESS GATED layout of Study 1 (stress), REST GATED the same of Study 2 (rest):
                  window), played as a cine: every tile shows the same frame, with that frame's
                  endo- and epicardium;
   top right      the perfusion, wall thickening (count-based: ES / ED wall counts of every ray, first
-                 harmonic over the cycle) and wall motion (mm the endocardium moves from ED to ES)
+                 harmonic over the cycle, 17-segment means) and wall motion (mm the endocardium moves from ED to ES)
                  polar maps side by side;
   bottom right   the LV cavity volume of every frame (EDV, ESV, EF; the frame shown is marked) next to
                  the cine 3D wall coloured by the perfusion (SSP style), as a surface, wireframe or points.
@@ -38,6 +38,7 @@ if globals().get("__file__") and _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
+from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.resampling import DEFAULT_INTERPOLATION, zoomInPlane  # noqa: E402
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
@@ -521,6 +522,31 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.layout.addWidget(layoutBox)
         self.backButton = qt.QPushButton("‹ Gated QC")
         self.layout.addWidget(self.backButton)
+        self.parameterPanel = parametersLib.ParameterPanel(
+            "gated", self.layout, onChanged=self.onParameterChanged,
+            hint=("Map smoothing applies when a study is loaded again (e.g. after Segment frames again in Gated QC); the other parameters at once."))
+        self.parameterPanel.bind("speed", self.speedSpin)
+        self.parameterPanel.bind("colormap", self.colormapCombo)
+        self.parameterPanel.bind("window", self.windowRange)
+        self.parameterPanel.bind("gridRows", self.gridRowsSpin)
+        self.parameterPanel.bind("gridColumns", self.gridColumnsSpin)
+        self.parameterPanel.bind("autoFit", self.autoFitCheck)
+        self.parameterPanel.bind("fov", self.fovSpin)
+        self.parameterPanel.bind("sync", self.syncCheck)
+        self.parameterPanel.bind("sliceStep", self.stepSpin)
+        self.parameterPanel.bind("contours", self.contoursButton)
+        self.parameterPanel.bind("polarLink", self.polarLinkCheck)
+        self.parameterPanel.bind("polarWindow", self.polarWindowRange)
+        self.parameterPanel.bind("thickeningWindow", self.thickeningRange)
+        self.parameterPanel.bind("motionWindow", self.motionRange)
+        self.parameterPanel.bind("overlay", self.overlayCombo)
+        self.parameterPanel.bind("scores", self.scoresButton)
+        self.parameterPanel.bind("representation", self.representationCombo)
+        self.parameterPanel.bind("wallColormap", self.wallColormapCombo)
+        self.parameterPanel.bind("ghost", self.ghostCheck)
+        self.parameterPanel.bind("ghostRepresentation", self.ghostRepresentationCombo)
+        self.parameterPanel.bind("ghostOpacity", self.ghostOpacitySlider)
+        self.parameterPanel.bind("link3D", self.link3DCheck)
         self.layout.addStretch(1)
 
         self.cineTimer = qt.QTimer()
@@ -560,6 +586,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for key, button in self.layoutButtons.items():
             button.connect("clicked(bool)", lambda _, k=key: self.chooseMode(k))
         self.backButton.connect("clicked(bool)", lambda: session.selectStep("gatedqc"))
+        self.parameterPanel.loadSaved()   # saved settings of this step, as if set by hand
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.EndCloseEvent, self.onSceneClosed)
         session.addListener(self.onSessionChanged)
         _installToolbar()
@@ -1127,6 +1154,13 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.updateState()
             self.refresh()
 
+    def onParameterChanged(self, key):
+        """An Advanced parameter changed (None: all were restored): slices, plots and 3D drawn again."""
+        self.tiles = {}
+        self.refresh()
+        self.updateRepresentation()
+        self.updateGhost()
+
     def refresh(self, rebuild3D=True):
         if not self.shown() or not self.onScreen():
             return
@@ -1382,7 +1416,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             key = (id(data), int(size), self.colormapCombo.currentText, low, top)
             cached = self.polarImages.get((slot, tag))
             if cached is None or cached[0] != key:
-                image, _ = wallLib.bullseye(polar, size)
+                if kind == "thickening":   # a count ratio per pixel is noisy: each segment at its mean
+                    image, _ = wallLib.segmentBullseye(polar, size)
+                else:
+                    image, _ = wallLib.bullseye(polar, size)
                 rgb = colorize(np.nan_to_num(image, nan=low), top, table, low)
                 rgb[np.isnan(image)] = 0
                 regions = {overlay: [float(v) for v in wallLib.regionValues(polar, overlay)]
@@ -1393,7 +1430,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             frames = f"ED frame {data.gated.labels[ed]} to ES frame {data.gated.labels[es]}"
             note = (f"mm the endocardium moves inward (below 0: outward), {frames} (valve descent included)."
                     if kind == "motion"
-                    else f"% thickening from the wall counts, {frames} (first harmonic over the cycle).")
+                    else f"% thickening from the wall counts, {frames} (first harmonic over the cycle), "
+                         "mean of each of the 17 segments.")
             panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
 
     def refreshVolumeCurves(self):
@@ -1777,3 +1815,6 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         motion = wallLib.motionMap([wall(e) for e in endo], 0, 4)
         self.assertAlmostEqual(float(np.median(motion["values"])), 8.0, delta=0.5)
         self.delayDisplay("Motion test passed")
+
+# saved Advanced parameters of every step, this module's constants included (see parameters.py)
+parametersLib.applySaved()
