@@ -24,7 +24,7 @@ from MyocardialPerfusionSPECTLib import studies as studiesLib
 
 TOOLBAR_OBJECT_NAME = "MPIWorkflowToolbar"
 CONTROLS_OBJECT_NAME = "MPIStepControlsToolbar"
-TOOLBAR_VERSION = 7       # bump when the class changes, so a reload replaces the toolbar
+TOOLBAR_VERSION = 8       # bump when the class changes, so a reload replaces the toolbar
 BADGE_SIZE = 22
 ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Resources", "Icons",
                          "MyocardialPerfusionSPECT.png")
@@ -224,6 +224,10 @@ class WorkflowToolbar:
         self.sceneObservations = [slicer.mrmlScene.AddObserver(event, self.onSceneChanged) for event in
                                   (slicer.mrmlScene.NodeAddedEvent, slicer.mrmlScene.NodeRemovedEvent,
                                    slicer.mrmlScene.EndCloseEvent, slicer.mrmlScene.EndImportEvent)]
+        # a closed or loaded scene starts again on the overview, in Four-Up (the toolbar exists from startup,
+        # also before the hub was opened)
+        self.sceneObservations += [slicer.mrmlScene.AddObserver(event, self.onSceneReset) for event in
+                                   (slicer.mrmlScene.EndCloseEvent, slicer.mrmlScene.EndImportEvent)]
         session.addListener(self.scheduleRefresh)
         self.onModuleSelected(self.currentModuleName())
 
@@ -337,6 +341,15 @@ class WorkflowToolbar:
 
     def onSceneChanged(self, caller=None, event=None):
         self.scheduleRefresh()
+
+    def onSceneReset(self, caller=None, event=None):
+        qt.QTimer.singleShot(0, self.resetToStart)   # after the steps' own scene close handlers
+
+    @staticmethod
+    def resetToStart():
+        from MyocardialPerfusionSPECTLib.views import resetOwnLayout
+        session.resetToHub()
+        resetOwnLayout()
 
     def scheduleRefresh(self):
         if self.toolbar.visible:

@@ -77,7 +77,7 @@ from MyocardialPerfusionSPECTLib.resampling import (  # noqa: E402
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
     REORIENT_LAYOUT_ID, DUAL_REORIENT_LAYOUT_ID, EDIT_ORDER, ORIENTATIONS, MIP_KINDS, LANE_SUFFIXES,
     laneViews, reorientLayoutXml, dualReorientLayoutXml,
-    registerLayout, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry)
+    registerLayout, notSaved, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry)
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     COLORMAPS, setVolumeDisplay, mosaicPanel)
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
@@ -710,6 +710,12 @@ class ProcessingLane(VTKObservationMixin):
             self._observe(curve, slicer.vtkMRMLMarkupsNode.PointModifiedEvent, self.onAxisCurveModified)
             self._observe(curve, slicer.vtkMRMLMarkupsNode.PointEndInteractionEvent, self.onInteractionEnded)
 
+        # Interaction helpers, made again for every study shown: not saved with the scene (a saved copy
+        # would come back as a stray node next to the new ones)
+        for node in ([self.centerNode, self.previewNode, self.mipRadiusNode, self.maskModelNode, self.maskHandleNode]
+                     + list(self.mipRingNodes.values()) + list(self.curves.values())):
+            notSaved(node)
+
     def assignHelperViews(self):
         """Restrict helper nodes to their views (view nodes exist only once the layout is shown)."""
         mipIds = {tag: threeDWidgetByTag(tag).mrmlViewNode().GetID() for tag in self.mipTags if threeDWidgetByTag(tag)}
@@ -1137,7 +1143,7 @@ class ProcessingLane(VTKObservationMixin):
                     self.maskedNode = slicer.mrmlScene.AddNewNodeByClass(
                         "vtkMRMLScalarVolumeNode", slicer.mrmlScene.GenerateUniqueName("MPI masked preview"))
                     self.maskedNode.SetHideFromEditors(True)
-                    self.maskedNode.SetSaveWithScene(False)
+                    notSaved(self.maskedNode)
                 ijkToRas = vtk.vtkMatrix4x4()
                 self.inputNode.GetIJKToRASMatrix(ijkToRas)
                 self.maskedNode.SetIJKToRASMatrix(ijkToRas)

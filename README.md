@@ -43,7 +43,8 @@ an overview (active study, step status) and the five workflow steps inside its o
 3. **Myocardium** (prototype): opens after the volumes are created and detects the left ventricular wall
    automatically on the SA volume made in Processing, so the Processing mask (when on) keeps the liver and
    gut out; it runs again when the volumes are made again. Rays are cast from the LV center (cylindrical in the body, spherical at the apex); the
-   count-weighted peak along each ray gives the mid-wall, the wall thickness comes from the profile width
+   count-weighted peak along each ray gives the mid-wall (a ray far from its neighbours, or from the robust
+   circle through its row when a wide defect lets its neighbours share a wrong peak, follows the others), the wall thickness comes from the profile width
    corrected for system resolution, and endo/epicardium are placed half a thickness either side. At every
    angle the wall ends where its counts fall below 55 % of that angle's wall counts or where the cavity fills up (the rays run into the atria),
    and the valve plane is
@@ -79,13 +80,23 @@ an overview (active study, step status) and the five workflow steps inside its o
    map and 3D view.
 5. **Gated QC**: checks the gated study of Study 1 or Study 2 before the gated review. The myocardium
    is segmented in every gate frame, starting from the static wall of Myocardium: the mid-wall of each ray
-   is searched near the static one, the valve plane is fitted again (static tilt, at most 25 mm away, the
-   base descends about 1 cm in systole). By default every frame keeps the myocardial volume of
-   end-systole, where the wall is thickest and brightest: the ES wall thickness comes from its own count
-   profiles, with the image blur estimated from the frames rather than assumed (the summed static image
-   is blurred by the motion and overestimates the wall, which collapses the cavity at ES and inflates the
-   EF). Selectable instead: the ED volume as reference (QGS-like) or a per-ray wall volume taken from the
-   static fit. Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in three rows,
+   is searched near the static one (rays through a defect, dim in the static image, only within a third
+   of that distance and following the motion of the walls around them, so noise or a neighbouring organ
+   in an infarct does not pull the wall), the valve plane is fitted again (static tilt, at most 25 mm away, the
+   base descends about 1 cm in systole). By default the wall thickness is **mid-wall only**: only the
+   mid-wall (the count peak, the surface a gate shows best) is taken from each frame and every ray keeps
+   its end-diastolic wall thickness (that of the ES-reference constant-volume model below at ED; the
+   static image is blurred by the motion and shows the wall thicker), so the endocardium follows the
+   mid-wall at a fixed distance and no thickening model enters the volumes. It reads lower than the other models in hearts that thicken well,
+   and it does not overestimate when the gated reconstruction is too smooth to show the thickening (gate
+   profiles wider than about 20 mm keep the same width over the whole cycle, as with a Butterworth
+   0.30 cycles/cm gated filter). Selectable instead: every frame keeps the myocardial volume of
+   end-systole, where the wall is thickest and brightest, with the ES wall thickness from its own count
+   profiles and the image blur estimated from the frames (the summed static image is blurred by the
+   motion and overestimates the wall); the same with the ED volume as reference (QGS-like); or a per-ray
+   wall volume taken from the static fit. In the constant-volume models, rays through a defect (dim in the
+   static image) keep the wall thickness of the static fit in every frame: scar does not thicken, and their
+   gate profiles show no wall to measure. Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in three rows,
    one tile per frame, all at the same slice (mouse wheel over a row scrolls), with its contours and one
    color scale for all frames (or each frame on its own). Top right: counts per frame in % of the mean
    (projections, image, segmented myocardium; frames beyond ±10 % are ringed). Bottom right: the ECG gating
@@ -112,9 +123,12 @@ an overview (active study, step status) and the five workflow steps inside its o
    Every one also comes as SLICES (only the slice rows), PLOTS (only the plots, all of them; one row per
    study for stress-rest), DUAL MONITOR (the slices on the main window, all plots in a second window
    that opens maximized on the second monitor) and DUAL FULL SLICES (the same with every slice).
-   GATED and DUAL MONITOR show only three representative slices per axis, a 3 x 3 grid per study, to spare
-   the graphics card: apical, mid and basal for SA, inferior, mid and anterior for HLA, septal, mid and
-   lateral for VLA, each at the middle of a third of the myocardium found in Myocardium. SLICES and
+   GATED and DUAL MONITOR show only three representative slices per axis to spare the graphics card:
+   apical, mid and basal for SA, inferior, mid and anterior for HLA, septal, mid and lateral for VLA, at
+   25, 50 and 75 % of the myocardium found in Myocardium. SA is top left, HLA bottom left and VLA bottom
+   right; top right a static 3D view of the wall (as in Myocardium, one per study) seen from anteroseptal,
+   raised 30 degrees toward the base, with semi-transparent planes at the slices shown (SA yellow, HLA
+   magenta, VLA green). The LV volume curve starts at 0 ml and the EF is written large in the cine 3D view. SLICES and
    DUAL FULL SLICES show every slice with the grid, fit and scrolling of Perfusion. With both studies shown
    the cine runs them together.
 
@@ -128,6 +142,13 @@ panel to give the views the room (it comes back when another module is selected)
 other modules. Perfusion and Gated Review open on the layout with slices and plots of the studies there
 (stress-rest when both are ready, the dual monitor one when a second screen is connected); a layout picked
 by hand is kept while the same studies are ready.
+
+Closing the scene (or loading one) brings the hub back to its overview page and, when one of the
+extension's layouts is shown, Slicer's Four-Up layout. Saved scenes keep the roles, the active study and
+study pair, the reoriented volumes (with their axes), the myocardium segmentation, surfaces and statistics,
+and the per-frame gated values on the gated sequence; the wall fit, the polar maps and the gate frame
+segmentation are made again from them when a step needs them. Processing's interaction helpers (ROI
+center, rings, axis lines, mask handles and preview) are not saved.
 
 ## Layout
 

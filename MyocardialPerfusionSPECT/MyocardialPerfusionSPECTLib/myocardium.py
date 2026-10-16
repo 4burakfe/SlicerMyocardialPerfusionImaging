@@ -195,6 +195,8 @@ def _fitOnGrid(sample, grid):
         nearPole = _nearPoleRows(grid, peakT)
         reference[nearPole] = np.median(peakT[nearPole], axis=1)[:, None]   # rays there nearly coincide
         weight[np.abs(peakT - reference) > 0.3 * t0] = 0.0
+        reference = _ringReference(grid, peakT, weight, reference, 0.3 * t0)
+        weight[np.abs(peakT - reference) > 0.3 * t0] = 0.0
         surface = _smoothSurface(np.where(weight > 0, peakT, reference), np.maximum(weight, 1e-6),
                                  p["smoothing"])
         surface = _poleSmooth(grid, surface, np.maximum(weight, 1e-6), p["smoothing"])
@@ -205,6 +207,8 @@ def _fitOnGrid(sample, grid):
     reference = _circularMedian(peakT, window)
     nearPole = _nearPoleRows(grid, peakT)
     reference[nearPole] = np.median(peakT[nearPole], axis=1)[:, None]
+    weight[np.abs(peakT - reference) > 0.3 * t0] = 0.0
+    reference = _ringReference(grid, peakT, weight, reference, 0.3 * t0)
     weight[np.abs(peakT - reference) > 0.3 * t0] = 0.0
     mid = _smoothSurface(np.where(weight > 0, peakT, reference), np.maximum(weight, 1e-6), 0.75 * p["smoothing"])
     mid = _poleSmooth(grid, mid, np.maximum(weight, 1e-6), p["smoothing"])
@@ -241,14 +245,31 @@ GATE_DEFAULTS = {
     "maxWallShift": 25.0,      # mm, the mid-wall of a gate is searched this far from the static mid-wall
     "maxValveShift": 25.0,     # mm, the valve plane of a gate stays this close to the static one (base descent ~1 cm)
     "gateSmoothing": 2.0,      # Gaussian sigma of the gate surface smoothing (grid samples)
-    "thicknessModel": "es",      # "ray": each ray keeps its wall volume of the static fit,
+    "thicknessModel": "mid",     # "mid": only the mid-wall moves, every ray keeps its ED thickness,
+                                 # "ray": each ray keeps its wall volume of the static fit,
                                  # "volume": every frame keeps the myocardial volume of ED (QGS-like),
                                  # "es": the same with end-systole as the reference
     "maxThicknessChange": 0.5,   # "volume": a ray's thickness stays within ED / (1 + x) .. ED x (1 + x)
 }
-THICKNESS_MODELS = (("Constant myocardial volume (ES reference)", "es"),
+THICKNESS_MODELS = (("Mid-wall only (ED wall thickness)", "mid"),
+                    ("Constant myocardial volume (ES reference)", "es"),
                     ("Constant myocardial volume (ED reference)", "volume"),
                     ("Per ray, from the static wall", "ray"))
+
+
+MIN_DEFECT_SHIFT = 0.3      # share of maxWallShift searched on rays through a defect
+DEFECT_MOTION_SIGMA = 3.0   # x gateSmoothing: width of the motion field that rays through a defect follow
+DEFECT_PRIOR_WEIGHT = 0.03  # weight of that motion field against the rays' own peaks (weights 0..1)
+
+
+def _staticReliability(reference):
+    """0..1 per ray: how well the wall is seen in the static image (its peak counts against the bright
+    walls), 0 in a deep defect (below 25 % of them), 1 from 60 %."""
+    peak = np.asarray(reference["peak"], dtype=float)
+    top = float(np.percentile(peak[np.isfinite(peak)], 90)) if np.isfinite(peak).any() else 0.0
+    if top <= 0:
+        return np.ones_like(peak)
+    return np.clip((np.nan_to_num(peak) / top - 0.25) / 0.35, 0.0, 1.0)
 
 
 def fitGate(sample, reference, params=None):
@@ -259,7 +280,7 @@ def fitGate(sample, reference, params=None):
     their neighbours). The valve plane is fitted again as in fitWall, keeps the static tilt and moves
     at most maxValveShift along the axis. Endo- and epicardium keep the myocardial volume of the static
     fit locally (QGS-like): the wall thickness of a ray scales with (static mid / gate mid), squared on
-    the apical cap. Returns a result dict like fitWall, so classify / labelGrid / wallStatistics apply."""
+    the apical cap, less so through a defect (scar does not thicken). Returns a result dict like fitWall, so classify / labelGrid / wallStatistics apply."""
     grid = reference["grid"]
     p = grid.params
     g = dict(GATE_DEFAULTS, **(params or {}))
@@ -272,17 +293,34 @@ def fitGate(sample, reference, params=None):
 
     refMid = reference["mid"]
     shift = float(g["maxWallShift"])
-    lo = np.maximum(refMid - shift, 1.0)
-    hi = np.minimum(refMid + shift, grid.t[-1])
+    # Rays through a defect (dim in the static image, which has all the counts) are found unreliably in a
+    # gate: their peak is noise, or a neighbouring organ (liver, gut) inside the search window. They are
+    # searched only close to the static wall (infarcted walls move little) and give way to the motion
+    # of the walls around them.
+    reliability = _staticReliability(reference)
+    rayShift = shift * (MIN_DEFECT_SHIFT + (1.0 - MIN_DEFECT_SHIFT) * reliability)
+    lo = np.maximum(refMid - rayShift, 1.0)
+    hi = np.minimum(refMid + rayShift, grid.t[-1])
     sigma = float(g["gateSmoothing"])
     peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
-    weight = (peakValue / max(peakValue.max(), 1e-9)) ** 2
+    weight = (peakValue / max(peakValue.max(), 1e-9)) ** 2 * reliability ** 2
     # rays far from their neighbours (noise, a neighbouring organ inside the window) do not count
     reference2 = _circularMedian(peakT, _angleWindow(grid, 9))
     nearPole = _nearPoleRows(grid, peakT)
     reference2[nearPole] = np.median(peakT[nearPole], axis=1)[:, None]
-    weight[np.abs(peakT - reference2) > 0.5 * shift] = 0.0
-    mid = _smoothSurface(np.where(weight > 0, peakT, reference2), np.maximum(weight, 1e-6), sigma)
+    weight[np.abs(peakT - reference2) > 0.5 * rayShift] = 0.0
+    ringTolerance = max(0.25 * float(np.median(refMid[:grid.nCyl])), 5.0)
+    reference2 = _ringReference(grid, peakT, weight, reference2, ringTolerance)
+    weight[np.abs(peakT - reference2) > np.minimum(0.5 * rayShift, ringTolerance)] = 0.0
+    # Where the gate does not show the wall well, it is taken where the static wall is, moved by the motion
+    # of the reliable walls around it (a broad, count-weighted shift field) only as far as the static
+    # image shows wall there: a deep defect is scar, which does not move (akinetic).
+    motion = _smoothMap(peakT - refMid, np.maximum(weight, 1e-9), DEFECT_MOTION_SIGMA * max(sigma, 1.0))
+    prior = refMid + reliability * np.where(np.isfinite(motion), motion, 0.0)
+    values = np.where(weight > 0, peakT, prior)
+    mid = _smoothSurface(values, np.maximum(weight, 1e-6), sigma)
+    density = _smoothMap(np.maximum(weight, 0.0), np.ones_like(weight), sigma)   # local mean weight
+    mid = (density * mid + DEFECT_PRIOR_WEIGHT * prior) / (density + DEFECT_PRIOR_WEIGHT)
     mid = _poleSmooth(grid, mid, np.maximum(weight, 1e-6), sigma)
     mid = np.clip(mid, lo, hi)
     peak = _interp(profiles, grid.t, mid)
@@ -298,7 +336,8 @@ def fitGate(sample, reference, params=None):
 
     ratio = np.clip(refMid / np.maximum(mid, 1.0), 0.5, 2.0)
     ratio[grid.nCyl:] = ratio[grid.nCyl:] ** 2
-    thickness = np.clip(reference["thickness"] * ratio, p["minThickness"], 1.5 * p["maxThickness"])
+    # scar does not thicken: rays through a defect keep the static thickness
+    thickness = np.clip(reference["thickness"] * ratio ** (reliability ** 2), p["minThickness"], 1.5 * p["maxThickness"])
     thickness = _holdBeyondBase(thickness, beyond)
     endo, epi = _wallSurfaces(grid, mid, thickness, p)
     # the frame's own wall thickness from its profile widths (the ED frame's is the reference of the
@@ -309,6 +348,7 @@ def fitGate(sample, reference, params=None):
             "baseZ": a, "detectedBaseZ": a, "valvePlane": plane, "basePoints": basePoints,
             "rowCounts": np.median(peak[:grid.nCyl], axis=1), "gateWeight": weight,
             "profileFwhm": fwhm, "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
+            "reliability": reliability, "staticThickness": _holdBeyondBase(reference["thickness"], beyond),
             "thicknessModel": "ray"}
 
 
@@ -379,6 +419,15 @@ def constantVolumeGates(results, params=None, referencePhase="ed"):
     change = 1.0 + max(float(g["maxThicknessChange"]), 0.0)
     resolution = gatedResolution(results, p["resolution"])
     reference = gateThickness(edResult, resolution)
+    # Rays through a defect: the gate profiles show no wall there (their thickness would be that of the
+    # walls around them, smoothed in) and scar neither thickens nor moves much. They keep the thickness of
+    # the static fit, whose profiles have all the counts; the volume is kept by the walls that are seen.
+    reliability = edResult.get("reliability")
+    fixed = edResult.get("staticThickness")
+    if reliability is None or fixed is None:
+        reliability, fixed = np.ones_like(reference), reference
+    reliability = reliability ** 2
+    reference = reliability * reference + (1.0 - reliability) * fixed
     target = wallVolumeMl(edResult, reference)
     out = list(results)
     for i in known:
@@ -389,9 +438,9 @@ def constantVolumeGates(results, params=None, referencePhase="ed"):
         shape = reference * np.clip(edResult["mid"] / np.maximum(mid, 1.0), 1.0 / change, change)
 
         def thicknessAt(scale):
-            return np.clip(scale * shape, low, high)
+            return reliability * np.clip(scale * shape, low, high) + (1.0 - reliability) * fixed
         if i == ed:
-            thickness = np.clip(reference, low, high)
+            thickness = reliability * np.clip(reference, low, high) + (1.0 - reliability) * fixed
         else:
             lo, hi = 0.2, 5.0
             for _ in range(40):                       # the volume grows with the scale: bisection
@@ -405,6 +454,30 @@ def constantVolumeGates(results, params=None, referencePhase="ed"):
         endo, epi = _wallSurfaces(grid, mid, thickness, p)
         out[i] = dict(result, thickness=thickness, endo=endo, epi=epi, thicknessModel=referencePhase,
                       edFrame=ed, referenceFrame=ed, resolutionMm=resolution)
+    return out
+
+
+def midWallGates(results, params=None):
+    """Mid-wall-only wall of the gate frames: only the mid-wall (the count peak, the surface a gate shows
+    best) is taken from each frame; every ray keeps one wall thickness in all frames, so the endocardium
+    follows the mid-wall at a fixed distance and no thickening model enters the volumes. That thickness is
+    the end-diastolic wall of the constant-volume model (ES reference, constantVolumeGates): the ED frame,
+    the one whose mid-wall encloses the most, is where the wall is at rest; the summed static image
+    is blurred by the motion and shows it thicker. Rays through a defect keep their static thickness.
+    results: fitGate results (None for a frame that could not be segmented). Returns new results."""
+    known = [i for i, r in enumerate(results) if r is not None and "staticThickness" in r]
+    if not known:
+        return list(results)
+    walls = constantVolumeGates(results, params, "es")
+    ed = max(known, key=lambda i: _rayVolumes(results[i], None, results[i]["mid"], 0))
+    reference = walls[ed]["thickness"] if len(known) >= 2 else results[ed]["staticThickness"]
+    out = list(results)
+    for i in known:
+        result = results[i]
+        grid, mid = result["grid"], result["mid"]
+        thickness = _holdBeyondBase(reference, _beyondBase(grid, mid, result["valvePlane"]))
+        endo, epi = _wallSurfaces(grid, mid, thickness, grid.params)
+        out[i] = dict(result, thickness=thickness, endo=endo, epi=epi, thicknessModel="mid", edFrame=ed)
     return out
 
 
@@ -1214,6 +1287,47 @@ def _angleWindow(grid, raysAt48):
     """Odd number of rays covering the same angle around the axis as raysAt48 rays do with 48."""
     size = int(round(raysAt48 * grid.nTheta / 48.0))
     return max(3, size | 1)
+
+
+def _ringReference(grid, peakT, weight, reference, tolerance):
+    """The neighbour reference of the cylinder rows replaced by their robust ring (_ringFit) where the two
+    disagree: there the neighbours share a wrong peak (a wide defect next to an organ)."""
+    ring = _ringFit(grid, peakT, weight, tolerance)
+    out = reference.copy()
+    off = np.abs(reference - ring) > tolerance
+    off[grid.nCyl:] = False
+    out[off] = ring[off]
+    return out
+
+
+def _ringFit(grid, values, weights, tolerance, iterations=4):
+    """Robust ring of every cylinder row: distance(theta) = r0 + a cos(theta) + b sin(theta) (a circle,
+    also off the axis), fitted with count weights while the rays further than tolerance from it lose their
+    weight. A defect wide enough that its neighbours share its wrong peak (an organ next to it) is still
+    a bump on that ring. Cap rows are returned as they are (their rays converge on the apex)."""
+    out = np.array(values, dtype=float, copy=True)
+    theta = np.asarray(grid.theta, dtype=float)
+    basis = np.stack([np.ones_like(theta), np.cos(theta), np.sin(theta)], axis=1)
+    for row in range(grid.nCyl):
+        y = np.asarray(values[row], dtype=float)
+        w = np.maximum(np.asarray(weights[row], dtype=float), 0.0)
+        if np.count_nonzero(w > 1e-9) < 6:
+            continue
+        fit = None
+        for _ in range(iterations):
+            sw = np.sqrt(w)
+            try:
+                coefficients = np.linalg.lstsq(basis * sw[:, None], y * sw, rcond=None)[0]
+            except np.linalg.LinAlgError:
+                break
+            fit = basis @ coefficients
+            keep = np.abs(y - fit) <= tolerance
+            if np.count_nonzero(keep & (w > 1e-9)) < 6:
+                break
+            w = np.where(keep, w, 0.0)
+        if fit is not None:
+            out[row] = fit
+    return out
 
 
 def _circularMedian(values, size):

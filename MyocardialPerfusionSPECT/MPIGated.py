@@ -42,10 +42,11 @@ from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.resampling import DEFAULT_INTERPOLATION, zoomInPlane  # noqa: E402
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
     GATED_LAYOUT_IDS, ORIENTATIONS, ORIENTATION_TITLES, gatedLayoutXml, gatedPlotKinds, gatedTags,
-    placeMonitor2Window, registerLayout, threeDWidgetByTag, CameraLink, secondaryScreen)
+    placeMonitor2Window, registerLayout, threeDWidgetByTag, CameraLink, secondaryScreen, notSaved)
+from MyocardialPerfusionSPECTLib.geometry import worldToLocalMatrix  # noqa: E402
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
-    rgbToQImage, gatedReviewMosaicPanel, volumeCurvePanel, volumeCurvePanelState, polarPanel, polarPanelState,
+    rgbToQImage, gatedReviewMosaicPanel, gatedReviewMosaic2Panel, volumeCurvePanel, volumeCurvePanelState, polarPanel, polarPanelState,
     existingPanel, DEFAULT_FOV_CM, REFIT_DELAY_MS, lastFirstSlice, fovCrop, cropStack, bestGrid, signedMotionTable)
 from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
 
@@ -78,12 +79,20 @@ DUAL_KINDS = ("dual", "dualFull")          # slices on this window, plots on the
 # Layouts showing only three representative slices per axis (a 3 x 3 grid per study): every frame of every
 # slice is a lot of tiles for the graphics card. SA runs apex -> base, HLA inferior -> anterior,
 # VLA septum -> lateral (MPIProcessing.orientationAxes).
-REPRESENTATIVE_KINDS = ("full", "dual")
+REPRESENTATIVE_KINDS = ("full", "dual")   # as views.REPRESENTATIVE_LAYOUT_KINDS
 REPRESENTATIVE_LABELS = {"SA": ("APICAL", "MID", "BASAL"), "HLA": ("INF", "MID", "ANT"),
                          "VLA": ("SEPT", "MID", "LAT")}
 POLAR_KINDS = ("polar", "thickening", "motion")
+EF_FONT_SIZE = 26   # px, the EF in the 3D views
+_BIG_TEXT_ACTORS = {}   # 3D view node ID -> the text actor of its EF
 MONITOR2_PLACE_DELAY_MS = 300     # the second window is placed after the layout manager made its views
 MOSAIC_STATE = "_mpiGatedReviewMosaicState"
+MOSAIC2_STATE = "_mpiGatedReviewMosaic2State"   # HLA and VLA rows of the three-slices-per-axis layouts
+REPRESENTATIVE_FRACTIONS = (0.25, 0.5, 0.75)    # where the three slices lie along the myocardium of an axis
+SLICE_PLANE_COLORS = {"SA": (0.99, 0.85, 0.21), "HLA": (0.85, 0.11, 0.38), "VLA": (0.26, 0.63, 0.28)}
+SLICE_PLANE_OPACITY = 0.14
+SLICE_PLANE_MARGIN_MM = 8.0       # the planes reach this far beyond the epicardium
+STATIC_VIEW_ELEVATION_DEG = 30.0   # static 3D wall: seen from anteroseptal, raised this much toward the base
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}
 OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "segments"), ("None", ""))
 REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points", "points"))
@@ -303,6 +312,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.tick = 0              # cine position; every study shows frame tick % its frame count
         self.cameraLink = CameraLink()   # stress and rest 3D views moved together
         self.scrollOffsets = {}    # (slot, orientation) -> slices the mouse wheel moved a fitted row
+        self.slicePositions = {}   # (slot, orientation) -> slices shown: the planes of the static 3D wall
         self.tiles = {}            # (slot, orientation) -> (key, [frame][cell] (QImage or None, slice number or None), title)
         self.polarImages = {}      # (slot, polar map tag) -> (key, (QImage, region values))
         self.inherited = None      # Perfusion settings last taken over
@@ -686,7 +696,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     @staticmethod
     def panelAttributes():
         """slicer attributes of every Gated Review panel (both studies)."""
-        attributes = [MOSAIC_STATE]
+        attributes = [MOSAIC_STATE, MOSAIC2_STATE]
         for slot in (STRESS, REST):
             tags = gatedTags(slot)
             attributes += [polarPanelState(tags[kind]) for kind in POLAR_KINDS]
@@ -712,6 +722,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def onSceneClosed(self, caller=None, event=None):
         self.playButton.checked = False
         self.data, self.tiles, self.polarImages, self.staticSamples = {}, {}, {}, {}
+        self.slicePositions = {}
         self.surfaceKeys = {}
         for layer in self.ghostLayers.values():
             layer.update(None, None, None)
@@ -739,13 +750,26 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Only the apical, mid and basal slices of each axis (REPRESENTATIVE_KINDS)."""
         return self.kind(mode) in REPRESENTATIVE_KINDS
 
-    def panelGrid(self):
+    def panelGroups(self):
+        """[(panel state attribute, rows [(row key suffix, orientations)], columns)] of the slice panels: one
+        panel with a row per orientation on the grid of the spins (columns None), or with three slices per
+        axis SA (beside the static 3D wall) and below it HLA and VLA side by side."""
         if self.representative():
-            return 1, len(REPRESENTATIVE_LABELS["SA"])
+            n = len(REPRESENTATIVE_FRACTIONS)
+            return [(MOSAIC_STATE, [("SA", ("SA",))], n), (MOSAIC2_STATE, [("HLA+VLA", ("HLA", "VLA"))], 2 * n)]
+        return [(MOSAIC_STATE, [(name, (name,)) for name in ORIENTATIONS], None)]
+
+    @staticmethod
+    def makePanel(attribute):
+        return gatedReviewMosaicPanel() if attribute == MOSAIC_STATE else gatedReviewMosaic2Panel()
+
+    def panelGrid(self, columns=None):
+        if columns:
+            return 1, columns
         return self.gridRowsSpin.value, self.gridColumnsSpin.value
 
     def representativeSlices(self, slot, name, data):
-        """Slice indices (0-based) at the middle of the thirds of the myocardium along an axis (all slices
+        """Slice indices (0-based) at REPRESENTATIVE_FRACTIONS of the myocardium along an axis (of all slices
         when Myocardium found none): apical, mid, basal for SA."""
         count = data.gated.slices[name][0].shape[0]
         extent = None
@@ -754,9 +778,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         except Exception:
             logging.debug("MPI: no myocardium extent:\n" + traceback.format_exc())
         first, last = extent if extent is not None else (0, count - 1)
-        size = last - first + 1
-        parts = len(REPRESENTATIVE_LABELS[name])
-        return [int(min(max(first + int(size * (2 * i + 1) / (2 * parts)), 0), count - 1)) for i in range(parts)]
+        return [int(min(max(first + int(round(f * (last - first))), 0), count - 1)) for f in REPRESENTATIVE_FRACTIONS]
 
     def plotKinds(self, mode=None):
         return gatedPlotKinds(self.slots(mode), self.kind(mode))
@@ -1041,9 +1063,19 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             spin.setValue(value)
             spin.blockSignals(wasBlocked)
 
-    def rowKeys(self):
-        return [(f"{slot}:{name}", (f"{SLOT_TITLES[slot]}  ·  " if len(self.slots()) > 1 else "")
-                 + ORIENTATION_TITLES[name]) for name in ORIENTATIONS for slot in self.slots()]
+    def rowOf(self, slot, name):
+        """(panel state attribute, row key) showing one orientation of a study."""
+        for attribute, groups, _ in self.panelGroups():
+            for key, names in groups:
+                if name in names:
+                    return attribute, f"{slot}:{key}"
+        return MOSAIC_STATE, f"{slot}:{name}"
+
+    def rowKeys(self, groups=None):
+        groups = self.panelGroups()[0][1] if groups is None else groups
+        return [(f"{slot}:{key}", (f"{SLOT_TITLES[slot]}  ·  " if len(self.slots()) > 1 else "")
+                 + "   |   ".join(ORIENTATION_TITLES[name] for name in names))
+                for key, names in groups for slot in self.slots()]
 
     # --- showing ---------------------------------------------------------------------
     def show(self, mode=None):
@@ -1068,12 +1100,13 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.frameSlider.setValue(self.tick)
             self.frameSlider.blockSignals(wasBlocked)
             if self.kind() != "plots":
-                panel = gatedReviewMosaicPanel()
-                panel.onScroll = self.onScroll
-                panel.onResized = self.resizeTimer.start
-                panel.pairRows = len(self.slots()) > 1     # each grid row of stress followed by that of rest
-                panel.gridRows, panel.gridColumns = self.panelGrid()
-                panel.setRowKeys(self.rowKeys())
+                for attribute, groups, columns in self.panelGroups():
+                    panel = self.makePanel(attribute)
+                    panel.onScroll = self.onScroll
+                    panel.onResized = self.resizeTimer.start
+                    panel.pairRows = len(self.slots()) > 1     # each grid row of stress followed by that of rest
+                    panel.gridRows, panel.gridColumns = self.panelGrid(columns)
+                    panel.setRowKeys(self.rowKeys(groups))
             for slot in self.slots():
                 tags = gatedTags(slot)
                 for kind in self.plotKinds():
@@ -1167,16 +1200,20 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.frameLabel.text = "  ·  ".join(
             (f"{SLOT_TITLES[slot][0]} " if len(shown) > 1 else "")
             + f"{data.gated.labels[self.frameOf(data)]} of {data.count}" for slot, data in shown)
-        panel = existingPanel(MOSAIC_STATE)
+        panels = [(existingPanel(attribute), groups) for attribute, groups, _ in self.panelGroups()]
         for slot, data in shown:
             index = self.frameOf(data)
-            if panel is not None and self.kind() != "plots":
-                for name in ORIENTATIONS:
-                    cached = self.tiles.get((slot, name))
-                    if cached:
-                        _, frames, title = cached
-                        panel.setRow(f"{slot}:{name}", frames[index],
-                                     f"{title}   ·   frame {data.gated.labels[index]} of {data.count}")
+            frameText = f"frame {data.gated.labels[index]} of {data.count}"
+            for panel, groups in panels:
+                if panel is None or self.kind() == "plots":
+                    continue
+                for key, names in groups:
+                    parts = [self.tiles.get((slot, name)) for name in names]
+                    if not all(parts):
+                        continue
+                    tiles = [tile for _, frames, _ in parts for tile in frames[index]]
+                    titles = [title if i == 0 else title.split("  ·  ", 1)[-1] for i, (_, _, title) in enumerate(parts)]
+                    panel.setRow(f"{slot}:{key}", tiles, "   |   ".join(titles) + f"   ·   {frameText}")
             tags = gatedTags(slot)
             curve = existingPanel(volumeCurvePanelState(tags["volume"]))
             if curve is not None and "volume" in self.plotKinds():
@@ -1201,15 +1238,20 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def refreshSlices(self, show=True):
         """Tiles of every frame of every row at the current settings, made once (the cine only swaps them)."""
-        panel = existingPanel(MOSAIC_STATE)
-        if panel is None or not self.onScreen() or self.kind() == "plots":
+        shownSlots = set(self.slots()) if self.kind() != "plots" else set()
+        self.tiles = {k: v for k, v in self.tiles.items() if k[0] in shownSlots}   # all frames: free the others
+        panels = {attribute: (existingPanel(attribute), groups, columns)
+                  for attribute, groups, columns in self.panelGroups()}
+        if any(p is None for p, _, _ in panels.values()) or not self.onScreen() or self.kind() == "plots":
             return
-        panel.pairRows = len(self.slots()) > 1
-        panel.setRowKeys(self.rowKeys())
+        for panel, groups, _ in panels.values():
+            panel.pairRows = len(self.slots()) > 1
+            panel.setRowKeys(self.rowKeys(groups))
         fixed = self.representative()
         if self.autoFitCheck.checked and not fixed:
-            self.autoFit(panel)
-        panel.gridRows, panel.gridColumns = self.panelGrid()
+            self.autoFit(panels[MOSAIC_STATE][0])
+        for panel, _, columns in panels.values():
+            panel.gridRows, panel.gridColumns = self.panelGrid(columns)
         table = colorTableArray(self.colormapCombo.currentText)
         step, cells = self.stepSpin.value, self.cellCount()
         contours = bool(self.contoursButton.checked)
@@ -1219,7 +1261,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for slot, data in self.shown():
             window = self.sliceWindow(data)
             for name in ORIENTATIONS:
-                rowKey = f"{slot}:{name}"
+                attribute, rowKey = self.rowOf(slot, name)
+                panel = panels[attribute][0]
                 size = panel.tileSize(rowKey)
                 count = data.gated.slices[name][0].shape[0]
                 if fixed:
@@ -1236,6 +1279,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     first = self.firstSliceSpins[(slot, name)].value - 1
                     shown = [first + cell * step for cell in range(cells)]
                 crop = self.tileCrop(slot, name, data)
+                self.slicePositions[(slot, name)] = tuple(int(k) for k in shown)
                 key = (id(data), size, self.colormapCombo.currentText, tuple(round(v, 6) for v in window),
                        tuple(shown), contours, round(float(panel.pixelRatio()), 2), tuple(crop))
                 cached = self.tiles.get((slot, name))
@@ -1269,7 +1313,11 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                    for k, number in zip(shown, numbers)])
                 self.tiles[(slot, name)] = (key, frames, title)
         low, high = self.windowRange.minimumValue, self.windowRange.maximumValue
-        panel.setLegend(table, low, high)
+        for panel, _, _ in panels.values():
+            panel.setLegend(table, low, high)
+        if fixed:
+            for slot, _ in self.shown():
+                self.refreshStatic3D(slot)
         if show:
             self.showFrame(self.tick)
 
@@ -1366,6 +1414,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             chart.pointLabels = {ed: "ED", es: "ES"}
             chart.overlayText = f"EF {ef:.0f} %"
             chart.marker = self.frameOf(data)
+            chart.fromZero = True   # the volume axis from 0: the curve's swing shows the EF
             chart.setCurves(data.gated.labels, [("LV cavity", data.volumes, VOLUME_COLOR, "")],
                             f"{title}   EDV {edv:.0f} · ESV {esv:.0f}", mode="absolute")
 
@@ -1432,6 +1481,158 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.showFrame(self.tick)
         except Exception:
             logging.error("MPI: could not make the gated 3D wall:\n" + traceback.format_exc())
+
+    # --- static 3D wall with the slice planes (three slices per axis) ------------------------------
+    def refreshStatic3D(self, slot):
+        """The static wall of a study as in Myocardium (wireframe shell and wall labels) with semi-transparent
+        planes at the slices shown, seen from anteroseptal and raised toward the base."""
+        data = self.dataOf(slot)
+        viewTag = gatedTags(slot)["static3d"]
+        widget = threeDWidgetByTag(viewTag)
+        if data is None or widget is None:
+            return
+        try:
+            import MPIMyocardium
+            study = self.studyOf(slot)
+            viewNode = widget.mrmlViewNode()
+            key = repr((id(data), study.GetID(), viewNode.GetID()))
+            nodes = self.viewNodes(viewTag)
+            shell = next((n for n in nodes if n.GetAttribute("MPI.Surface") == "shell"), None)
+            if shell is None or shell.GetAttribute("MPI.DataKey") != key:
+                for node in nodes:
+                    slicer.mrmlScene.RemoveNode(node)
+                shell = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", f"{study.GetName()} gated slices 3D")
+                shell.SetAndObservePolyData(MPIMyocardium.wallShellPolyData(data.staticResult, data.frame))
+                shell.CreateDefaultDisplayNodes()
+                display = shell.GetDisplayNode()
+                display.SetColor(*MPIMyocardium.SHELL_COLOR)
+                display.SetRepresentation(slicer.vtkMRMLDisplayNode.WireframeRepresentation)
+                display.SetOpacity(MPIMyocardium.SHELL_OPACITY)
+                self._flatDisplay(display, viewNode)
+                shell.SetAttribute("MPI.Surface", "shell")
+                shell.SetAttribute("MPI.DataKey", key)
+                for node in [shell] + MPIMyocardium.addWallLabelNodes(data.staticResult, study, [viewNode.GetID()]):
+                    node.SetAttribute("MPI.GatedReviewView", viewTag)
+                    node.SetAttribute("MPI.GatedReviewOf", study.GetID())
+                    notSaved(node)
+                self.placeStaticCamera(slot, data)
+            self.updateSlicePlanes(slot, data, viewTag, viewNode)
+        except Exception:
+            logging.error("MPI: could not make the static 3D wall:\n" + traceback.format_exc())
+
+    @staticmethod
+    def _flatDisplay(display, viewNode):
+        display.SetVisibility2D(False)
+        display.SetAmbient(1.0)
+        display.SetDiffuse(0.0)
+        display.SetSpecular(0.0)
+        display.SetBackfaceCulling(False)
+        display.SetScalarVisibility(False)
+        display.SetViewNodeIDs([viewNode.GetID()])
+
+    def updateSlicePlanes(self, slot, data, viewTag, viewNode):
+        """One model per orientation: its three slices as filled planes, and their outlines."""
+        import MPIMyocardium
+        nodes = self.viewNodes(viewTag)
+        center, _ = MPIMyocardium.cameraAnchor(data.frame, data.staticResult)
+        half = wallLib.wallReach(data.staticResult) + SLICE_PLANE_MARGIN_MM
+        for name in ORIENTATIONS:
+            positions = self.slicePositions.get((slot, name))
+            if positions is None:
+                continue
+            planes, outlines = self.slicePlanePolyData(data, name, positions, center, half)
+            for part, polyData, opacity in (("plane", planes, SLICE_PLANE_OPACITY), ("outline", outlines, 0.9)):
+                surface = f"{part}{name}"
+                model = next((n for n in nodes if n.GetAttribute("MPI.Surface") == surface), None)
+                if model is not None and model.GetAttribute("MPI.PlaneKey") == repr(positions):
+                    continue
+                if model is None:
+                    model = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode",
+                                                               f"{self.studyOf(slot).GetName()} {name} slice {part}s")
+                    model.CreateDefaultDisplayNodes()
+                    display = model.GetDisplayNode()
+                    display.SetColor(*SLICE_PLANE_COLORS[name])
+                    display.SetOpacity(opacity)
+                    display.SetLineWidth(2.0)
+                    self._flatDisplay(display, viewNode)
+                    model.SetAttribute("MPI.Surface", surface)
+                    model.SetAttribute("MPI.GatedReviewView", viewTag)
+                    model.SetAttribute("MPI.GatedReviewOf", self.studyOf(slot).GetID())
+                    notSaved(model)
+                model.SetAndObservePolyData(polyData)
+                model.SetAttribute("MPI.PlaneKey", repr(positions))
+
+    @staticmethod
+    def slicePlanePolyData(data, name, shown, center, half):
+        """(planes, outlines) in world coordinates of the slices shown of one orientation (slice indices of the
+        reoriented volume of Processing): squares of 2 x half mm around the LV center (world)."""
+        node = data.gated.reference[name]
+        ijkToRas = vtk.vtkMatrix4x4()
+        node.GetIJKToRASMatrix(ijkToRas)
+        localToWorld = vtk.vtkMatrix4x4()
+        vtk.vtkMatrix4x4.Invert(worldToLocalMatrix(node), localToWorld)
+        matrix = slicer.util.arrayFromVTKMatrix(localToWorld) @ slicer.util.arrayFromVTKMatrix(ijkToRas)
+        a = matrix[:3, 0] / max(np.linalg.norm(matrix[:3, 0]), 1e-9)   # in-plane axes of the slices
+        b = matrix[:3, 1] / max(np.linalg.norm(matrix[:3, 1]), 1e-9)
+        normal = np.cross(a, b)
+        normal /= max(np.linalg.norm(normal), 1e-9)
+        center = np.asarray(center, dtype=float)
+        planes, outlines = vtk.vtkAppendPolyData(), vtk.vtkAppendPolyData()
+        for k in sorted(set(shown)):
+            point = (matrix @ np.array([0.0, 0.0, float(k), 1.0]))[:3]
+            middle = center - np.dot(center - point, normal) * normal   # the LV center on this slice
+            source = vtk.vtkPlaneSource()
+            source.SetOrigin(*(middle - half * a - half * b))
+            source.SetPoint1(*(middle + half * a - half * b))
+            source.SetPoint2(*(middle - half * a + half * b))
+            source.Update()
+            edges = vtk.vtkFeatureEdges()
+            edges.SetInputData(source.GetOutput())
+            edges.BoundaryEdgesOn()
+            edges.FeatureEdgesOff()
+            edges.NonManifoldEdgesOff()
+            edges.ManifoldEdgesOff()
+            edges.Update()
+            planes.AddInputData(source.GetOutput())
+            outlines.AddInputData(edges.GetOutput())
+        result = []
+        for append in (planes, outlines):
+            if append.GetNumberOfInputConnections(0) == 0:
+                result.append(vtk.vtkPolyData())
+                continue
+            append.Update()
+            polyData = vtk.vtkPolyData()
+            polyData.DeepCopy(append.GetOutput())
+            result.append(polyData)
+        return tuple(result)
+
+    def placeStaticCamera(self, slot, data):
+        """From anteroseptal (septum and anterior wall), raised STATIC_VIEW_ELEVATION_DEG toward the base,
+        the base up."""
+        viewTag = gatedTags(slot)["static3d"]
+        frame = data.frame
+        elevation = np.radians(STATIC_VIEW_ELEVATION_DEG)
+        anteroseptal = np.asarray(frame["w"], dtype=float) + np.asarray(frame["s"], dtype=float)
+        anteroseptal /= max(np.linalg.norm(anteroseptal), 1e-9)
+        base = -np.asarray(frame["u"], dtype=float)
+        direction = np.cos(elevation) * anteroseptal + np.sin(elevation) * base
+
+        def place():
+            widget = threeDWidgetByTag(viewTag)
+            if widget is None or self.dataOf(slot) is not data:
+                return
+            try:
+                import MPIMyocardium
+                viewNode = widget.mrmlViewNode()
+                MPIMyocardium.style3DView(viewNode)
+                scale = 0.75 * (wallLib.wallReach(data.staticResult) + LABEL_DISTANCE_MM) + 10.0
+                MPIMyocardium.placeCamera(viewNode, frame, data.staticResult, parallelScale=scale,
+                                          direction=direction, up=base)
+            except Exception:
+                logging.warning("MPI: could not place the static 3D camera:\n" + traceback.format_exc())
+        place()
+        qt.QTimer.singleShot(400, place)    # again after the layout and the new models have settled
+        qt.QTimer.singleShot(1200, place)
 
     def updateGhost(self, slots=None):
         """The ED wall as the reference of the beating wall (shown when ticked and the volumes are known)."""
@@ -1511,11 +1712,31 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     @staticmethod
     def setCornerText(widget, text, upperLeft=""):
+        """Study, frame and cavity volume in the lower left corner; upperLeft (the EF) large and bold in the
+        upper left (its own text actor: the corner annotation has one font for all corners)."""
         try:
             view = widget.threeDView()
             corner = view.cornerAnnotation()
             corner.SetText(vtk.vtkCornerAnnotation.LowerLeft, text)
-            corner.SetText(vtk.vtkCornerAnnotation.UpperLeft, upperLeft)
+            corner.SetText(vtk.vtkCornerAnnotation.UpperLeft, "")
+            renderer = view.renderWindow().GetRenderers().GetFirstRenderer()
+            if renderer is not None:
+                actor = _BIG_TEXT_ACTORS.get(widget.mrmlViewNode().GetID())
+                if actor is None or not renderer.HasViewProp(actor):
+                    actor = vtk.vtkTextActor()
+                    _BIG_TEXT_ACTORS[widget.mrmlViewNode().GetID()] = actor
+                    actor.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+                    actor.SetPosition(0.02, 0.97)
+                    prop = actor.GetTextProperty()
+                    prop.SetFontSize(EF_FONT_SIZE)
+                    prop.SetBold(True)
+                    prop.SetShadow(True)
+                    prop.SetColor(1.0, 1.0, 1.0)
+                    prop.SetJustificationToLeft()
+                    prop.SetVerticalJustificationToTop()
+                    renderer.AddViewProp(actor)
+                actor.SetInput(upperLeft or "")
+                actor.SetVisibility(bool(upperLeft))
             corner.SetMaximumFontSize(14)
             corner.SetMinimumFontSize(9)
             corner.GetTextProperty().SetColor(0.9, 0.9, 0.9)

@@ -190,6 +190,20 @@ def myocardiumForStudy(volumeNode):
     return found
 
 
+def resetToHub():
+    """Show the overview page again (after a scene close or load): at once when the hub is open, else the
+    next time it is opened."""
+    if _currentStep == HUB_STEP:
+        return
+    try:
+        if slicer.util.selectedModule() == HUB_MODULE:
+            slicer.util.getModuleWidget(HUB_MODULE).showStep(HUB_STEP)   # leaves the step (exit) first
+            return
+    except Exception:
+        logging.warning("MPI: could not show the overview:\n" + traceback.format_exc())
+    setCurrentStep(HUB_STEP)
+
+
 def stepModuleName(key):
     for stepKey, moduleName, _, _ in STEPS:
         if stepKey == key:

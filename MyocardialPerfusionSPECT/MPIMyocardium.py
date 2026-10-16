@@ -320,15 +320,17 @@ def defaultParallelScale(frame, result=None):
     return 1.6 * float(frame.get("radius", 55.0))
 
 
-def placeCamera(viewNode, frame, result=None, distance=330.0, parallelScale=None):
+def placeCamera(viewNode, frame, result=None, distance=330.0, parallelScale=None, direction=None, up=None):
     """Look at the LV from superior-anterior: the camera sits in front of the heart (anterior wall
-    of the cardiac frame) and above it (patient superior), aimed at the middle of the LV."""
+    of the cardiac frame) and above it (patient superior), aimed at the middle of the LV. direction (from
+    the LV toward the camera) and up (the screen's up) can be given instead."""
     center, _ = cameraAnchor(frame, result)
     if parallelScale is None:
         parallelScale = defaultParallelScale(frame, result)
     superior = np.array([0.0, 0.0, 1.0])
-    direction = unit(unit(frame["w"]) + superior)
-    up = unit(superior - np.dot(superior, direction) * direction)
+    direction = unit(unit(frame["w"]) + superior) if direction is None else unit(direction)
+    up = superior if up is None else np.asarray(up, dtype=float)
+    up = unit(up - np.dot(up, direction) * direction)
     position = center + distance * direction
     camera = _cameraNode(viewNode)
     if camera is not None:
@@ -828,6 +830,11 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.storeResult(result)
         self.updateState()
 
+    def pruneResults(self):
+        """Forget the fits of studies no longer in the scene (removed without a scene close)."""
+        scene = slicer.mrmlScene
+        self.results = {nodeId: result for nodeId, result in self.results.items() if scene.GetNodeByID(nodeId)}
+
     def resultForStudy(self, studyNode):
         """Fit result of a study (for Perfusion): the one in memory, else fitted again with the
         parameters saved on its segmentation. None when the myocardium was not detected."""
@@ -836,6 +843,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         result = self.results.get(studyNode.GetID())
         if result is not None:
             return result
+        self.pruneResults()
         segmentation = session.myocardiumForStudy(studyNode)
         frame = cardiacFrame(studyNode)
         if segmentation is None or frame is None:

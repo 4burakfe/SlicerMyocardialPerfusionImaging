@@ -57,6 +57,8 @@ GATED_MOSAIC_TAG = "mpigatedmosaic"   # Gated QC: one tile per gate frame in SA 
 GATED_CURVE_TAG = "mpigatedcurve"     # Gated QC: counts per frame
 GATED_INFO_TAG = "mpigatedinfo"       # Gated QC: gating information (R-R window, beats, frame timing)
 GATED_REVIEW_MOSAIC_TAG = "mpigatedreviewmosaic"   # Gated Review: cine SA / HLA / VLA rows
+GATED_REVIEW_MOSAIC2_TAG = "mpigatedreviewmosaic2"   # Gated Review, three slices per axis: the HLA and VLA rows
+GATED_STATIC_3D_VIEW = "MPIGatedStatic3D"          # Gated Review, three slices per axis: static wall, slice planes
 GATED_POLAR_TAG = "mpigatedpolar"                  # Gated Review: perfusion polar map
 GATED_THICKENING_TAG = "mpigatedthickening"        # Gated Review: wall thickening polar map
 GATED_MOTION_TAG = "mpigatedmotion"                # Gated Review: wall motion polar map
@@ -254,7 +256,8 @@ def gatedTags(slot):
     suffix = "rest" if slot == "rest" else ""
     return {"polar": GATED_POLAR_TAG + suffix, "thickening": GATED_THICKENING_TAG + suffix,
             "motion": GATED_MOTION_TAG + suffix, "volume": GATED_VOLUME_TAG + suffix,
-            "3d": GATED_3D_VIEW + ("Rest" if suffix else "")}
+            "3d": GATED_3D_VIEW + ("Rest" if suffix else ""),
+            "static3d": GATED_STATIC_3D_VIEW + ("Rest" if suffix else "")}
 
 
 def gatedPlotKinds(slots, kind):
@@ -294,8 +297,25 @@ def _gatedPlotsXml(slots, kinds):
             + '</layout>')
 
 
-def _mosaicXml():
-    return f"<{GATED_REVIEW_MOSAIC_TAG}></{GATED_REVIEW_MOSAIC_TAG}>"
+def _mosaicXml(tag=GATED_REVIEW_MOSAIC_TAG):
+    return f"<{tag}></{tag}>"
+
+
+REPRESENTATIVE_LAYOUT_KINDS = ("full", "dual")   # three slices per axis (MPIGated.REPRESENTATIVE_KINDS)
+
+
+def _representativeSlicesXml(slots):
+    """The slice area of the three-slices-per-axis layouts: SA (top left) beside the static 3D wall with the
+    slice planes (top right, one view per study), HLA and VLA side by side below."""
+    views = "".join(f'<item splitSize="500">{_threeDXml(gatedTags(slot)["static3d"], f"{slot.capitalize()} slices 3D")}</item>'
+                    for slot in slots)
+    return ('<layout type="vertical" split="true">'
+            '<item splitSize="500"><layout type="horizontal" split="true">'
+            f'<item splitSize="500">{_mosaicXml()}</item>'
+            f'<item splitSize="500"><layout type="vertical" split="true">{views}</layout></item>'
+            '</layout></item>'
+            f'<item splitSize="500">{_mosaicXml(GATED_REVIEW_MOSAIC2_TAG)}</item>'
+            '</layout>')
 
 
 def _mainViewportAttributes():
@@ -329,18 +349,22 @@ def gatedLayoutXml(slots, kind, mainViewport=None):
     plots   only the plots;
     dual    the slice rows on the main window and the plots in a floating window (a dock widget, as in
             Slicer's own dual monitor layouts), placed on the second monitor by placeMonitor2Window;
-    dualFull  the same (MPIGated shows all slices in it, three per axis in full and dual)."""
+    dualFull  the same with all slices.
+    full and dual show three slices per axis: SA beside a static 3D wall with the slice planes, HLA and VLA
+    below (_representativeSlicesXml)."""
     slots = tuple(slots)
     plots = _gatedPlotsXml(slots, gatedPlotKinds(slots, kind))
+    slices = _representativeSlicesXml(slots) if kind in REPRESENTATIVE_LAYOUT_KINDS else _mosaicXml()
     if kind == "slices":
         return f'<layout type="horizontal"><item>{_mosaicXml()}</item></layout>'
     if kind == "plots":
         return plots
     if kind in ("dual", "dualFull"):
-        return _twoMonitorXml(_mosaicXml(), plots, "MPIGatedMonitor2", GATED_MONITOR2_TITLE, mainViewport)
+        return _twoMonitorXml(slices, plots, "MPIGatedMonitor2", GATED_MONITOR2_TITLE, mainViewport)
+    # full: the 2 x 2 slice area (three slices per axis) needs more width than the rows of all slices
     return ('<layout type="horizontal" split="true">'
-            f'<item splitSize="{560 if len(slots) == 1 else 640}">{_mosaicXml()}</item>'
-            f'<item splitSize="{700 if len(slots) == 1 else 620}">{plots}</item>'
+            f'<item splitSize="{720 if len(slots) == 1 else 760}">{slices}</item>'
+            f'<item splitSize="{540 if len(slots) == 1 else 500}">{plots}</item>'
             '</layout>')
 
 
@@ -396,6 +420,38 @@ def placeMonitor2Window(viewTag=None, title=GATED_MONITOR2_TITLE):
         window.raise_()
     except Exception:
         logging.exception("MPI: could not place the second window; drag it to the second monitor")
+
+
+OWN_LAYOUT_IDS = range(5700, 5800)   # every layout of this extension (the IDs above)
+
+
+def isOwnLayout(layoutId):
+    return int(layoutId) in OWN_LAYOUT_IDS
+
+
+def resetOwnLayout():
+    """Back to Slicer's Four-Up layout when one of this extension's layouts is shown (after a scene
+    close or load its panels and views show nothing: the studies are gone or not yet reviewed)."""
+    try:
+        layoutManager = slicer.app.layoutManager()
+        if layoutManager is not None and isOwnLayout(layoutManager.layout):
+            layoutManager.setLayout(slicer.vtkMRMLLayoutNode.SlicerLayoutFourUpView)
+    except Exception:
+        logging.warning("MPI: could not reset the layout", exc_info=True)
+
+
+def notSaved(node):
+    """Leave a helper node (and its display nodes) out of saved scenes."""
+    if node is None:
+        return
+    node.SetSaveWithScene(False)
+    try:
+        for index in range(node.GetNumberOfDisplayNodes()):
+            display = node.GetNthDisplayNode(index)
+            if display is not None:
+                display.SetSaveWithScene(False)
+    except AttributeError:
+        pass
 
 
 def registerLayout(layoutId, xml):

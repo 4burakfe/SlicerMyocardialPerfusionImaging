@@ -5,9 +5,11 @@ Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before 
 
   - the myocardium is segmented in every gate frame, starting from the static wall detected in
     Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: mid-wall refitted per ray near the
-    static one, valve plane refitted within a limit; constantVolumeGates then gives every frame the
-    myocardial volume of the ES frame (or ED), whose thickness comes from its own profile widths at the
-    blur estimated from the frames; the per-ray model of the static wall stays selectable);
+    static one, valve plane refitted within a limit; by default midWallGates keeps every ray at its
+    end-diastolic wall thickness, so only the mid-wall moves; selectable: constantVolumeGates, every frame with
+    the myocardial volume of the ES frame (or ED), whose thickness comes from its own profile widths at
+    the blur estimated from the frames, rays through a defect at their static thickness, or the per-ray
+    model of the static wall);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
     frame's endo- and epicardium;
@@ -50,13 +52,15 @@ from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
     GATED_QC_LAYOUT_ID, ORIENTATIONS, ORIENTATION_TITLES, gatedQcLayoutXml, registerLayout)
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     COLORMAPS, colorTableArray, colorize, rgbToQImage, gatedMosaicPanel, countCurvePanel, gatingInfoPanel,
-    existingPanel, tilePixelsToIjk)
+    existingPanel, tilePixelsToIjk, BoundedCache, packMask, unpackMask)
 from MyocardialPerfusionSPECTLib.widgets import styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
 SLOT_TITLES = {STRESS: "STUDY 1 (STRESS) GATED", REST: "STUDY 2 (REST) GATED"}
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}
 CONTOUR_MAX_SIZE = 160
+TILE_CACHE_BYTES = 96 * 1024 * 1024      # frame tiles kept for scrolling back (oldest dropped first)
+CONTOUR_CACHE_BYTES = 16 * 1024 * 1024   # contour masks, bit-packed (also used by Gated Review)
 LABEL_GRID_MM = 2.0          # grid of the per-frame myocardium / cavity labels (counts and volumes)
 NORMALIZATIONS = (("All frames together", "common"), ("Each frame on its own", "frame"))
 SERIES_COLORS = {"projections": (120, 180, 255), "image": (210, 210, 210), "myocardium": (255, 140, 60)}
@@ -222,7 +226,7 @@ class GatedStudy:
                 self.errors.append(f"frame {label}: {e}")
                 result = None
             self.results.append(result)
-            frames.append((label, array, matrix, spacing[0] * spacing[1] * spacing[2]))
+            frames.append((label, node, matrix, spacing[0] * spacing[1] * spacing[2]))   # not the array: memory
             self.imageCounts.append(float(array.sum(dtype=np.float64)))
             for name in ORIENTATIONS:
                 self.slices[name].append(resliceLike(array, matrix, outputs[name], mask, center))
@@ -231,7 +235,11 @@ class GatedStudy:
         if model in ("volume", "es"):
             # the wall thickness of all frames together: each keeps the myocardial volume of ED (or ES)
             self.results = wallLib.constantVolumeGates(self.results, params, "es" if model == "es" else "ed")
-        for index, (label, array, matrix, voxel) in enumerate(frames):
+        elif model == "mid":
+            # only the mid-wall moves: every ray keeps its end-diastolic wall thickness in all frames
+            self.results = wallLib.midWallGates(self.results, params)
+        for index, (label, node, matrix, voxel) in enumerate(frames):
+            array = slicer.util.arrayFromVolume(node).astype(np.float32)   # again, one frame at a time
             stats = {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
             if self.results[index] is not None:
                 try:
@@ -285,8 +293,8 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         VTKObservationMixin.__init__(self)
         self.slot = STRESS
         self.data = {}            # slot -> (key, GatedStudy)
-        self.tileCache = {}       # (slot, orientation, frame, slice, ...) -> QImage
-        self.contourCache = {}
+        self.tileCache = BoundedCache(TILE_CACHE_BYTES)        # (slot, orientation, frame, slice, ...) -> QImage
+        self.contourCache = BoundedCache(CONTOUR_CACHE_BYTES)  # (frame, slice, size, ...) -> packed masks
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
@@ -360,11 +368,15 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.thicknessModelCombo.setCurrentIndex(
             max(0, self.thicknessModelCombo.findData(wallLib.GATE_DEFAULTS["thicknessModel"])))
         self.thicknessModelCombo.toolTip = (
-            "Wall thickness of the frames. Constant myocardial volume, ES reference (default): every frame keeps "
-            "the myocardial volume of end-systole, the thickest and brightest wall, whose thickness comes from its "
-            "own count profiles (the blur estimated from the frames). ED reference: the same from end-diastole. "
-            "Per ray: each ray keeps its wall volume of the static fit (the summed image blurs the wall over the "
-            "cycle, so the walls come out thicker and the EF higher, most in small hearts)")
+            "Wall thickness of the frames. Mid-wall only (default): only the mid-wall (the count peak, the surface "
+            "the gates show best) is taken from each frame and every ray keeps its end-diastolic wall thickness, "
+            "so no thickening model enters the volumes; it reads lower than the others in hearts that thicken well and "
+            "does not overestimate when the gates are too blurred to show the thickening. Constant myocardial "
+            "volume, ES reference: every frame keeps the myocardial volume of end-systole, the thickest and "
+            "brightest wall, whose thickness comes from its own count profiles (the blur estimated from the "
+            "frames). ED reference: the same from end-diastole. Per ray: each ray keeps its wall volume of the "
+            "static fit (the summed image blurs the wall over the cycle, so the walls come out thicker and the EF "
+            "higher, most in small hearts)")
         advancedForm.addRow("Wall thickness:", self.thicknessModelCombo)
         self.segmentButton = styleButton(qt.QPushButton("Segment frames again"), "create")
         advancedForm.addRow(self.segmentButton)
@@ -437,7 +449,9 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.removeObservers()
 
     def onSceneClosed(self, caller=None, event=None):
-        self.data, self.tileCache, self.contourCache = {}, {}, {}
+        self.data = {}
+        self.tileCache.clear()
+        self.contourCache.clear()
         for attribute in (MOSAIC_STATE, CURVE_STATE, INFO_STATE):
             panel = existingPanel(attribute)
             if panel is not None:
@@ -493,7 +507,8 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def params(self):
         return {"maxWallShift": float(self.wallShiftSpin.value), "maxValveShift": float(self.valveShiftSpin.value),
                 "gateSmoothing": float(self.gateSmoothingSlider.value),
-                "thicknessModel": self.thicknessModelCombo.itemData(self.thicknessModelCombo.currentIndex) or "es"}
+                "thicknessModel": (self.thicknessModelCombo.itemData(self.thicknessModelCombo.currentIndex)
+                                   or wallLib.GATE_DEFAULTS["thicknessModel"])}
 
     def gatedStudy(self, slot, rebuild=False):
         """GatedStudy of a slot, built once per study, gated sequence, static wall and settings."""
@@ -514,7 +529,8 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         data = GatedStudy(study, sequence).build(staticResult, frame, outputs, self.params())
         data.save()
         self.data[slot] = (key, data)
-        self.tileCache, self.contourCache = {}, {}
+        self.tileCache.clear()
+        self.contourCache.clear()
         self.resetSlices(data, frame)
         return data
 
@@ -607,8 +623,6 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             rgb[epi] = CONTOUR_COLORS["epi"]
             rgb[endo] = CONTOUR_COLORS["endo"]
         image = rgbToQImage(np.ascontiguousarray(rgb))
-        if len(self.tileCache) > 4000:
-            self.tileCache = {}
         self.tileCache[key] = image
         return image
 
@@ -619,7 +633,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         key = (id(data), name, index, k, int(size), round(float(ratio), 2), None if crop is None else tuple(crop))
         cached = self.contourCache.get(key)
         if cached is not None:
-            return cached
+            return tuple(unpackMask(packed) for packed in cached)
         result = data.results[index]
         node = data.reference[name]
         n = int(min(size, CONTOUR_MAX_SIZE))
@@ -654,10 +668,8 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 edge[1:, :] |= edge[:-1, :].copy()
                 edge[:, 1:] |= edge[:, :-1].copy()
             masks.append(edge)
-        if len(self.contourCache) > 4000:
-            self.contourCache = {}
-        self.contourCache[key] = tuple(masks)
-        return self.contourCache[key]
+        self.contourCache[key] = tuple(packMask(mask) for mask in masks)
+        return tuple(masks)
 
     # --- counts and gating information ------------------------------------------------
     def refreshCurves(self, data):

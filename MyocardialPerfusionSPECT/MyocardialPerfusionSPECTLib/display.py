@@ -190,6 +190,87 @@ def ppmBytes(rgb):
     return b"P6\n%d %d\n255\n" % (w, h) + rgb.tobytes()
 
 
+def imageBytes(image):
+    """Memory of a QImage (or of a numpy array / tuple of them) in bytes, for the cache budgets."""
+    if isinstance(image, (tuple, list)):
+        return sum(imageBytes(item) for item in image)
+    if isinstance(image, np.ndarray):
+        return int(image.nbytes)
+    for method in ("sizeInBytes", "byteCount"):
+        try:
+            return int(getattr(image, method)())
+        except Exception:
+            pass
+    try:
+        return int(image.width()) * int(image.height()) * 4
+    except Exception:
+        return 0
+
+
+class BoundedCache:
+    """Least recently used cache with a memory budget (bytes, measured with imageBytes): the oldest entries
+    go when a new one would exceed it, so the cache cannot grow with every window, size or slice change."""
+
+    def __init__(self, budgetBytes):
+        import collections
+        self.budget = int(budgetBytes)
+        self.entries = collections.OrderedDict()   # key -> (value, bytes)
+        self.bytes = 0
+
+    def get(self, key, default=None):
+        entry = self.entries.get(key)
+        if entry is None:
+            return default
+        self.entries.move_to_end(key)
+        return entry[0]
+
+    def __setitem__(self, key, value):
+        self.pop(key)
+        size = imageBytes(value)
+        self.entries[key] = (value, size)
+        self.bytes += size
+        while self.bytes > self.budget and len(self.entries) > 1:
+            _, (_, old) = self.entries.popitem(last=False)
+            self.bytes -= old
+
+    def __getitem__(self, key):
+        value = self.get(key, _MISSING)
+        if value is _MISSING:
+            raise KeyError(key)
+        return value
+
+    def __contains__(self, key):
+        return key in self.entries
+
+    def __len__(self):
+        return len(self.entries)
+
+    def pop(self, key, default=None):
+        entry = self.entries.pop(key, None)
+        if entry is None:
+            return default
+        self.bytes -= entry[1]
+        return entry[0]
+
+    def clear(self):
+        self.entries.clear()
+        self.bytes = 0
+
+
+_MISSING = object()
+
+
+def packMask(mask):
+    """Boolean mask -> (shape, bits): 8 times smaller in a cache."""
+    mask = np.asarray(mask, dtype=bool)
+    return mask.shape, np.packbits(mask, axis=None)
+
+
+def unpackMask(packed):
+    shape, bits = packed
+    return np.unpackbits(bits, count=int(np.prod(shape))).astype(bool).reshape(shape)
+
+
 def rgbToQImage(rgb):
     """uint8 [h, w, 3] array (row 0 at the top) -> QImage, decoded by Qt's built-in PPM reader."""
     image = qt.QImage.fromData(ppmBytes(rgb), "PPM")
@@ -840,6 +921,7 @@ class CurveChart:
         self.marker = None      # index of the frame marked with a vertical line (cine), or None
         self.pointLabels = {}   # {index: text} written above the points of the first series (ED, ES)
         self.overlayText = ""   # large text in the top left corner of the plot (e.g. the EF)
+        self.fromZero = False   # "absolute": the y axis starts at 0 (volumes)
         self.label = qt.QLabel()
         self.label.setSizePolicy(qt.QSizePolicy.Ignored, qt.QSizePolicy.Ignored)
         self.label.setMinimumSize(80, 60)
@@ -922,6 +1004,8 @@ class CurveChart:
         span = max(high - low, 1e-6)
         if self.mode != "percent":
             low, high = low - 0.08 * span, high + 0.08 * span
+            if self.fromZero and low > 0.0:
+                low = 0.0
             span = high - low
         rawStep = span / 5.0
         magnitude = 10.0 ** math.floor(math.log10(rawStep))
@@ -1210,6 +1294,13 @@ def gatedReviewMosaicPanel():
     """Cine slice rows of Gated Review (its own panel: Perfusion and Gated QC keep theirs)."""
     from MyocardialPerfusionSPECTLib.views import GATED_REVIEW_MOSAIC_TAG
     return _singletonPanel("_mpiGatedReviewMosaicState", GATED_REVIEW_MOSAIC_TAG, SliceMosaicPanel)
+
+
+def gatedReviewMosaic2Panel():
+    """HLA and VLA rows of the Gated Review layouts with three slices per axis (the SA rows are in
+    gatedReviewMosaicPanel, beside the static 3D wall)."""
+    from MyocardialPerfusionSPECTLib.views import GATED_REVIEW_MOSAIC2_TAG
+    return _singletonPanel("_mpiGatedReviewMosaic2State", GATED_REVIEW_MOSAIC2_TAG, SliceMosaicPanel)
 
 
 def volumeCurvePanelState(tag=None):
