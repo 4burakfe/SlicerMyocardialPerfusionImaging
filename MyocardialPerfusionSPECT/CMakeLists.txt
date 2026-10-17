@@ -15,6 +15,7 @@ set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}Lib/display.py
   ${MODULE_NAME}Lib/studies.py
   ${MODULE_NAME}Lib/session.py
+  ${MODULE_NAME}Lib/case.py
   ${MODULE_NAME}Lib/widgets.py
   ${MODULE_NAME}Lib/toolbar.py
   ${MODULE_NAME}Lib/parameters.py

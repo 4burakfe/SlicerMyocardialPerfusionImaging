@@ -5,9 +5,13 @@ Lists the SPECT studies in the scene: each static (or summed-gate) volume with i
 rest, redistribution, viability, other) and the gated sequence that goes with it. Roles are guessed
 from the names and confirmed here; they are stored on the nodes (MPI.StudyRole, MPI.GatedSequence)
 and saved with the scene. The selected row is the active study of all MPI modules.
+The case (patient name and ID) is read from the DICOM headers of the studies, can be typed instead,
+and is shown in the workflow toolbar; studies of more than one patient are warned about
+(MyocardialPerfusionSPECTLib/case.py).
 See MyocardialPerfusionSPECTLib/studies.py for how gated sequences are recognised and paired.
 """
 
+import html
 import os
 import sys
 import logging
@@ -28,7 +32,8 @@ MyocardialPerfusionSPECTLib.reloadInDeveloperMode()
 from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib import session  # noqa: E402
 from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import styleButton  # noqa: E402
+from MyocardialPerfusionSPECTLib import case as caseLib  # noqa: E402
+from MyocardialPerfusionSPECTLib.widgets import narrowLabel, styleButton  # noqa: E402
 
 
 def _installToolbar():
@@ -70,6 +75,35 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def setup(self):
         ScriptedLoadableModuleWidget.setup(self)
+
+        caseSection = ctk.ctkCollapsibleButton()
+        caseSection.text = "Case"
+        self.layout.addWidget(caseSection)
+        caseForm = qt.QFormLayout(caseSection)
+        self.caseNameEdit = qt.QLineEdit()
+        self.caseNameEdit.placeholderText = "Patient name"
+        self.caseNameEdit.toolTip = ("Patient name, read from the DICOM headers of the studies; type to change it "
+                                     "(kept until Read from DICOM)")
+        caseForm.addRow("Name:", self.caseNameEdit)
+        self.caseIdEdit = qt.QLineEdit()
+        self.caseIdEdit.placeholderText = "Patient ID"
+        self.caseIdEdit.toolTip = ("Patient ID, read from the DICOM headers of the studies; type to change it "
+                                   "(kept until Read from DICOM)")
+        caseForm.addRow("ID:", self.caseIdEdit)
+        caseRow = qt.QHBoxLayout()
+        self.caseSourceLabel = narrowLabel(qt.QLabel())
+        self.caseSourceLabel.setStyleSheet("color: #7d868d;")
+        self.caseDicomButton = qt.QPushButton("Read from DICOM")
+        self.caseDicomButton.toolTip = ("Take the name and ID from the DICOM headers of the studies again "
+                                        "(with more than one patient: the one of the active study)")
+        caseRow.addWidget(self.caseSourceLabel, 1)
+        caseRow.addWidget(self.caseDicomButton)
+        caseForm.addRow(caseRow)
+        self.caseWarningLabel = narrowLabel(qt.QLabel())
+        self.caseWarningLabel.setStyleSheet("color: #d08030; font-weight: bold;")
+        self.caseWarningLabel.visible = False
+        caseForm.addRow(self.caseWarningLabel)
+        self.patients = []   # caseLib.scanPatients groups of the studies shown
 
         studiesSection = ctk.ctkCollapsibleButton()
         studiesSection.text = "Studies"
@@ -124,6 +158,9 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.sumGatesButton.connect("clicked(bool)", self.onSumGates)
         self.nextButton.connect("clicked(bool)", self.onProcess)
         self.studiesTable.connect("itemSelectionChanged()", self.onStudySelected)
+        self.caseNameEdit.connect("editingFinished()", self.onCaseEdited)
+        self.caseIdEdit.connect("editingFinished()", self.onCaseEdited)
+        self.caseDicomButton.connect("clicked(bool)", self.onCaseFromDicom)
         self.parameterPanel.loadSaved()   # saved settings of this step, as if set by hand
 
         self.addObserver(slicer.mrmlScene, slicer.mrmlScene.NodeAddedEvent, self.onNodeAdded)
@@ -144,6 +181,7 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onSessionChanged(self):
         """Follow the active study chosen elsewhere (e.g. in the toolbar)."""
+        self.showCase()
         if self._fillingStudies:
             return
         active = session.activeStudy()
@@ -173,6 +211,32 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 selectedKey = (selected.staticNode or selected.gatedNode).GetID()
             self.studies = studiesLib.scanStudies()
             self.fillStudiesTable(selectedKey)
+            self.patients = caseLib.updateFromDicom(self.studies)
+            caseLib.warnIfMixed(self.patients)
+            self.showCase()
+
+    # --- case -------------------------------------------------------------------------------
+    def showCase(self):
+        name, patientId, source = caseLib.currentCase()
+        for edit, value in ((self.caseNameEdit, name), (self.caseIdEdit, patientId)):
+            if not edit.hasFocus() and edit.text != value:
+                edit.text = value
+        self.caseSourceLabel.text = {caseLib.SOURCE_DICOM: "From the DICOM headers",
+                                     caseLib.SOURCE_MANUAL: "Typed by hand"}.get(source, "No DICOM patient data")
+        warning = caseLib.mixedWarning(self.patients)
+        self.caseWarningLabel.text = ("\u26a0 " + html.escape(warning).replace("\n", "<br>") + "<br>Set the volumes of another "
+                                      "patient to None below.") if warning else ""
+        self.caseWarningLabel.visible = bool(warning)
+
+    def onCaseEdited(self):
+        name, patientId, _ = caseLib.currentCase()
+        if (self.caseNameEdit.text.strip(), self.caseIdEdit.text.strip()) != (name, patientId):
+            caseLib.setCase(self.caseNameEdit.text, self.caseIdEdit.text, caseLib.SOURCE_MANUAL)
+        self.showCase()
+
+    def onCaseFromDicom(self):
+        self.patients = caseLib.updateFromDicom(self.studies, force=True)
+        self.showCase()
 
     def fillStudiesTable(self, selectedKey=None):
         self._fillingStudies = True
@@ -260,7 +324,9 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         study = self.studies[row]
         study.role = studiesLib.ROLES[index]
         studiesLib.saveStudy(study)
+        self.patients = caseLib.updateFromDicom(self.studies)   # a study set to None no longer counts
         session.notify()
+        self.showCase()
         combo = self.studiesTable.cellWidget(row, 1)
         if combo:
             font = combo.font
@@ -313,6 +379,13 @@ class MPIDataRolesTest(ScriptedLoadableModuleTest):
         self.assertNotIn("Stress MPI SA", names)
         session.setActiveStudy(None)
         self.assertIsNone(session.activeStudy())
+        caseLib.setCase("Doe, John", "123", caseLib.SOURCE_MANUAL)
+        self.assertEqual(caseLib.currentCase(), ("Doe, John", "123", caseLib.SOURCE_MANUAL))
+        caseLib.updateFromDicom()   # typed by hand: kept
+        self.assertEqual(caseLib.currentCase()[0], "Doe, John")
+        self.assertEqual(caseLib.formatPersonName("DOE^JOHN^Q"), "DOE, JOHN Q")
+        self.assertEqual(len(caseLib.patientGroups([("a", "DOE^JOHN", "1"), ("b", "Doe, John", ""),
+                                                     ("c", "ROE^JANE", "2")])), 2)
         self.delayDisplay("Data roles test passed")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
