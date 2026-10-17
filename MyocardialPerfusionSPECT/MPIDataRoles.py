@@ -15,6 +15,7 @@ import html
 import os
 import sys
 import logging
+import traceback
 
 import qt
 import ctk
@@ -171,6 +172,72 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         _installToolbar()
         self.refreshStudies()
 
+    # --- workflow toolbar (second row) -----------------------------------------------------------------
+    def buildToolbar(self, bar):
+        """Most used controls in the toolbar (toolbar.StepBar); they drive the controls of this panel."""
+        self.toolbarBar = bar
+        bar.action("Add data…", "Open Slicer's Add data dialog to load studies (files, or a DICOM folder)",
+                   slicer.util.openAddDataDialog)
+        bar.mirror(self.detectStudiesButton, "Detect studies")
+        bar.separator()
+        self.tbStudy = bar.combo("Study", "Study of the selected row: the active study of all steps",
+                                 self.onToolbarStudy, 140)
+        self.tbRole = bar.combo("Role", "Role of that study (italic: guessed from the names, pick to confirm; None "
+                                        "leaves it out)", self.onToolbarRole)
+        self.tbGated = bar.combo("Gated", "Gated sequence of that study", self.onToolbarGated, 120)
+        bar.mirror(self.sumGatesButton, "Create static from gates", kind="create")
+        bar.separator()
+        bar.mirror(self.nextButton, "Process ›", kind="primary")
+
+    def selectedRow(self):
+        rows = self.studiesTable.selectionModel().selectedRows() if self.studiesTable.selectionModel() else []
+        return rows[0].row() if rows else -1
+
+    def onToolbarStudy(self, index):
+        if 0 <= index < len(self.studies):
+            self.studiesTable.selectRow(index)   # makes it the active study (onStudySelected)
+        self.syncToolbar()
+
+    def onToolbarRole(self, index):
+        row = self.selectedRow()
+        combo = self.studiesTable.cellWidget(row, 1) if row >= 0 else None
+        if combo is not None and 0 <= index < combo.count:
+            combo.setCurrentIndex(index)
+            self.onStudyRoleChanged(row, index)
+        self.syncToolbar()
+
+    def onToolbarGated(self, index):
+        row = self.selectedRow()
+        combo = self.studiesTable.cellWidget(row, 2) if row >= 0 else None
+        if combo is not None and combo.enabled and 0 <= index < combo.count:
+            combo.setCurrentIndex(index)
+            self.onStudyGatedChanged(row, index)
+        self.syncToolbar()
+
+    def syncToolbar(self):
+        bar = getattr(self, "toolbarBar", None)
+        if bar is None:
+            return
+        try:
+            bar.syncMirrors()
+            row = self.selectedRow()
+            names = [(s.name if s.staticNode else f"{s.name} (gated only)", None) for s in self.studies]
+            bar.setItems(self.tbStudy, names, row)
+            roleCombo = self.studiesTable.cellWidget(row, 1) if row >= 0 else None
+            gatedCombo = self.studiesTable.cellWidget(row, 2) if row >= 0 else None
+            for toolbarCombo, panelCombo in ((self.tbRole, roleCombo), (self.tbGated, gatedCombo)):
+                items = ([(panelCombo.itemText(i), panelCombo.itemData(i)) for i in range(panelCombo.count)]
+                         if panelCombo is not None else [])
+                bar.setItems(toolbarCombo, items, panelCombo.currentIndex if panelCombo is not None else -1)
+                toolbarCombo.enabled = bool(panelCombo is not None and panelCombo.enabled)
+                if panelCombo is not None:
+                    font = toolbarCombo.font
+                    font.setItalic(bool(panelCombo.font.italic()))
+                    toolbarCombo.font = font
+            self.tbStudy.enabled = bool(self.studies)
+        except Exception:
+            logging.debug("MPI: could not update the toolbar:\n" + traceback.format_exc())
+
     def enter(self):
         self.refreshStudies()
 
@@ -298,6 +365,7 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.sumGatesButton.enabled = bool(study and study.staticNode is None and study.gatedNode)
         self.nextButton.enabled = any(s.staticNode is not None and s.role != studiesLib.EXCLUDED_ROLE
                                       for s in self.studies)
+        self.syncToolbar()
 
     def onProcess(self):
         """Processing needs an active study: keep the one chosen, else take Study 1 (or any study)."""
@@ -333,6 +401,7 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             font.setItalic(False)
             combo.font = font
             combo.toolTip = "Study role"
+        self.syncToolbar()
 
     def onStudyGatedChanged(self, row, index):
         if not (0 <= row < len(self.studies)):
