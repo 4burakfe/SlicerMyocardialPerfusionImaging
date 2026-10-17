@@ -101,7 +101,7 @@ OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "se
 REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points", "points"))
 THICKENING_VIEWS = (("5 walls (apex and an X: anterior, septal, inferior, lateral)", "walls"),
                    ("17 segments", "segments"), ("Per pixel", "pixels"))   # wallLib.REGION_VIEWS
-DEFAULT_THICKENING_VIEW = "walls"
+DEFAULT_THICKENING_VIEW = "segments"
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
 READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with the perfusion and the patient's "
                 "data. With the fixed motion reference (default) motion is measured from one LV center and axis: "
@@ -487,10 +487,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.thickeningViewCombo.addItem(text, value)
         self.thickeningViewCombo.setCurrentIndex(max(0, self.thickeningViewCombo.findData(DEFAULT_THICKENING_VIEW)))
         self.thickeningViewCombo.toolTip = (
-            "How the wall thickening map is painted: the mean of each of the five walls (default: the apex, and "
-            "four quarters cut by an X centred on the anterior, septal, inferior and lateral walls; the overlay "
-            "then shows these walls and their scores), the mean of "
-            "each of the 17 segments, or every pixel (a count ratio per pixel is noisy)")
+            "How the wall thickening map is painted: the mean of each of the five walls (the apex, and four "
+            "quarters cut by an X centred on the anterior, septal, inferior and lateral walls; the overlay then "
+            "shows these walls and their scores), the mean of each of the 17 segments (default), or every pixel "
+            "(a count ratio per pixel is noisy)")
         polarForm.addRow("Thickening map:", self.thickeningViewCombo)
         self.motionRange = self._windowWidget(
             "Color window of the inward wall motion, mm of endocardial motion from ED to ES (outward motion: "
