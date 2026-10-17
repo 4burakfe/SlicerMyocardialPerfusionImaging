@@ -192,16 +192,21 @@ What you get:
 
 How it works:
 
-- Rays are cast from the LV center, cylindrical in the body and spherical at the apex. The
-  count-weighted peak along each ray gives the mid-wall. A ray far from its neighbours, or from the
-  robust circle through its row (when a wide defect lets its neighbours share a wrong peak), follows the
-  others.
+- Rays are cast from the LV center, cylindrical in the body and spherical at the apex. The peak along
+  each ray gives the mid-wall. How much a ray's own peak counts depends on how clearly the wall stands
+  out: its counts above the blood pool of the cavity, against those of the typical (median) wall. A hot
+  spot such as a bright lateral wall raises only its own rays, so a dimmer but plainly seen wall keeps
+  its own peak. A ray far from its neighbours, or from the robust circle through its row (when a wide
+  defect lets its neighbours share a wrong peak), follows the others.
 - Rays through a deep defect have no peak of their own. They follow a shape model of the whole LV: a
   truncated ellipsoid fitted to the walls that are seen (the border of the defect left out, where the
-  blur pulls the peaks off the wall), plus the smooth misfit of those walls. A defect, also one over the
-  apex, takes the curve of the walls around it instead of being bridged straight across. The wall
-  thickness inside a defect comes from the walls that are seen. *Shape model through defects* (Advanced
-  parameters, Defects) turns it off.
+  blur pulls the peaks off the wall). Its long axis may tilt up to 25 deg against the LV axis when part
+  of the apex is seen (with none of it seen, only when that fits the walls clearly better). The surface
+  is the ellipsoid plus the peaks' smoothed deviations from it, which fade out into a defect, so the
+  walls next to a defect keep the ellipsoid's curve instead of the level of their neighbours. A defect,
+  also one over the apex, takes the curve of the walls around it instead of being bridged straight
+  across. The wall thickness inside a defect comes from the walls that are seen. *Shape model through
+  defects* (Advanced parameters, Defects) turns it off.
 - The wall thickness comes from the profile width corrected for the system resolution, and the endo-
   and epicardium are placed half a thickness on either side.
 - At every angle the wall ends where its counts fall below 55 % of that angle's wall counts, or where
@@ -290,7 +295,9 @@ Wall thickness of the frames (*Wall thickness* in the advanced section):
   with a Butterworth 0.30 cycles/cm gated filter).
 
 In the constant-volume models, rays through a defect keep the wall thickness of the static fit in every
-frame: scar does not thicken, and its gate profiles show no wall to measure. Surface smoothing of the
+frame: scar does not thicken, and its gate profiles show no wall to measure. A ray counts as defect by
+its visibility in the static image (counts above the cavity's blood pool against the typical wall's):
+no wall below 0.15, full wall from 0.60 (*Defect: no wall below* / *full wall from*). Surface smoothing of the
 frames is 1.25 by default.
 
 ### 6. Gated Review

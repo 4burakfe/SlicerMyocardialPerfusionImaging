@@ -142,6 +142,9 @@ STEP_PARAMETERS = {
         P("shapePriorWeight", "Shape model weight", 0.03, f"{MYO}:SHAPE_PRIOR_WEIGHT", 0.0, 1.0, 0.01, 3,
           tooltip="Weight of the shape model against the rays' own count peaks (weights 0..1); higher: dim walls "
                   "follow the model more", group="Defects"),
+        P("visibilityReference", "Typical wall (percentile)", 50.0, f"{MYO}:VISIBILITY_REFERENCE", 10.0, 95.0, 5.0,
+          0, "", "A wall's visibility is its counts above the cavity's blood pool against those of this percentile "
+                 "of all walls (a hot spot above it does not make the other walls look dim)", "Defects"),
         P("shapeDim", "Defect for the model below", 0.45, f"{MYO}:SHAPE_DIM", 0.1, 1.0, 0.05, 2, " x peak",
           "Walls dimmer than this share of the bright walls, and the walls next to them, are left out of the shape "
           "model fit and of the wall thickness", "Defects"),
@@ -153,6 +156,10 @@ STEP_PARAMETERS = {
         P("shapeCenterSigma", "Shape model center spread", 15.0, f"{MYO}:SHAPE_CENTER_SIGMA", 1.0, 100.0, 1.0, 0,
           " mm", "How far the ellipsoid center may stray from the valve plane before the prior pulls it back",
           "Defects"),
+        P("shapeMaxTilt", "Shape model largest tilt", 25.0, f"{MYO}:SHAPE_MAX_TILT", 0.0, 45.0, 1.0, 0, " deg",
+          "How far the ellipsoid's long axis may turn away from the LV axis", "Defects"),
+        P("shapeTiltSigma", "Shape model tilt spread", 15.0, f"{MYO}:SHAPE_TILT_SIGMA", 1.0, 90.0, 1.0, 0, " deg",
+          "How far the ellipsoid's axis may tilt before the prior pulls it back", "Defects"),
         P("maxValveTilt", "Largest valve plane tilt", 40.0, f"{MYO}:DEFAULTS.maxValveTilt", 0.0, 80.0, 1.0, 0, " deg",
           "Largest tilt of the valve plane against the short-axis plane", "Valve plane"),
         P("maxBaseNarrowing", "Steepest basal narrowing", 35.0, f"{MYO}:DEFAULTS.maxBaseNarrowing", 0.0, 80.0, 1.0, 0,
@@ -196,11 +203,11 @@ STEP_PARAMETERS = {
         P("maxThicknessChange", "Thickness change limit", 0.5, f"{MYO}:GATE_DEFAULTS.maxThicknessChange", 0.0, 3.0,
           0.05, 2, tooltip="Constant-volume models: a ray's thickness stays within reference / (1 + x) .. "
                            "reference x (1 + x)", group="Frame segmentation"),
-        P("reliabilityLow", "Defect: no wall below", 0.25, f"{MYO}:RELIABILITY_LOW", 0.0, 1.0, 0.01, 2,
-          " x peak", "Rays dimmer than this share of the bright walls (90th percentile) in the static image count "
-                     "as deep defect (scar)", "Defects"),
-        P("reliabilityHigh", "Defect: full wall from", 0.60, f"{MYO}:RELIABILITY_HIGH", 0.0, 1.0, 0.01, 2,
-          " x peak", "Rays at least this bright count as normal wall; in between they are partly trusted",
+        P("visibilityLow", "Defect: no wall below", 0.15, f"{MYO}:RELIABILITY_LOW", 0.0, 1.0, 0.01, 2,
+          " x typical", "Rays whose counts above the cavity's blood pool in the static image are below this share "
+                        "of the typical wall's count as deep defect (scar)", "Defects"),
+        P("visibilityHigh", "Defect: full wall from", 0.60, f"{MYO}:RELIABILITY_HIGH", 0.0, 1.0, 0.01, 2,
+          " x typical", "Rays at least this visible count as normal wall; in between they are partly trusted",
           "Defects"),
         P("minDefectShift", "Defect search window", 0.3, f"{MYO}:MIN_DEFECT_SHIFT", 0.0, 1.0, 0.05, 2,
           " x limit", "Share of the wall motion limit searched on rays through a deep defect", "Defects"),
