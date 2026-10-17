@@ -972,8 +972,11 @@ VESSEL_LABEL_PLACES = ((0.6, 35.0), (0.6, 160.0), (0.6, 270.0))   # LAD anterose
 
 
 def regionIndex(radius, angle, overlay="segments"):
-    """Region at bullseye radius / angle: the segment number (1..17) or, for "vessels", the index
-    of its territory in VESSELS plus one; 0 outside the bullseye."""
+    """Region at bullseye radius / angle: the segment number (1..17), for "vessels" the index of its
+    territory in VESSELS plus one, for "walls" the index in WALLS plus one (wallIndex); 0 outside the
+    bullseye."""
+    if overlay == "walls":
+        return wallIndex(radius, angle)
     segment = segmentIndex(radius, angle)
     if overlay != "vessels":
         return segment
@@ -988,6 +991,8 @@ def regionBorders(overlay="segments", step=0.5):
     angle in degrees) [n, 2], with the outer rim. Arcs run along the ring edges where the region
     changes across them, spokes along the segment edges where it changes around; for "vessels"
     this gives the stepped territory outline that follows the segment borders."""
+    if overlay == "walls":
+        return wallBorders()
     edges = POLAR_RING_EDGES
     eps = 1e-4
     lines = []
@@ -1032,7 +1037,10 @@ def regionBorders(overlay="segments", step=0.5):
 
 
 def regionValues(polar, overlay="segments", resolution=181):
-    """Mean polar map value of each region of an overlay (17 segments or the VESSELS territories)."""
+    """Mean polar map value of each region of an overlay (17 segments, the VESSELS territories or the
+    five WALLS)."""
+    if overlay == "walls":
+        return wallValues(polar, resolution)
     if overlay != "vessels":
         return segmentValues(polar, resolution)
     image, segments = bullseye(polar, resolution)
@@ -1044,6 +1052,8 @@ def regionValues(polar, overlay="segments", resolution=181):
 
 
 def regionLabelPlaces(overlay="segments"):
+    if overlay == "walls":
+        return WALL_LABEL_PLACES
     return VESSEL_LABEL_PLACES if overlay == "vessels" else SEGMENT_LABEL_PLACES
 
 
@@ -1051,14 +1061,21 @@ def bullseye(polar, size):
     """Polar map as a [size, size] image (row 0 at the top; NaN outside the circle). Anterior up,
     septum left, lateral right, inferior down; apex in the center, valve plane at the rim.
     Also returns the segment number of every pixel."""
+    radius, angle = _bullseyeCoordinates(size)
+    image = _polarLookup(polar, np.clip(radius, 0.0, 1.0).ravel(), angle.ravel()).reshape(size, size)
+    image[radius > 1.0] = np.nan
+    return image, segmentIndex(radius, angle)
+
+
+def _bullseyeCoordinates(size):
+    """Bullseye radius (0 apex .. 1 rim) and angle (radians, anterior up 0, septum left +90 deg) of every
+    pixel of a [size, size] image."""
     coordinate = (np.arange(size) + 0.5) / size * 2.0 - 1.0
     x = coordinate[None, :]                     # right
     y = -coordinate[:, None]                    # up
     radius = np.sqrt(x ** 2 + y ** 2) * np.ones((size, size))
-    angle = np.arctan2(-x, y) * np.ones((size, size))     # anterior (up) 0, septum (left) +90 deg
-    image = _polarLookup(polar, np.clip(radius, 0.0, 1.0).ravel(), angle.ravel()).reshape(size, size)
-    image[radius > 1.0] = np.nan
-    return image, segmentIndex(radius, angle)
+    angle = np.arctan2(-x, y) * np.ones((size, size))
+    return radius, angle
 
 
 def segmentValues(polar, resolution=181):
@@ -1069,23 +1086,45 @@ def segmentValues(polar, resolution=181):
 
 
 WALLS = ("Apex", "Anterior", "Septal", "Inferior", "Lateral")
-WALL_SEGMENTS = {   # the five walls as groups of the 17 segments (their borders are segment borders)
-    "Apex": (17,),
-    "Anterior": (1, 7, 13),
-    "Septal": (2, 3, 8, 9, 14),
-    "Inferior": (4, 10, 15),
-    "Lateral": (5, 6, 11, 12, 16),
-}
+# The five walls are drawn on the bullseye itself, not grouped from the 17 segments: the apex is the disk
+# inside APEX_RADIUS (the size of segment 17), and the rest is cut into four quarters by an X, each
+# centred on its wall (anterior up, septal left, inferior down, lateral right), borders at 45, 135, 225
+# and 315 deg.
+APEX_RADIUS = POLAR_RING_EDGES[1]
+WALL_CENTERS_DEG = (0.0, 90.0, 180.0, 270.0)        # anterior, septal, inferior, lateral
+WALL_LABEL_PLACES = ((0.0, 0.0),) + tuple((0.5 * (APEX_RADIUS + 1.0), c) for c in WALL_CENTERS_DEG)
 REGION_VIEWS = ("walls", "segments", "pixels")   # how a polar map is painted: wall means, segment means, per pixel
 
 
+def wallIndex(radius, angle):
+    """Wall at bullseye radius (0..1) and angle (radians, from anterior toward the septum): its index
+    in WALLS plus one (1 apex, 2 anterior, 3 septal, 4 inferior, 5 lateral); 0 outside the bullseye."""
+    radius = np.asarray(radius, dtype=float)
+    degrees = np.mod(np.degrees(np.asarray(angle, dtype=float)), 360.0)
+    quarter = np.mod(np.floor((degrees + 45.0) / 90.0), 4).astype(int)
+    index = np.where(radius < APEX_RADIUS, 1, 2 + quarter)
+    return np.where(radius > 1.0, 0, index).astype(int)
+
+
+def wallBorders(samples=721):
+    """Borders of the five walls on the bullseye as polylines of (radius, angle in degrees): the apex
+    circle, the four arms of the X from it to the rim, and the rim."""
+    circle = np.linspace(0.0, 360.0, samples)
+    lines = [np.column_stack([np.full(circle.shape, APEX_RADIUS), circle]),
+             np.column_stack([np.ones(circle.shape), circle])]
+    for center in WALL_CENTERS_DEG:
+        lines.append(np.array([[APEX_RADIUS, center + 45.0], [1.0, center + 45.0]]))
+    return lines
+
+
 def wallValues(polar, resolution=181):
-    """Mean polar map value of each of the five WALLS, by bullseye area."""
-    image, segments = bullseye(polar, resolution)
+    """Mean polar map value of each of the five WALLS, by bullseye area (pixels of the map)."""
+    image, _ = bullseye(polar, resolution)
+    walls = wallIndex(*_bullseyeCoordinates(resolution))
     values = []
-    for wall in WALLS:
-        inside = np.isin(segments, WALL_SEGMENTS[wall])
-        values.append(float(np.nanmean(image[inside])) if np.any(inside) else float("nan"))
+    for index in range(1, len(WALLS) + 1):
+        inside = (walls == index) & np.isfinite(image)
+        values.append(float(image[inside].mean()) if np.any(inside) else float("nan"))
     return np.array(values)
 
 
@@ -1093,10 +1132,10 @@ def wallBullseye(polar, size, resolution=181):
     """Bullseye of the five wall means (apex, anterior, septal, inferior, lateral): every pixel of a
     wall shows its mean, NaN outside the circle. Also returns the five means (order of WALLS)."""
     values = wallValues(polar, resolution)
-    _, segments = bullseye(polar, size)
-    image = np.full(segments.shape, np.nan)
-    for wall, value in zip(WALLS, values):
-        image[np.isin(segments, WALL_SEGMENTS[wall])] = value
+    walls = wallIndex(*_bullseyeCoordinates(size))
+    image = np.full(walls.shape, np.nan)
+    for index, value in enumerate(values, start=1):
+        image[walls == index] = value
     return image, values
 
 

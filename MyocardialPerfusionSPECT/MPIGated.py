@@ -97,7 +97,7 @@ STATIC_VIEW_ELEVATION_DEG = 30.0   # static 3D wall: seen from anteroseptal, rai
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}
 OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "segments"), ("None", ""))
 REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points", "points"))
-THICKENING_VIEWS = (("5 walls (apex, anterior, septal, inferior, lateral)", "walls"),
+THICKENING_VIEWS = (("5 walls (apex and an X: anterior, septal, inferior, lateral)", "walls"),
                    ("17 segments", "segments"), ("Per pixel", "pixels"))   # wallLib.REGION_VIEWS
 DEFAULT_THICKENING_VIEW = "walls"
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
@@ -449,7 +449,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.thickeningViewCombo.addItem(text, value)
         self.thickeningViewCombo.setCurrentIndex(max(0, self.thickeningViewCombo.findData(DEFAULT_THICKENING_VIEW)))
         self.thickeningViewCombo.toolTip = (
-            "How the wall thickening map is painted: the mean of each of the five walls (default), the mean of "
+            "How the wall thickening map is painted: the mean of each of the five walls (default: the apex, and "
+            "four quarters cut by an X centred on the anterior, septal, inferior and lateral walls; the overlay "
+            "then shows these walls and their scores), the mean of "
             "each of the 17 segments, or every pixel (a count ratio per pixel is noisy)")
         polarForm.addRow("Thickening map:", self.thickeningViewCombo)
         self.motionRange = self._windowWidget(
@@ -1440,9 +1442,11 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 rgb = colorize(np.nan_to_num(image, nan=low), top, table, low)
                 rgb[np.isnan(image)] = 0
                 regions = {overlay: [float(v) for v in wallLib.regionValues(polar, overlay)]
-                           for overlay in wallLib.OVERLAYS}
+                           for overlay in wallLib.OVERLAYS + ("walls",)}
                 cached = (key, (rgbToQImage(rgb), regions))
                 self.polarImages[(slot, tag)] = cached
+            # painted per wall: the overlay shows the five walls and their scores (not the territories)
+            panel.regionOverride = "walls" if view == "walls" else None
             _, _, _, ed, es = data.phases
             frames = f"ED frame {data.gated.labels[ed]} to ES frame {data.gated.labels[es]}"
             note = (f"mm the endocardium moves inward (below 0: outward), {frames} (valve descent included)."
@@ -1809,6 +1813,7 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
     def runTest(self):
         self.setUp()
         self.test_Thickening()
+        self.test_WallRegions()
 
     def test_Thickening(self):
         """A wall that gets brighter toward the frame with the smallest cavity thickens."""
@@ -1820,6 +1825,20 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         thickening = wallLib.thickeningMap(polars, 0, 4)
         self.assertGreater(float(np.median(thickening["values"])), 25.0)
         self.delayDisplay("Thickening test passed")
+
+    def test_WallRegions(self):
+        """The five walls are the apex disk and four quarters cut by an X centred on anterior, septal,
+        inferior and lateral (not groups of the 17 segments); a map with one value per wall gives it back."""
+        self.assertEqual(int(wallLib.wallIndex(0.1, 0.0)), 1)
+        for degrees, wall in ((44.0, 2), (46.0, 3), (134.0, 3), (136.0, 4), (226.0, 5), (314.0, 5), (316.0, 2)):
+            self.assertEqual(int(wallLib.wallIndex(0.6, np.radians(degrees))), wall)
+        rho, theta = np.linspace(1, 0, 200), np.linspace(0, 2 * np.pi, 360, endpoint=False)
+        values = 10.0 * wallLib.wallIndex(rho[:, None], theta[None, :]).astype(float)
+        means = wallLib.wallValues({"values": values, "rho": rho, "theta": theta})
+        for mean, expected in zip(means, (10.0, 20.0, 30.0, 40.0, 50.0)):
+            self.assertAlmostEqual(float(mean), expected, delta=1.0)
+        self.assertEqual(len(wallLib.regionLabelPlaces("walls")), len(wallLib.WALLS))
+        self.delayDisplay("Wall regions test passed")
 
     def test_Motion(self):
         """An LV whose endocardium moves 8 mm inward from ED to ES (same valve plane) shows about 8 mm."""

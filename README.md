@@ -306,8 +306,11 @@ STRESS GATED shows the stress gated study:
   - perfusion,
   - **wall thickening**, count-based (ES / ED wall counts of every ray, first harmonic over the cycle),
     smoothed more than the others since a count ratio is noisy. *Thickening map* paints it as the mean
-    of each of the five walls (default: apex = segment 17, anterior 1, 7, 13, septal 2, 3, 8, 9, 14,
-    inferior 4, 10, 15, lateral 5, 6, 11, 12, 16), the mean of each of the 17 AHA segments, or per pixel,
+    of each of the five walls (default), the mean of each of the 17 AHA segments, or per pixel. The five
+    walls are drawn on the bullseye itself, not grouped from the segments: the apex is the central disk
+    (the size of segment 17) and the rest is cut by an X into anterior, septal, inferior and lateral
+    quarters (borders at 45, 135, 225 and 315 deg). With an overlay shown, the per-wall map draws these
+    five walls and writes their scores instead of the coronary territories,
   - **wall motion**, mm the endocardium moves from ED to ES, valve descent included; outward
     (dyskinetic) motion below 0 goes from black at 0 to full turquoise at -4 mm (red with PET-DICOM, Jotun
     and Vanaheim).
