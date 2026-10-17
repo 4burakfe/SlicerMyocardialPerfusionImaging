@@ -313,18 +313,21 @@ def _wallSurface(grid, profiles, peakT, weight, reference, p, sigma, tolerance, 
 GATE_DEFAULTS = {
     "maxWallShift": 25.0,      # mm, the mid-wall of a gate is searched this far from the static mid-wall
     "maxValveShift": 25.0,     # mm, the valve plane of a gate stays this close to the static one (base descent ~1 cm)
-    "gateSmoothing": 1.25,     # Gaussian sigma of the gate surface smoothing (grid samples)
+    "gateSmoothing": 2.0,      # Gaussian sigma of the gate surface smoothing (grid samples); the gates are noisier
+                               # than the static image, so smoothed more than its 1.25
     "thicknessModel": "es",      # "es": every frame keeps the myocardial volume of ES (thickness from
                                  #       its own profiles),
                                  # "volume": the same with ED as the reference (QGS-like),
                                  # "ray": each ray keeps its wall volume of the static fit,
                                  # "mid": only the mid-wall moves, every ray keeps its ED thickness
+                                 # "frame": every frame's thickness from its own profiles (no volume kept)
     "maxThicknessChange": 0.5,   # "volume": a ray's thickness stays within ED / (1 + x) .. ED x (1 + x)
 }
 THICKNESS_MODELS = (("Constant myocardial volume (ES reference)", "es"),
                     ("Constant myocardial volume (ED reference)", "volume"),
                     ("Per ray, from the static wall", "ray"),
-                    ("Mid-wall only (ED wall thickness)", "mid"))
+                    ("Mid-wall only (ED wall thickness)", "mid"),
+                    ("Each frame from its own profiles", "frame"))
 
 
 SHAPE_PRIOR_WEIGHT = 0.03  # weight of the shape model against the rays' own peaks (weights 0..1) in the wall fit
@@ -549,6 +552,33 @@ def constantVolumeGates(results, params=None, referencePhase="ed"):
         endo, epi = _wallSurfaces(grid, mid, thickness, p)
         out[i] = dict(result, thickness=thickness, endo=endo, epi=epi, thicknessModel=referencePhase,
                       edFrame=ed, referenceFrame=ed, resolutionMm=resolution)
+    return out
+
+
+def ownProfileGates(results, params=None):
+    """Wall thickness of every gate frame from its own count profiles, as the static fit does (gateThickness,
+    at the resolution estimated over all frames), with no volume kept between the frames. A gate's profiles
+    hold a fraction of the counts and a wall thinner than the blur, so the widths change little over the
+    cycle and are noisy: kept for comparison with the constant-volume model. Rays through a defect keep
+    their static thickness. results: fitGate results (None for a frame that could not be segmented).
+    Returns new results."""
+    known = [i for i, r in enumerate(results) if r is not None and "profileFwhm" in r]
+    if not known:
+        return list(results)
+    resolution = gatedResolution(results, results[known[0]]["grid"].params["resolution"])
+    out = list(results)
+    for i in known:
+        result = results[i]
+        grid, mid, p = result["grid"], result["mid"], result["grid"].params
+        own = gateThickness(result, resolution)
+        reliability = result.get("reliability")
+        fixed = result.get("staticThickness")
+        if reliability is not None and fixed is not None:
+            own = reliability ** 2 * own + (1.0 - reliability ** 2) * fixed
+        thickness = _holdBeyondBase(own, _beyondBase(grid, mid, result["valvePlane"]))
+        endo, epi = _wallSurfaces(grid, mid, thickness, p)
+        out[i] = dict(result, thickness=thickness, endo=endo, epi=epi, thicknessModel="frame",
+                      resolutionMm=resolution)
     return out
 
 

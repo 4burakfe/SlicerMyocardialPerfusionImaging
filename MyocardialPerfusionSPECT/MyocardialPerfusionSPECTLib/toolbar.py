@@ -1,7 +1,8 @@
 """Workflow toolbar of the MPI modules, at the top of the Slicer main window.
 
     [icon] Tarvos | Name · ID | (1) Data roles  >  (2) Processing  >  ...  >  (5) Gated QC  >  (6) Gated Review
-    [controls of the step shown: e.g. Max % | FOV | Contours | Sync | Vessels / 17 seg | Scores | layouts]
+    [controls of the step shown: e.g. Max % | color map | FOV | Contours | Sync | Vessels / 17 seg | Scores |
+     layouts | next step]
 
 Shown only while the Myocardial Perfusion SPECT hub is the current module. The step buttons show
 that step in the hub; their badge shows the step's state (done, available, locked). The case (patient
@@ -29,7 +30,7 @@ from MyocardialPerfusionSPECTLib.widgets import BUTTON_COLORS
 
 TOOLBAR_OBJECT_NAME = "MPIWorkflowToolbar"
 CONTROLS_OBJECT_NAME = "MPIStepControlsToolbar"
-TOOLBAR_VERSION = 10      # bump when the class changes, so a reload replaces the toolbar
+TOOLBAR_VERSION = 11      # bump when the class changes, so a reload replaces the toolbar
 BADGE_SIZE = 22
 CASE_MAX_CHARACTERS = 40   # longer case names are cut in the toolbar (the tooltip has all of it)
 ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Resources", "Icons",
@@ -93,6 +94,7 @@ class StepBar:
         self.layout.setContentsMargins(4, 0, 4, 0)
         self.layout.setSpacing(4)
         self.mirrors = []   # (toolbar button, panel button)
+        self.comboMirrors = []   # (toolbar combo box, panel combo box)
 
     def mirror(self, target, text, toolTip=None, kind=None):
         """A toolbar copy of a panel button: a click clicks the panel button (same effect, also in an exclusive
@@ -116,7 +118,37 @@ class StepBar:
         self.mirrors.append((button, target))
         return button
 
+    def mirrorCombo(self, target, label=None, toolTip=None):
+        """A toolbar copy of a panel combo box (same items): a choice here sets the panel one, and it follows
+        the panel one."""
+        if label:
+            self.label(label)
+        combo = qt.QComboBox()
+        for index in range(target.count):
+            combo.addItem(target.itemText(index), target.itemData(index))
+        combo.setFocusPolicy(qt.Qt.NoFocus)
+        combo.toolTip = toolTip or target.toolTip
+        combo.setCurrentIndex(target.currentIndex)
+
+        def onChoose(index):
+            if target.currentIndex != index:
+                target.setCurrentIndex(index)
+        combo.connect("activated(int)", onChoose)
+        target.connect("currentIndexChanged(int)", lambda _: self.syncMirrors())
+        self.layout.addWidget(combo)
+        self.comboMirrors.append((combo, target))
+        return combo
+
     def syncMirrors(self):
+        for combo, target in self.comboMirrors:
+            try:
+                if combo.currentIndex != target.currentIndex:
+                    wasBlocked = combo.blockSignals(True)
+                    combo.setCurrentIndex(target.currentIndex)
+                    combo.blockSignals(wasBlocked)
+                combo.setEnabled(bool(target.isEnabled()))
+            except Exception:   # the panel combo box is gone (module reloaded)
+                logging.debug("MPI toolbar: a mirrored combo box is gone", exc_info=True)
         for button, target in self.mirrors:
             try:
                 button.setEnabled(bool(target.isEnabled()))
@@ -165,6 +197,18 @@ class StepBar:
         button.setStyleSheet(self.colorStyle(kind) if kind else self.BUTTON_STYLE)
         button.toolTip = toolTip
         button.connect("clicked(bool)", onToggle)
+        self.layout.addWidget(button)
+        return button
+
+    def action(self, text, toolTip, onClick, kind=None):
+        """Push button; onClick() when the user clicks it. kind: colored as in mirror."""
+        button = qt.QToolButton()
+        button.setText(text)
+        button.setAutoRaise(kind is None)
+        button.setFocusPolicy(qt.Qt.NoFocus)
+        button.setStyleSheet(self.colorStyle(kind) if kind else self.BUTTON_STYLE)
+        button.toolTip = toolTip
+        button.connect("clicked(bool)", lambda checked=False: onClick())
         self.layout.addWidget(button)
         return button
 

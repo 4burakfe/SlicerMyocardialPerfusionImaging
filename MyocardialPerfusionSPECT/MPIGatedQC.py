@@ -238,6 +238,9 @@ class GatedStudy:
         elif model == "mid":
             # only the mid-wall moves: every ray keeps its end-diastolic wall thickness in all frames
             self.results = wallLib.midWallGates(self.results, params)
+        elif model == "frame":
+            # every frame's thickness from its own profile widths, as in the static fit
+            self.results = wallLib.ownProfileGates(self.results, params)
         for index, (label, node, matrix, voxel) in enumerate(frames):
             array = slicer.util.arrayFromVolume(node).astype(np.float32)   # again, one frame at a time
             stats = {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
@@ -358,7 +361,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.gateSmoothingSlider.singleStep = 0.25
         self.gateSmoothingSlider.decimals = 2
         self.gateSmoothingSlider.value = wallLib.GATE_DEFAULTS["gateSmoothing"]
-        self.gateSmoothingSlider.toolTip = ("Smoothing of the wall surface of every frame (rays), 1.25 by default. Higher "
+        self.gateSmoothingSlider.toolTip = ("Smoothing of the wall surface of every frame (rays), 2 by default. Higher "
                                             "values bridge defects and noise more, lower values follow the counts")
         advancedForm.addRow("Surface smoothing:", self.gateSmoothingSlider)
         self.thicknessModelCombo = qt.QComboBox()
@@ -375,7 +378,9 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "Mid-wall only: only the mid-wall (the count peak, the surface the gates show best) is taken from "
             "each frame and every ray keeps its end-diastolic wall thickness, so no thickening model enters the "
             "volumes; it reads lower than the others in hearts that thicken well and does not overestimate when "
-            "the gates are too blurred to show the thickening")
+            "the gates are too blurred to show the thickening. Each frame from its own profiles: the thickness of "
+            "every frame from its own count profile widths, as Myocardium does on the static image; a gate's wall is "
+            "thinner than the blur and holds a fraction of the counts, so it reads noisier and thickens less")
         advancedForm.addRow("Wall thickness:", self.thicknessModelCombo)
         self.segmentButton = styleButton(qt.QPushButton("Segment frames again"), "create")
         advancedForm.addRow(self.segmentButton)
@@ -435,10 +440,13 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.tbMax = bar.spin("Max", 10, 150, 5, " %", "Top of the color window (% of the hottest voxel near the LV)",
                               self.onToolbarMax)
         self.tbScale = bar.choice([(text, value, tip) for _, value, text, tip in FRAME_SCALES], self.onToolbarScale)
+        bar.mirrorCombo(self.colormapCombo, toolTip="Color map of the frames")
         bar.mirror(self.contoursButton, "Contours")
         bar.separator()
         for slot, button in self.layoutButtons.items():
             bar.mirror(button, SLOT_TITLES[slot], f"Gated frames of the {SLOT_TITLES[slot].lower()} study")
+        bar.separator()
+        bar.mirror(self.nextButton, "Gated Review ›", kind="primary")
         if not getattr(self, "_toolbarFollows", False):   # the toolbar follows this panel's controls
             self._toolbarFollows = True
             self.windowRange.connect("valuesChanged(double,double)", lambda a, b: self.syncToolbar())
@@ -833,6 +841,11 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.assertAlmostEqual(wallLib.wallVolumeMl(walls[1]), wallLib.wallVolumeMl(walls[0]),
                                delta=0.03 * wallLib.wallVolumeMl(walls[0]))
         self.assertGreater(float(np.median(walls[1]["thickness"][middle])), float(np.median(walls[0]["thickness"][middle])))
+        # each frame from its own profiles: both walls are 10 mm slabs, so both read about the same
+        own = wallLib.ownProfileGates([ed, gate])
+        self.assertEqual(own[1]["thicknessModel"], "frame")
+        self.assertAlmostEqual(float(np.median(own[1]["thickness"][middle])), float(np.median(own[0]["thickness"][middle])),
+                               delta=2.0)
         self.delayDisplay("Gate fit test passed")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
