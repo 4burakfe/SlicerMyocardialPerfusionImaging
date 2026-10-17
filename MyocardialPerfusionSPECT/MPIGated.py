@@ -9,7 +9,8 @@ STRESS GATED layout of Study 1 (stress), REST GATED the same of Study 2 (rest):
                  harmonic over the cycle; five wall means by default, or 17-segment means or per pixel)
                  and wall motion (mm the endocardium moves from ED to ES) polar maps side by side;
   bottom right   the LV cavity volume of every frame (EDV, ESV, EF; the frame shown is marked) next to
-                 the cine 3D wall coloured by the perfusion (SSP style), as a surface, wireframe or points.
+                 the cine 3D wall coloured by the perfusion (SSP style), the wall motion or one color, as a
+                 surface, wireframe or points.
 STRESS-REST GATED shows the stress and rest rows interleaved, with the thickening and motion maps and the
 3D wall of each study (the perfusion map and the volume curve left out to make room). Every layout also
 comes as SLICES (only the slice rows), PLOTS (only the plots, all of them) and DUAL MONITOR (the slices
@@ -105,12 +106,15 @@ MOTION_WINDOW = (0.0, 25.0, 0.0, 10.0)   # inward wall motion window, mm (QGS: 0
 DEFAULT_FPS = 8
 VOLUME_COLOR = (255, 200, 80)
 LABEL_DISTANCE_MM = 45.0
-DEFAULT_WALL_COLORMAP = "Hel"     # 3D wall colors (its own setting, not taken over from Perfusion)
-DEFAULT_REPRESENTATION = "wireframe"
-GHOST_OPACITY = 0.05                # ED reference (drawn on top, so it need not be opaque)
+DEFAULT_WALL_COLORMAP = "Inferno"  # 3D wall colors (its own setting, not taken over from Perfusion)
+DEFAULT_REPRESENTATION = "surface"
+WALL_COLOR_MODES = (("Perfusion", "perfusion"), ("Wall motion", "motion"), ("Constant color", "constant"))
+DEFAULT_WALL_COLOR_MODE = "perfusion"
+WALL_COLOR = (0.85, 0.35, 0.25)     # beating wall in "Constant color"
+WALL_OPACITY = 0.5                  # beating wall in the 3D view
+GHOST_OPACITY = 0.03                # ED reference (drawn on top, so it need not be opaque)
 GHOST_REPRESENTATION = "wireframe"
 GHOST_COLOR = (1.0, 1.0, 1.0)       # ED reference points: white on every color map
-WALL_OPACITY = {"surface": 0.5, "wireframe": 0.5, "points": 1.0}   # beating wall in the 3D view
 
 
 class GhostLayer:
@@ -287,7 +291,8 @@ class GatedReviewData:
 
     def surface(self, index, staticSample):
         """3D wall of one frame (the closed shell, shown as a surface, wireframe or points by its display
-        node), with the perfusion of the static study at its points (% of the polar map maximum) as "Uptake"."""
+        node), with the perfusion of the static study at its points (% of the polar map maximum) as "Uptake"
+        and, once the wall motion map is made, the wall motion (mm, ED to ES) as "Motion"."""
         if index in self.surfaces:
             return self.surfaces[index]
         import MPIMyocardium
@@ -300,6 +305,12 @@ class GatedReviewData:
         scalars = numpy_support.numpy_to_vtk(uptake.astype(np.float32), deep=1)
         scalars.SetName("Uptake")
         polyData.GetPointData().AddArray(scalars)
+        if self.motion is not None:
+            # every point of the frame at its own bullseye position: the motion of the wall there
+            motion = wallLib.polarAtPoints(self.motion, self.result(index), points)
+            scalars = numpy_support.numpy_to_vtk(np.nan_to_num(motion).astype(np.float32), deep=1)
+            scalars.SetName("Motion")
+            polyData.GetPointData().AddArray(scalars)
         polyData.GetPointData().SetActiveScalars("Uptake")
         self.surfaces[index] = polyData
         return polyData
@@ -488,6 +499,28 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.wallColormapCombo.setCurrentIndex(max(0, self.wallColormapCombo.findText(DEFAULT_WALL_COLORMAP)))
         self.wallColormapCombo.toolTip = "Color map of the 3D wall (the slices and polar maps have their own)"
         threeDForm.addRow("Color map:", self.wallColormapCombo)
+        colorRow = qt.QHBoxLayout()
+        self.wallColorModeCombo = qt.QComboBox()
+        for text, value in WALL_COLOR_MODES:
+            self.wallColorModeCombo.addItem(text, value)
+        self.wallColorModeCombo.setCurrentIndex(max(0, self.wallColorModeCombo.findData(DEFAULT_WALL_COLOR_MODE)))
+        self.wallColorModeCombo.toolTip = ("What colors the 3D wall: the perfusion (static study, perfusion window), "
+                                           "the wall motion from ED to ES (motion window) or one color")
+        self.wallColorPicker = ctk.ctkColorPickerButton()
+        self.wallColorPicker.displayColorName = False
+        self.wallColorPicker.color = qt.QColor(*[int(round(255 * c)) for c in WALL_COLOR])
+        self.wallColorPicker.toolTip = "Color of the 3D wall in Constant color"
+        self.wallColorPicker.enabled = DEFAULT_WALL_COLOR_MODE == "constant"
+        colorRow.addWidget(self.wallColorModeCombo, 1)
+        colorRow.addWidget(self.wallColorPicker)
+        threeDForm.addRow("Color by:", colorRow)
+        self.wallOpacitySlider = ctk.ctkSliderWidget()
+        self.wallOpacitySlider.minimum, self.wallOpacitySlider.maximum = 0.0, 1.0
+        self.wallOpacitySlider.singleStep = 0.01
+        self.wallOpacitySlider.decimals = 2
+        self.wallOpacitySlider.value = WALL_OPACITY
+        self.wallOpacitySlider.toolTip = "Opacity of the beating 3D wall"
+        threeDForm.addRow("Wall opacity:", self.wallOpacitySlider)
         self.ghostCheck = qt.QCheckBox("End-diastole as reference")
         self.ghostCheck.checked = True
         self.ghostCheck.toolTip = "The ED wall in white, drawn over the beating wall"
@@ -558,6 +591,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("scores", self.scoresButton)
         self.parameterPanel.bind("representation", self.representationCombo)
         self.parameterPanel.bind("wallColormap", self.wallColormapCombo)
+        self.parameterPanel.bind("wallColorMode", self.wallColorModeCombo)
+        self.parameterPanel.bind("wallColor", self.wallColorPicker)
+        self.parameterPanel.bind("wallOpacity", self.wallOpacitySlider)
         self.parameterPanel.bind("ghost", self.ghostCheck)
         self.parameterPanel.bind("ghostRepresentation", self.ghostRepresentationCombo)
         self.parameterPanel.bind("ghostOpacity", self.ghostOpacitySlider)
@@ -590,7 +626,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarWindowRange.connect("valuesChanged(double,double)", lambda a, b: self.refresh(rebuild3D=False))
         self.thickeningRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
         self.thickeningViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
-        self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
+        self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.onMotionWindowChanged())
         self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onOverlaysChanged())
         self.scoresButton.connect("toggled(bool)", lambda _: self.onOverlaysChanged())
         self.representationCombo.connect("currentIndexChanged(int)", lambda _: self.updateRepresentation())
@@ -599,6 +635,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.ghostOpacitySlider.connect("valueChanged(double)", lambda _: self.updateGhost())
         self.link3DCheck.connect("toggled(bool)", lambda _: self.updateCameraLink())
         self.wallColormapCombo.connect("currentIndexChanged(int)", lambda _: self.update3DColors())
+        self.wallColorModeCombo.connect("currentIndexChanged(int)", lambda _: self.updateWallColorMode())
+        self.wallColorPicker.connect("colorChanged(QColor)", lambda _: self.update3DColors())
+        self.wallOpacitySlider.connect("valueChanged(double)", lambda _: self.updateRepresentation())
         for key, button in self.layoutButtons.items():
             button.connect("clicked(bool)", lambda _, k=key: self.chooseMode(k))
         self.backButton.connect("clicked(bool)", lambda: session.selectStep("gatedqc"))
@@ -1525,11 +1564,6 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.placeCamera(slot, data, study)
             model.SetAndObservePolyData(data.surfaces[self.frameOf(data)])
             display = model.GetDisplayNode()
-            try:
-                display.SetActiveScalar("Uptake", vtk.vtkAssignAttribute.POINT_DATA)
-            except AttributeError:
-                display.SetActiveScalarName("Uptake")
-            display.SetScalarVisibility(True)
             display.SetSpecular(0.0)
             display.SetPointSize(1.0)
             display.SetLineWidth(1.0)
@@ -1708,30 +1742,71 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ghostLayers[slot].update(widget, polyData, GHOST_COLOR, representation or GHOST_REPRESENTATION,
                                           float(self.ghostOpacitySlider.value))
 
+    def wallColorMode(self):
+        mode = self.wallColorModeCombo.itemData(self.wallColorModeCombo.currentIndex)
+        return mode if mode in dict((v, t) for t, v in WALL_COLOR_MODES) else DEFAULT_WALL_COLOR_MODE
+
     def updateRepresentation(self):
         """Surface, wireframe or points: only the rendering of the same models changes."""
         representation = self.representation()
+        shaded = self.wallColorMode() == "constant"    # one color: the shading shows the shape
         for slot in (STRESS, REST):
             model = self.surfaceModel(slot)
             if model is None or model.GetDisplayNode() is None:
                 continue
             display = model.GetDisplayNode()
             display.SetRepresentation({"points": 0, "wireframe": 1}.get(representation, 2))
-            display.SetAmbient(1.0 if representation == "surface" else 0.7)   # flat colors: the counts, not the shading
-            display.SetDiffuse(0.0 if representation == "surface" else 0.3)
-            display.SetOpacity(WALL_OPACITY.get(representation, 1.0))
+            if shaded:
+                display.SetAmbient(0.3)
+                display.SetDiffuse(0.7)
+            else:   # flat colors: the counts or the motion, not the shading
+                display.SetAmbient(1.0 if representation == "surface" else 0.7)
+                display.SetDiffuse(0.0 if representation == "surface" else 0.3)
+            display.SetOpacity(float(self.wallOpacitySlider.value))
+
+    def updateWallColorMode(self):
+        self.wallColormapCombo.enabled = self.wallColorMode() != "constant"
+        self.wallColorPicker.enabled = self.wallColorMode() == "constant"
+        self.updateRepresentation()
+        self.update3DColors()
+
+    def onMotionWindowChanged(self):
+        self.refreshPolars()
+        if self.wallColorMode() == "motion":
+            self.update3DColors()
 
     def update3DColors(self, slot=None):
+        """Colors of the beating wall: the perfusion ("Uptake") or the wall motion ("Motion") through the 3D
+        wall color map, or one color."""
+        mode = self.wallColorMode()
         colorNode = colorNodeForLabel(self.wallColormapCombo.currentText)
         for current in ((slot,) if slot else (STRESS, REST)):
             model = self.surfaceModel(current)
             if model is None or model.GetDisplayNode() is None:
                 continue
             display = model.GetDisplayNode()
+            polyData = model.GetPolyData()
+            scalar = "Motion" if mode == "motion" else "Uptake"
+            if polyData is not None and polyData.GetPointData().GetArray(scalar) is None:
+                scalar, mode = "Uptake", "perfusion"     # no wall motion map (too few frames with a volume)
+            if mode == "constant" or polyData is None or polyData.GetPointData().GetArray(scalar) is None:
+                display.SetScalarVisibility(False)
+                color = self.wallColorPicker.color
+                display.SetColor(color.redF(), color.greenF(), color.blueF())
+                continue
+            try:
+                display.SetActiveScalar(scalar, vtk.vtkAssignAttribute.POINT_DATA)
+            except AttributeError:
+                display.SetActiveScalarName(scalar)
+            display.SetScalarVisibility(True)
             if colorNode:
                 display.SetAndObserveColorNodeID(colorNode.GetID())
             display.SetScalarRangeFlag(slicer.vtkMRMLDisplayNode.UseManualScalarRange)
-            display.SetScalarRange(*self.perfusionWindow())
+            if mode == "motion":   # inward motion over the motion window; outward motion takes its lowest color
+                low, top = self.functionWindow("motion")
+                display.SetScalarRange(max(low, 0.0), max(top, max(low, 0.0) + 1e-6))
+            else:
+                display.SetScalarRange(*self.perfusionWindow())
         self.updateGhost((slot,) if slot else None)
 
     def placeCamera(self, slot, data, study):
@@ -1814,6 +1889,8 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         self.setUp()
         self.test_Thickening()
         self.test_WallRegions()
+        self.test_Motion()
+        self.test_PolarAtPoints()
 
     def test_Thickening(self):
         """A wall that gets brighter toward the frame with the smallest cavity thickens."""
@@ -1852,6 +1929,21 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         motion = wallLib.motionMap([wall(e) for e in endo], 0, 4)
         self.assertAlmostEqual(float(np.median(motion["values"])), 8.0, delta=0.5)
         self.delayDisplay("Motion test passed")
+
+    def test_PolarAtPoints(self):
+        """The 3D wall's motion colors: a polar map read at the wall points of its own rays gives back the
+        value of each ray (bullseye radius and angle), the apex point aside, where the angle is undefined."""
+        grid = wallLib.WallGrid(np.zeros(3), np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]), 55.0)
+        shape = (grid.nRows, grid.nTheta)
+        result = {"grid": grid, "endo": np.full(shape, 20.0), "mid": np.full(shape, 25.0),
+                  "epi": np.full(shape, 30.0), "valvePlane": (-30.0, 0.2, -0.1)}
+        origins, directions, endo, epi, rho = wallLib.polarRays(result)
+        points = (origins + (0.5 * (endo + epi))[..., None] * directions)[:-1].reshape(-1, 3)
+        theta = grid.theta
+        values = rho[:, None] * 10.0 + np.cos(theta)[None, :]
+        back = wallLib.polarAtPoints({"values": values, "rho": rho, "theta": theta}, result, points)
+        self.assertLess(float(np.max(np.abs(back - values[:-1].ravel()))), 1e-6)
+        self.delayDisplay("Polar values at wall points test passed")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
 parametersLib.applySaved()

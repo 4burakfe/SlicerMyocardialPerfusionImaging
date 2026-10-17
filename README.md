@@ -322,9 +322,13 @@ STRESS GATED shows the stress gated study:
     (dyskinetic) motion below 0 goes from black at 0 to full turquoise at -4 mm (red with PET-DICOM, Jotun
     and Vanaheim).
 - **Below them:** the LV cavity volume of every frame (EDV, ESV, EF, the frame shown marked; the curve
-  starts at 0 ml) and the beating 3D wall in its own color map (Hel by default), as a wireframe
-  (default), surface or points, with the ED wall drawn on top in white as a faint wireframe (default, 5 %
-  opacity), points or surface. The EF is written large in the cine 3D view.
+  starts at 0 ml) and the beating 3D wall, as a surface (default), wireframe or points, with the ED wall
+  drawn on top in white as a faint wireframe (default, 3 % opacity), points or surface. *Color by* paints
+  the wall with the perfusion (default; in its own color map, Inferno by default, over the perfusion
+  window), the wall motion from ED to ES at every point (the motion map's values, over the motion
+  window) or one color of your choice; *Wall opacity* sets how see-through it is (0.5 by default). The
+  EF is written large in the cine 3D view. Settings saved earlier keep their values: *Restore defaults*
+  under Advanced parameters brings in the new ones.
 - The cine has play / stop, a speed and a frame slider.
 
 REST GATED is the same for the rest study. STRESS-REST GATED shows the stress and rest rows interleaved,

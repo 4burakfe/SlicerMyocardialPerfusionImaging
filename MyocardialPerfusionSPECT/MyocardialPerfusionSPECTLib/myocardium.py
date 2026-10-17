@@ -902,13 +902,7 @@ def polarRays(result):
     mid-wall from the apex, 0 at the apex, 1 at the valve plane). Row 0 is in the valve plane."""
     grid = result["grid"]
     nCyl = grid.nCyl
-    a, gw, gs = valvePlane(result)
-    slope = gw * np.cos(grid.theta) + gs * np.sin(grid.theta)
-    mid = result["mid"][:nCyl]
-    zBase = np.full(grid.nTheta, a)
-    for _ in range(6):
-        radius = np.array([np.interp(zBase[c], grid.z, mid[:, c]) for c in range(grid.nTheta)])
-        zBase = np.clip(a + slope * radius, grid.z[0], -grid.dz)
+    zBase = _polarBaseZ(result)
     zRows = zBase[None, :] * (1.0 - np.linspace(0.0, 1.0, nCyl)[:, None])     # [nCyl, angles]
 
     def alongRows(values):
@@ -927,6 +921,35 @@ def polarRays(result):
     fromApex = np.concatenate([np.cumsum(steps[::-1])[::-1], [0.0]])
     rho = fromApex / max(fromApex[0], 1e-9)
     return origins, directions, endo, epi, rho
+
+
+def _polarBaseZ(result):
+    """Where the mid-wall of every column (angle) meets the valve plane, along the axis (mm)."""
+    grid = result["grid"]
+    a, gw, gs = valvePlane(result)
+    slope = gw * np.cos(grid.theta) + gs * np.sin(grid.theta)
+    mid = result["mid"][:grid.nCyl]
+    zBase = np.full(grid.nTheta, a)
+    for _ in range(6):
+        radius = np.array([np.interp(zBase[c], grid.z, mid[:, c]) for c in range(grid.nTheta)])
+        zBase = np.clip(a + slope * radius, grid.z[0], -grid.dz)
+    return zBase
+
+
+def polarAtPoints(polar, result, points):
+    """Values of a polar map (polarMap, motionMap, ...) at world points of the wall of result: each point
+    at the bullseye radius and angle of the polar map ray through it (polarRays: on the cylinder the
+    rows run from the valve plane at that angle to the LV center, on the apical cap they are the fit's)."""
+    grid = result["grid"]
+    row, col, _, z = grid.toGrid(points)
+    angle = col * (2.0 * math.pi / grid.nTheta)
+    _, _, _, _, rho = polarRays(result)
+    zBase = _polarBaseZ(result)
+    base = np.interp(angle, np.append(grid.theta, 2.0 * math.pi), np.append(zBase, zBase[0]))
+    cyl = z <= 0.0
+    polarRow = np.where(cyl, (grid.nCyl - 1) * (1.0 - np.clip(z / np.minimum(base, -1e-6), 0.0, 1.0)), row)
+    radius = np.interp(np.clip(polarRow, 0.0, grid.nRows - 1.0), np.arange(grid.nRows, dtype=float), rho)
+    return _polarLookup(polar, radius, angle)
 
 
 def polarMap(result, sample, samplesAcrossWall=9):
