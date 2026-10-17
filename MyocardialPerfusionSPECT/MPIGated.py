@@ -6,8 +6,8 @@ STRESS GATED layout of Study 1 (stress), REST GATED the same of Study 2 (rest):
                  window), played as a cine: every tile shows the same frame, with that frame's
                  endo- and epicardium;
   top right      the perfusion, wall thickening (count-based: ES / ED wall counts of every ray, first
-                 harmonic over the cycle, 17-segment means) and wall motion (mm the endocardium moves from ED to ES)
-                 polar maps side by side;
+                 harmonic over the cycle; five wall means by default, or 17-segment means or per pixel)
+                 and wall motion (mm the endocardium moves from ED to ES) polar maps side by side;
   bottom right   the LV cavity volume of every frame (EDV, ESV, EF; the frame shown is marked) next to
                  the cine 3D wall coloured by the perfusion (SSP style), as a surface, wireframe or points.
 STRESS-REST GATED shows the stress and rest rows interleaved, with the thickening and motion maps and the
@@ -97,6 +97,9 @@ STATIC_VIEW_ELEVATION_DEG = 30.0   # static 3D wall: seen from anteroseptal, rai
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}
 OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "segments"), ("None", ""))
 REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points", "points"))
+THICKENING_VIEWS = (("5 walls (apex, anterior, septal, inferior, lateral)", "walls"),
+                   ("17 segments", "segments"), ("Per pixel", "pixels"))   # wallLib.REGION_VIEWS
+DEFAULT_THICKENING_VIEW = "walls"
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
 MOTION_WINDOW = (0.0, 25.0, 0.0, 10.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
 DEFAULT_FPS = 8
@@ -441,6 +444,14 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.thickeningRange = self._windowWidget(
             "Color window of the wall thickening maps, % thickening (ES / ED wall counts)", *THICKENING_WINDOW)
         polarForm.addRow("Thickening window:", self.thickeningRange)
+        self.thickeningViewCombo = qt.QComboBox()
+        for text, value in THICKENING_VIEWS:
+            self.thickeningViewCombo.addItem(text, value)
+        self.thickeningViewCombo.setCurrentIndex(max(0, self.thickeningViewCombo.findData(DEFAULT_THICKENING_VIEW)))
+        self.thickeningViewCombo.toolTip = (
+            "How the wall thickening map is painted: the mean of each of the five walls (default), the mean of "
+            "each of the 17 segments, or every pixel (a count ratio per pixel is noisy)")
+        polarForm.addRow("Thickening map:", self.thickeningViewCombo)
         self.motionRange = self._windowWidget(
             "Color window of the inward wall motion, mm of endocardial motion from ED to ES (outward motion: "
             "black at 0 to full color at -4 mm)", *MOTION_WINDOW,
@@ -539,6 +550,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("polarLink", self.polarLinkCheck)
         self.parameterPanel.bind("polarWindow", self.polarWindowRange)
         self.parameterPanel.bind("thickeningWindow", self.thickeningRange)
+        self.parameterPanel.bind("thickeningView", self.thickeningViewCombo)
         self.parameterPanel.bind("motionWindow", self.motionRange)
         self.parameterPanel.bind("overlay", self.overlayCombo)
         self.parameterPanel.bind("scores", self.scoresButton)
@@ -575,6 +587,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarLinkCheck.connect("toggled(bool)", lambda _: self.refresh(rebuild3D=False))
         self.polarWindowRange.connect("valuesChanged(double,double)", lambda a, b: self.refresh(rebuild3D=False))
         self.thickeningRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
+        self.thickeningViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
         self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
         self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onOverlaysChanged())
         self.scoresButton.connect("toggled(bool)", lambda _: self.onOverlaysChanged())
@@ -1398,6 +1411,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 if kind in kinds:
                     self.refreshFunctionPolar(slot, data, tags[kind], kind, table, title)
 
+    def thickeningView(self):
+        view = self.thickeningViewCombo.itemData(self.thickeningViewCombo.currentIndex)
+        return view if view in wallLib.REGION_VIEWS else DEFAULT_THICKENING_VIEW
+
     def refreshFunctionPolar(self, slot, data, tag, kind, table, title):
         """The wall thickening or the wall motion polar map."""
         panel = existingPanel(polarPanelState(tag))
@@ -1415,13 +1432,11 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         panel.setLegend(table, low, top, unit=unit)
         size = panel.polarSize()
         if size:
-            key = (id(data), int(size), self.colormapCombo.currentText, low, top)
+            view = self.thickeningView() if kind == "thickening" else "pixels"
+            key = (id(data), int(size), self.colormapCombo.currentText, low, top, view)
             cached = self.polarImages.get((slot, tag))
             if cached is None or cached[0] != key:
-                if kind == "thickening":   # a count ratio per pixel is noisy: each segment at its mean
-                    image, _ = wallLib.segmentBullseye(polar, size)
-                else:
-                    image, _ = wallLib.bullseye(polar, size)
+                image = wallLib.regionBullseye(polar, size, view)   # a count ratio per pixel is noisy
                 rgb = colorize(np.nan_to_num(image, nan=low), top, table, low)
                 rgb[np.isnan(image)] = 0
                 regions = {overlay: [float(v) for v in wallLib.regionValues(polar, overlay)]
@@ -1432,8 +1447,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             frames = f"ED frame {data.gated.labels[ed]} to ES frame {data.gated.labels[es]}"
             note = (f"mm the endocardium moves inward (below 0: outward), {frames} (valve descent included)."
                     if kind == "motion"
-                    else f"% thickening from the wall counts, {frames} (first harmonic over the cycle), "
-                         "mean of each of the 17 segments.")
+                    else f"% thickening from the wall counts, {frames} (first harmonic over the cycle)"
+                         + {"walls": ", mean of each of the five walls.", "segments": ", mean of each of the 17 segments.",
+                            "pixels": ", per pixel."}[view])
             panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
 
     def refreshVolumeCurves(self):

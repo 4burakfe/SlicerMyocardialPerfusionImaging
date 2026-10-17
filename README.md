@@ -42,7 +42,7 @@ Author: Burak Demir, MD, FEBNM · License: [MIT](LICENSE)
   patient name and ID are read from DICOM, and you are warned when the studies belong to more than one
   patient.
 - **Standard reorientation.** ASNC/SNMMI SA / HLA / VLA slices from three axis lines, with an ellipsoid
-  mask against liver and gut activity and smooth cubic B-spline reslicing.
+  mask against liver and gut activity and sharp Lanczos (windowed sinc) reslicing.
 - **Automatic LV wall.** Endocardium, epicardium, mid-wall and an oblique valve plane, LV cavity volume,
   myocardial volume and mass, as models and a segmentation.
 - **Perfusion review.** Stress and rest slices side by side or interleaved, polar maps with coronary
@@ -164,9 +164,10 @@ Options:
   preview and optionally in the created volumes; Myocardium then detects the wall on the masked volume.
 - **Pixel size and slice thickness** of the reoriented volumes; thick slices average the counts over the
   whole slab.
-- **Interpolation**: cubic B-spline (default), Lanczos windowed sinc or linear. Linear interpolation of
-  coarse SPECT voxels leaves faceted, blocky slices; the cubic B-spline is smooth and still passes
-  through the original voxel values.
+- **Interpolation**: Lanczos windowed sinc (default), cubic B-spline or linear. Lanczos is the sharpest
+  and can ring slightly next to hot edges; the cubic B-spline is smooth and still passes through the
+  original voxel values; linear interpolation of coarse SPECT voxels leaves faceted, blocky slices. The
+  slices in Perfusion, Gated QC and Gated Review are resized to the screen with the same method.
 - **Stress + rest** stacks two of these screens, stress above rest, and creates the volumes of both.
 
 The slices follow the ASNC/SNMMI display standard: SA from apex to base, HLA from inferior to anterior,
@@ -268,19 +269,19 @@ For the gated study of Study 1 or Study 2:
 
 Wall thickness of the frames (*Wall thickness* in the advanced section):
 
-- **Per ray, from the static wall** (default): every ray keeps its wall volume of the static fit. The
-  summed static image blurs the wall over the cycle, so the walls come out thicker and the EF higher,
-  most in small hearts.
+- **Constant myocardial volume, ES reference** (default): every frame keeps the myocardial volume of
+  end-systole, where the wall is thickest and brightest, with the ES wall thickness from its own count
+  profiles and the image blur estimated from the frames.
+- **Constant myocardial volume, ED reference**: the same with end-diastole as the reference (QGS-like).
+- **Per ray, from the static wall**: every ray keeps its wall volume of the static fit. The summed static
+  image blurs the wall over the cycle, so the walls come out thicker and the EF higher, most in small
+  hearts.
 - **Mid-wall only**: only the mid-wall (the count peak, the surface a gate shows best) is taken from each
   frame and every ray keeps its end-diastolic wall thickness, so the endocardium follows the mid-wall at
   a fixed distance and no thickening model enters the volumes. It reads lower than the other models in
   hearts that thicken well, and it does not overestimate when the gated reconstruction is too smooth to
   show the thickening (gate profiles wider than about 20 mm keep the same width over the whole cycle, as
   with a Butterworth 0.30 cycles/cm gated filter).
-- **Constant myocardial volume, ES reference**: every frame keeps the myocardial volume of end-systole,
-  where the wall is thickest and brightest, with the ES wall thickness from its own count profiles and
-  the image blur estimated from the frames.
-- **Constant myocardial volume, ED reference**: the same with end-diastole as the reference (QGS-like).
 
 In the constant-volume models, rays through a defect keep the wall thickness of the static fit in every
 frame: scar does not thicken, and its gate profiles show no wall to measure. Surface smoothing of the
@@ -298,8 +299,9 @@ STRESS GATED shows the stress gated study:
 - **Right, three polar maps** side by side, each with its own window:
   - perfusion,
   - **wall thickening**, count-based (ES / ED wall counts of every ray, first harmonic over the cycle),
-    smoothed more than the others since a count ratio is noisy, and shown as the mean of each of the 17
-    AHA segments,
+    smoothed more than the others since a count ratio is noisy. *Thickening map* paints it as the mean
+    of each of the five walls (default: apex = segment 17, anterior 1, 7, 13, septal 2, 3, 8, 9, 14,
+    inferior 4, 10, 15, lateral 5, 6, 11, 12, 16), the mean of each of the 17 AHA segments, or per pixel,
   - **wall motion**, mm the endocardium moves from ED to ES, valve descent included; outward
     (dyskinetic) motion below 0 goes from black at 0 to full turquoise at -4 mm (red with PET-DICOM, Jotun
     and Vanaheim).

@@ -34,8 +34,8 @@ Workflow
 
 Display follows the ASNC/SNMMI standard orientation.
 
-Resampling uses cubic B-spline interpolation by default (linear and windowed sinc are offered): on
-coarse SPECT voxels linear interpolation leaves faceted, blocky slices. See
+Resampling uses Lanczos windowed sinc interpolation by default (cubic B-spline and linear are offered):
+on coarse SPECT voxels linear interpolation leaves faceted, blocky slices. See
 MyocardialPerfusionSPECTLib/resampling.py for the reasoning.
 
 The helpers shared by the hub and the steps are in the MyocardialPerfusionSPECTLib package
@@ -374,7 +374,7 @@ class MPIProcessingLogic(ScriptedLoadableModuleLogic):
         spacing         in-plane pixel size (mm)
         sliceThickness  slice thickness = slice spacing (mm); default: same as spacing
         mask            optional (axesWorld, semiAxes) ellipsoid; voxels outside are zeroed
-        interpolation   "bspline" (default), "sinc" or "linear", see resampling.py
+        interpolation   "sinc" (default), "bspline" or "linear", see resampling.py
 
         Each output slice is the mean of thin sections (at most 'spacing' apart) covering its whole
         thickness, like summing thin slices on a clinical workstation: thick slices average the counts
@@ -1626,9 +1626,9 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.interpolationCombo.addItem(INTERPOLATION_LABELS[mode], mode)
         self.interpolationCombo.setCurrentIndex(INTERPOLATION_MODES.index(DEFAULT_INTERPOLATION))
         self.interpolationCombo.toolTip = (
-            "How the volume is sampled along the cardiac axes. Cubic B-spline is smooth and passes through "
-            "the original voxel values; linear leaves faceted, blocky slices on coarse SPECT voxels; "
-            "windowed sinc is the sharpest but can ring slightly next to hot edges. "
+            "How the volume is sampled along the cardiac axes. Windowed sinc (Lanczos, default) is the "
+            "sharpest but can ring slightly next to hot edges; cubic B-spline is smooth and passes through "
+            "the original voxel values; linear leaves faceted, blocky slices on coarse SPECT voxels. "
             "The slice panel is resized to the screen with the same method.")
         outForm.addRow("Interpolation:", self.interpolationCombo)
 
