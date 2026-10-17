@@ -670,13 +670,16 @@ class SliceMosaicPanel:
 class PolarPanel:
     """Polar map (bullseye with the 17 segments), in its own place of the layout above the 3D view.
     Region overlay: the coronary territories ("vessels", the default), the 17 segments, or None
-    (overlay); their values can be switched off (showScores)."""
+    (overlay); their values can be switched off (showScores). A map painted per wall sets
+    regionOverride = "walls": whenever an overlay is shown, the five walls (apex and the four quarters of
+    the X) are drawn and scored instead."""
 
     POLAR_MARGIN = 0.09    # share of the side left around the disk for the ANT / SEPT / LAT / INF labels
 
     def __init__(self):
         self.onResized = None
         self.overlay = "vessels"
+        self.regionOverride = None
         self.showScores = True
         self.widget = qt.QWidget()
         self.widget.setObjectName("MPIPolarPanel")
@@ -817,10 +820,11 @@ class PolarPanel:
             def point(r, degrees):   # angle from anterior (up) toward the septum (left)
                 a = math.radians(degrees)
                 return qt.QPointF(center.x() - r * radius * math.sin(a), center.y() - r * radius * math.cos(a))
-            overlay = self.overlay
+            overlay = self.regionOverride if self.overlay and self.regionOverride else self.overlay
+            bold = overlay in ("vessels", "walls")   # few large regions: heavier borders, larger values
             if overlay:
-                pen = qt.QPen(qt.QColor(255, 255, 255, 190 if overlay == "vessels" else 170))
-                pen.setWidthF(max(1.0, ratio) * (1.6 if overlay == "vessels" else 1.0))
+                pen = qt.QPen(qt.QColor(255, 255, 255, 190 if bold else 170))
+                pen.setWidthF(max(1.0, ratio) * (1.6 if bold else 1.0))
                 painter.setPen(pen)
                 painter.setBrush(qt.QBrush(qt.Qt.NoBrush))
                 for line in wallLib.regionBorders(overlay):
@@ -834,9 +838,9 @@ class PolarPanel:
             elif overlay != "segments":
                 values = None
             if overlay and values is not None and self.showScores:
-                big = overlay == "vessels"
+                big = bold
                 box = font.pixelSize() * (4 if big else 3)
-                names = wallLib.VESSELS if big else [None] * len(values)
+                names = wallLib.VESSELS if overlay == "vessels" else [None] * len(values)
                 valueFont = qt.QFont(font)
                 if big:
                     valueFont.setPixelSize(int(round(font.pixelSize() * 1.35)))
