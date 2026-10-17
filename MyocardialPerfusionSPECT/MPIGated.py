@@ -103,6 +103,9 @@ THICKENING_VIEWS = (("5 walls (apex and an X: anterior, septal, inferior, latera
                    ("17 segments", "segments"), ("Per pixel", "pixels"))   # wallLib.REGION_VIEWS
 DEFAULT_THICKENING_VIEW = "walls"
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
+READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with the perfusion and the patient's "
+                "data. Motion is measured from one fixed LV center and axis: when the whole heart moves down in "
+                "systole, an apex that contracts well can show little motion while its wall clearly thickens.")
 MOTION_WINDOW = (0.0, 25.0, 0.0, 10.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
 DEFAULT_FPS = 8
 VOLUME_COLOR = (255, 200, 80)
@@ -239,7 +242,7 @@ class MPIGated(ScriptedLoadableModule):
             "Gated review of the stress study: the SA / HLA / VLA slices as a cine (settings taken over from "
             "Perfusion), the perfusion and wall thickening polar maps, the LV cavity volume of every frame "
             "(EDV, ESV, EF) and the beating 3D wall coloured by the perfusion. The frames are segmented in "
-            "Gated QC.")
+            "Gated QC. " + READING_NOTE)
         self.parent.acknowledgementText = ""
         iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
         if os.path.exists(iconPath):
@@ -451,6 +454,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         polarSection.text = "Polar maps"
         self.layout.addWidget(polarSection)
         polarForm = qt.QFormLayout(polarSection)
+        readingNote = narrowLabel(qt.QLabel(READING_NOTE))
+        readingNote.setStyleSheet("color: #8f969c; font-style: italic;")
+        polarForm.addRow(readingNote)
         self.polarLinkCheck = qt.QCheckBox("Same as the slices")
         self.polarLinkCheck.checked = True
         self.polarLinkCheck.toolTip = ("Use the slice window for the perfusion polar maps and the 3D walls (in % of "
@@ -474,7 +480,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         polarForm.addRow("Thickening map:", self.thickeningViewCombo)
         self.motionRange = self._windowWidget(
             "Color window of the inward wall motion, mm of endocardial motion from ED to ES (outward motion: "
-            "black at 0 to full color at -4 mm)", *MOTION_WINDOW,
+            "black at 0 to full color at -4 mm). " + READING_NOTE, *MOTION_WINDOW,
             suffix=" mm")
         polarForm.addRow("Motion window:", self.motionRange)
         overlayRow = qt.QHBoxLayout()
