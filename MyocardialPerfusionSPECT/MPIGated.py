@@ -104,8 +104,9 @@ THICKENING_VIEWS = (("5 walls (apex and an X: anterior, septal, inferior, latera
 DEFAULT_THICKENING_VIEW = "walls"
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
 READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with the perfusion and the patient's "
-                "data. Motion is measured from one fixed LV center and axis: when the whole heart moves down in "
-                "systole, an apex that contracts well can show little motion while its wall clearly thickens.")
+                "data. With the fixed motion reference (default) motion is measured from one LV center and axis: "
+                "when the whole heart moves down in systole, an apex that contracts well can show little motion "
+                "while its wall clearly thickens (Motion reference: Floating takes such a shift out).")
 MOTION_WINDOW = (0.0, 25.0, 0.0, 10.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
 DEFAULT_FPS = 8
 VOLUME_COLOR = (255, 200, 80)
@@ -265,6 +266,8 @@ class GatedReviewData:
         self.phases = ejectionFraction(self.volumes)
         self.thickening = None
         self.motion = None                 # wall motion polar map (mm), made with the thickening
+        self.motionReference = "fixed"     # wallLib.MOTION_REFERENCES value the motion map was made with
+        self._motionInputs = None
         self.thickeningMessage = ""
         self.surfaces = {}                 # frame index -> vtkPolyData of the wall with "Uptake"
 
@@ -291,7 +294,18 @@ class GatedReviewData:
         _, _, _, ed, es = self.phases
         self.thickening = wallLib.thickeningMap(polars, ed, es)
         meanCounts = np.mean([p["values"] for p in polars], axis=0)
-        self.motion = wallLib.motionMap([self.result(i) for i in range(len(gates))], ed, es, weights=meanCounts)
+        self._motionInputs = ([self.result(i) for i in range(len(gates))], ed, es, meanCounts)
+        self.buildMotion()
+
+    def buildMotion(self, reference=None):
+        """Wall motion map against the fixed or the floating reference (the 3D walls are made again)."""
+        if reference is not None:
+            self.motionReference = reference
+        if self._motionInputs is None:
+            return
+        results, ed, es, weights = self._motionInputs
+        self.motion = wallLib.motionMap(results, ed, es, weights=weights, reference=self.motionReference)
+        self.surfaces = {}
 
     def surface(self, index, staticSample):
         """3D wall of one frame (the closed shell, shown as a surface, wireframe or points by its display
@@ -483,6 +497,18 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "black at 0 to full color at -4 mm). " + READING_NOTE, *MOTION_WINDOW,
             suffix=" mm")
         polarForm.addRow("Motion window:", self.motionRange)
+        self.motionReferenceCombo = qt.QComboBox()
+        for text, value in wallLib.MOTION_REFERENCES:
+            self.motionReferenceCombo.addItem(text, value)
+        self.motionReferenceCombo.toolTip = (
+            "What the wall motion is measured against. Fixed (default): the LV center and long axis of the static "
+            "fit, the same in every frame, so a heart that moves as a whole (it comes down in systole, or swings "
+            "sideways) adds to one wall's motion and takes from the opposite one. Floating: every frame's own LV "
+            "center across the axis and its epicardial apex along it (the apex stays put over the cycle while the "
+            "base descends), so such a shift is taken out and the valve descent kept. Myocardium mass center: every "
+            "frame's shift of the center of its myocardium is taken out; the base descent moves that center toward "
+            "the apex too, so part of the longitudinal motion goes with it")
+        polarForm.addRow("Motion reference:", self.motionReferenceCombo)
         overlayRow = qt.QHBoxLayout()
         self.overlayCombo = qt.QComboBox()
         for text, value in OVERLAY_CHOICES:
@@ -601,6 +627,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("thickeningWindow", self.thickeningRange)
         self.parameterPanel.bind("thickeningView", self.thickeningViewCombo)
         self.parameterPanel.bind("motionWindow", self.motionRange)
+        self.parameterPanel.bind("motionReference", self.motionReferenceCombo)
         self.parameterPanel.bind("overlay", self.overlayCombo)
         self.parameterPanel.bind("scores", self.scoresButton)
         self.parameterPanel.bind("representation", self.representationCombo)
@@ -642,6 +669,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.thickeningRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
         self.thickeningViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
         self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.onMotionWindowChanged())
+        self.motionReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onMotionReferenceChanged())
         self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onOverlaysChanged())
         self.scoresButton.connect("toggled(bool)", lambda _: self.onOverlaysChanged())
         self.representationCombo.connect("currentIndexChanged(int)", lambda _: self.updateRepresentation())
@@ -966,6 +994,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if staticPolar is None:
             raise ValueError(message)
         data = GatedReviewData(gated, staticResult, frame, staticPolar)
+        data.motionReference = self.motionReference()
         data.buildThickening()
         self.data[slot] = (key, data)
         self.tiles = {k: v for k, v in self.tiles.items() if k[0] != slot}
@@ -1808,6 +1837,18 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateRepresentation()
         self.update3DColors()
 
+    def motionReference(self):
+        return self.motionReferenceCombo.itemData(self.motionReferenceCombo.currentIndex) or "fixed"
+
+    def onMotionReferenceChanged(self):
+        """The motion maps and 3D walls of the studies loaded, made again against the new reference."""
+        for slot, (_, data) in self.data.items():
+            if data.motionReference != self.motionReference():
+                data.buildMotion(self.motionReference())
+                self.polarImages = {k: v for k, v in self.polarImages.items() if k[0] != slot}
+                self.surfaceKeys.pop(slot, None)
+        self.refresh()
+
     def onMotionWindowChanged(self):
         self.refreshPolars()
         if self.wallColorMode() == "motion":
@@ -1928,6 +1969,7 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         self.test_Thickening()
         self.test_WallRegions()
         self.test_Motion()
+        self.test_FloatingMotion()
         self.test_PolarAtPoints()
 
     def test_Thickening(self):
@@ -1967,6 +2009,41 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         motion = wallLib.motionMap([wall(e) for e in endo], 0, 4)
         self.assertAlmostEqual(float(np.median(motion["values"])), 8.0, delta=0.5)
         self.delayDisplay("Motion test passed")
+
+    def test_FloatingMotion(self):
+        """An LV that only moves as a whole (6 mm toward the apex and 4 mm sideways in systole) shows that shift
+        as wall motion against the fixed reference and almost none against the floating ones; an LV that
+        contracts with its epicardial apex in place reads the same against the fixed and the floating reference."""
+        u, w = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])
+        grid = wallLib.WallGrid(np.zeros(3), u, w, 55.0)
+        origins, directions = grid.rays()
+
+        def hit(center, a, c):
+            # distance along every ray to an ellipsoid (semi-axes a, a, c along w, s, u) centered at center
+            o = (origins - center) / np.array([a, a, c])
+            d = directions / np.array([a, a, c])
+            qa, qb, qc = np.sum(d * d, -1), 2.0 * np.sum(o * d, -1), np.sum(o * o, -1) - 1.0
+            return (-qb + np.sqrt(np.maximum(qb * qb - 4.0 * qa * qc, 0.0))) / (2.0 * qa)
+
+        def wall(shift, a, c, apexShift):
+            center = np.array(shift, dtype=float) + (-10.0 + apexShift) * u
+            endo, epi = hit(center, a, c), hit(center, a + 10.0, c + 10.0)
+            return {"grid": grid, "endo": endo, "epi": epi, "mid": 0.5 * (endo + epi), "thickness": epi - endo,
+                    "valvePlane": (-30.0 + float(np.dot(shift, u)), 0.0, 0.0)}
+        cycle = [0.5 - 0.5 * np.cos(2 * np.pi * k / 8) for k in range(8)]
+        moving = [wall(f * np.array([4.0, 0.0, 6.0]), 22.0, 45.0, 0.0) for f in cycle]
+        values = {ref: np.abs(wallLib.motionMap(moving, 0, 4, reference=ref)["values"])
+                  for ref, _ in [(v, t) for t, v in wallLib.MOTION_REFERENCES]}
+        self.assertGreater(float(np.percentile(values["fixed"], 90)), 4.0)
+        self.assertLess(float(np.percentile(values["floating"], 90)), 1.0)
+        self.assertLess(float(np.percentile(values["mass"], 90)), 1.0)
+        # contraction: the cavity narrows by 6 mm and shortens by 8 mm toward an apex that stays in place
+        # (the ellipsoid's apex at z = -10 + c + 10 stays where it is: its center moves with the shortening)
+        contracting = [wall(np.zeros(3), 22.0 - 6.0 * f, 45.0 - 8.0 * f, 8.0 * f) for f in cycle]
+        fixed = wallLib.motionMap(contracting, 0, 4, reference="fixed")["values"]
+        floating = wallLib.motionMap(contracting, 0, 4, reference="floating")["values"]
+        self.assertLess(float(np.percentile(np.abs(fixed - floating), 90)), 1.0)
+        self.delayDisplay("Floating motion reference test passed")
 
     def test_PolarAtPoints(self):
         """The 3D wall's motion colors: a polar map read at the wall points of its own rays gives back the
