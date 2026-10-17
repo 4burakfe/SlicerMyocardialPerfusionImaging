@@ -136,6 +136,23 @@ STEP_PARAMETERS = {
           2, " samples", "Gaussian sigma of the wall thickness map", "Wall fit"),
         P("poleSpacing", "Smoothing width at the axis", 3.0, f"{MYO}:POLE_SPACING_MM", 0.5, 10.0, 0.25, 2, " mm",
           "Smoothing near the long axis (apex) per unit of surface smoothing", "Wall fit"),
+        P("shapeModel", "Shape model through defects", True, f"{MYO}:DEFAULTS.shapeModel",
+          tooltip="Rays without a wall peak (a defect, also at the apex) follow an ellipsoid fitted to the whole "
+                  "LV instead of bridging between their neighbours", group="Defects"),
+        P("shapePriorWeight", "Shape model weight", 0.03, f"{MYO}:SHAPE_PRIOR_WEIGHT", 0.0, 1.0, 0.01, 3,
+          tooltip="Weight of the shape model against the rays' own count peaks (weights 0..1); higher: dim walls "
+                  "follow the model more", group="Defects"),
+        P("shapeDim", "Defect for the model below", 0.45, f"{MYO}:SHAPE_DIM", 0.1, 1.0, 0.05, 2, " x peak",
+          "Walls dimmer than this share of the bright walls, and the walls next to them, are left out of the shape "
+          "model fit and of the wall thickness", "Defects"),
+        P("shapeBorder", "Defect border left out", 2.0, f"{MYO}:SHAPE_BORDER_SIGMA", 0.0, 6.0, 0.25, 2,
+          " samples", "Width of the border around a defect left out of the shape model fit", "Defects"),
+        P("shapeBasalWeight", "Shape model basal weight", 0.25, f"{MYO}:SHAPE_BASAL_WEIGHT", 0.0, 1.0, 0.05, 2,
+          tooltip="Weight of the walls basal of the LV center in the shape model fit (the apical half sets the "
+                  "curve across the apex)", group="Defects"),
+        P("shapeCenterSigma", "Shape model center spread", 15.0, f"{MYO}:SHAPE_CENTER_SIGMA", 1.0, 100.0, 1.0, 0,
+          " mm", "How far the ellipsoid center may stray from the valve plane before the prior pulls it back",
+          "Defects"),
         P("maxValveTilt", "Largest valve plane tilt", 40.0, f"{MYO}:DEFAULTS.maxValveTilt", 0.0, 80.0, 1.0, 0, " deg",
           "Largest tilt of the valve plane against the short-axis plane", "Valve plane"),
         P("maxBaseNarrowing", "Steepest basal narrowing", 35.0, f"{MYO}:DEFAULTS.maxBaseNarrowing", 0.0, 80.0, 1.0, 0,
