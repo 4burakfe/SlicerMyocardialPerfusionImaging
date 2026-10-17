@@ -334,7 +334,12 @@ STRESS GATED shows the stress gated study:
     five walls and writes their scores instead of the coronary territories,
   - **wall motion**, mm the endocardium moves from ED to ES, valve descent included; outward
     (dyskinetic) motion below 0 goes from black at 0 to full turquoise at -4 mm (red with PET-DICOM, Jotun
-    and Vanaheim).
+    and Vanaheim). *Motion reference* sets what the motion is measured from: the fixed LV center and long
+    axis of the static fit (default); *Floating: each frame's LV center and epicardial apex*, which takes
+    out a shift of the whole heart (across the axis it follows the center of the endocardial rings, along
+    the axis the epicardial apex, so the descent of the base is kept); or *Floating: each frame's
+    myocardium mass center*, which also takes out the whole-heart shift but, since the base descending
+    pulls the mass center toward the apex, removes part of the longitudinal motion as well.
 - **Below them:** the LV cavity volume of every frame (EDV, ESV, EF, the frame shown marked; the curve
   starts at 0 ml) and the beating 3D wall, as a surface (default), wireframe or points, with the ED wall
   drawn on top in white as a faint wireframe (default, 3 % opacity), points or surface. *Color by* paints
@@ -349,7 +354,8 @@ STRESS GATED shows the stress gated study:
 with the perfusion and the patient's clinical data, never one map alone. The motion map is measured from
 one fixed LV center and long axis (the static fit's): when the whole heart moves down in systole, an apex
 that contracts well can show little motion while its wall clearly thickens on the thickening map and in
-the cine. The panel shows this note above the polar map settings.
+the cine. *Motion reference: Floating* takes such a shift out. The panel shows this note above the
+polar map settings.
 
 REST GATED is the same for the rest study. STRESS-REST GATED shows the stress and rest rows interleaved,
 with the thickening and motion maps and the 3D wall of each study (the perfusion map and the volume curve

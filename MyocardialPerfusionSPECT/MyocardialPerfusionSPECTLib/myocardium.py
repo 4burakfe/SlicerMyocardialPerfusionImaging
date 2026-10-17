@@ -352,6 +352,10 @@ RELIABILITY_HIGH = 0.60     # ... and from which it counts as normal wall
 THICKENING_SMOOTHING = 2.5        # thickeningMap: smoothing of the % map (map cells)
 THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES count maps
 MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
+MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
+                     ("Floating: each frame's LV center and epicardial apex", "floating"),
+                     ("Floating: each frame's myocardium mass center", "mass"))
+MOTION_APEX_ROWS = 2              # motionMap "floating": cap rows nearest the axis that place the epicardial apex
 
 
 def _staticReliability(reference):
@@ -655,7 +659,74 @@ def _firstHarmonic(stack, ed, es):
     return mean, fitted(ed), fitted(es)
 
 
-def motionMap(gateResults, ed, es, weights=None, smoothing=None):
+def myocardiumCenter(result):
+    """Center of the myocardium of a wall fit (its volume between endo- and epicardium, uniform density),
+    from the mid-wall points weighted by the wall volume each ray stands for."""
+    grid = result["grid"]
+    nCyl = grid.nCyl
+    mid, thickness = np.asarray(result["mid"]), np.asarray(result["thickness"])
+    points = grid.points(mid)
+    area = np.empty(mid.shape)
+    area[:nCyl] = mid[:nCyl] * grid.dz                                   # cylinder rows: r dz dtheta
+    area[nCyl:] = mid[nCyl:] ** 2 * np.sin(grid.phi)[:, None] * grid.dphi   # cap rows: r^2 sin(phi) dphi dtheta
+    keep = ~_beyondBase(grid, mid, result["valvePlane"])
+    weight = np.where(keep, area * thickness, 0.0)
+    return (points * weight[..., None]).reshape(-1, 3).sum(axis=0) / max(float(weight.sum()), 1e-9)
+
+
+def frameShifts(gateResults, ed, reference="floating"):
+    """[frames, 3] translation of the whole LV in every frame against ED, for a floating motion reference.
+    "floating": across the long axis, the shift of the center of the endocardial rings (radial contraction
+    is symmetric, so it does not move it); along the axis, the shift of the epicardial apex, which stays put
+    over the cycle while the base descends toward it, so the valve descent is kept and only a heart that
+    moves as a whole is taken out. "mass": the shift of the myocardium's center (myocardiumCenter); the base
+    descent moves it toward the apex too, so part of the longitudinal motion is taken out with it."""
+    if reference == "mass":
+        centers = np.array([myocardiumCenter(result) for result in gateResults])
+        return centers - centers[ed]
+    centers, apexes = [], []
+    for result in gateResults:
+        grid = result["grid"]
+        nCyl = grid.nCyl
+        endo = np.asarray(result["endo"])[:nCyl]
+        rings = ~_beyondBase(grid, result["mid"], result["valvePlane"])[:nCyl].any(axis=1)
+        rings = rings if rings.any() else np.ones(nCyl, dtype=bool)
+        # a ring r(theta) = R + c . n(theta) around the axis has its center c at twice the mean of r n
+        offAxis = endo[rings][..., None] * grid.radial(grid.theta)[None]
+        centers.append(2.0 * offAxis.mean(axis=1).mean(axis=0))
+        rows = slice(grid.nRows - min(MOTION_APEX_ROWS, grid.nCap), grid.nRows)
+        along = np.asarray(result["epi"])[rows] * np.cos(grid.phi[-(rows.stop - rows.start):])[:, None]
+        apexes.append(float(np.median(along)))
+    u = gateResults[ed]["grid"].u
+    centers = np.array(centers)
+    apexes = np.array(apexes)
+    return (centers - centers[ed]) + (apexes - apexes[ed])[:, None] * u
+
+
+def shiftedResult(result, shift):
+    """The wall of a frame seen from its LV center moved by shift (world mm): the same endo-, mid- and
+    epicardium cut by the rays of a grid centered there (a few fixed-point steps from the distances along the
+    original rays) and the same valve plane, so its points are compared with other frames' at the same place
+    relative to the moved center."""
+    grid = result["grid"]
+    shift = np.asarray(shift, dtype=float)
+    moved = WallGrid(grid.center + shift, grid.u, grid.w, grid.radius, grid.params, grid.length)
+    origins, directions = moved.rays()
+    out = dict(result, grid=moved)
+    for key in ("endo", "mid", "epi"):
+        surface = np.asarray(result[key], dtype=float)
+        t = surface.copy()
+        for _ in range(8):
+            row, col, dist, _ = grid.toGrid((origins + t[..., None] * directions).reshape(-1, 3))
+            t = np.maximum(t + (_bilinear(surface, row, col) - dist).reshape(t.shape), 0.5)
+        out[key] = t
+    out["thickness"] = out["epi"] - out["endo"]
+    a, gw, gs = result["valvePlane"]
+    out["valvePlane"] = (a - float(shift @ grid.u) + gw * float(shift @ grid.w) + gs * float(shift @ grid.s), gw, gs)
+    return out
+
+
+def motionMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixed"):
     """Wall motion polar map (QGS-like endocardial excursion), in mm: how far the endocardium of every
     polar map ray moves from ED to ES. The rays of each frame run from its own valve plane to the apex
     (polarRays), so a basal point follows the valve descent and the longitudinal shortening counts too.
@@ -663,14 +734,21 @@ def motionMap(gateResults, ed, es, weights=None, smoothing=None):
     negative for outward (dyskinetic) motion. The endocardial points are fitted with the first harmonic
     over the cycle, like the thickening; weights (e.g. the mean wall counts of each ray) let rays through
     a defect follow their neighbours when the map is smoothed. The rays are those of the static fit
-    (fixed LV center and axis), so a translation of the whole heart is not corrected.
+    (fixed LV center and axis), so with reference "fixed" a translation of the whole heart is not corrected;
+    with "floating" each frame's translation against ED (frameShifts: its LV center across the axis, its
+    epicardial apex along it), with "mass" that of its myocardium's center, is taken out first.
     Returns a polar map dict like polarMap (rho of the ED frame) with "values" in mm.
     smoothing defaults to MOTION_SMOOTHING."""
     smoothing = MOTION_SMOOTHING if smoothing is None else smoothing
+    shifts = np.zeros((len(gateResults), 3))
+    if reference in ("floating", "mass"):
+        # every frame seen from its own moved center: points compared at the same place relative to it
+        shifts = frameShifts(gateResults, ed, reference)
+        gateResults = [shiftedResult(result, shift) for result, shift in zip(gateResults, shifts)]
     points, rhos, directions = [], [], []
-    for result in gateResults:
+    for result, shift in zip(gateResults, shifts):
         origins, rays, endo, _, rho = polarRays(result)
-        points.append(origins + endo[..., None] * rays)              # [rows, angles, 3]
+        points.append(origins + endo[..., None] * rays - shift)      # [rows, angles, 3]
         rhos.append(rho)
         directions.append(rays)
     stack = np.array(points)                                          # [frames, rows, angles, 3]
