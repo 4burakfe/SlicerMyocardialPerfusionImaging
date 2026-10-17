@@ -344,6 +344,12 @@ STRESS GATED shows the stress gated study:
   under Advanced parameters brings in the new ones.
 - The cine has play / stop, a speed and a frame slider.
 
+**Reading the maps together.** Wall motion, thickening, volumes and EF are meant to be read together,
+with the perfusion and the patient's clinical data, never one map alone. The motion map is measured from
+one fixed LV center and long axis (the static fit's): when the whole heart moves down in systole, an apex
+that contracts well can show little motion while its wall clearly thickens on the thickening map and in
+the cine. The panel shows this note above the polar map settings.
+
 REST GATED is the same for the rest study. STRESS-REST GATED shows the stress and rest rows interleaved,
 with the thickening and motion maps and the 3D wall of each study (the perfusion map and the volume curve
 are left out to make room); the two 3D views are linked as in Perfusion and the cine runs both together.
