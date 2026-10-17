@@ -30,7 +30,7 @@ from MyocardialPerfusionSPECTLib.widgets import BUTTON_COLORS
 
 TOOLBAR_OBJECT_NAME = "MPIWorkflowToolbar"
 CONTROLS_OBJECT_NAME = "MPIStepControlsToolbar"
-TOOLBAR_VERSION = 11      # bump when the class changes, so a reload replaces the toolbar
+TOOLBAR_VERSION = 12      # bump when the class changes, so a reload replaces the toolbar
 BADGE_SIZE = 22
 CASE_MAX_CHARACTERS = 40   # longer case names are cut in the toolbar (the tooltip has all of it)
 ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Resources", "Icons",
@@ -117,6 +117,30 @@ class StepBar:
         self.layout.addWidget(button)
         self.mirrors.append((button, target))
         return button
+
+    def combo(self, label, toolTip, onChoose, minimumWidth=0):
+        """Combo box filled by the step (setItems); onChoose(index) when the user picks an item."""
+        if label:
+            self.label(label)
+        combo = qt.QComboBox()
+        combo.setFocusPolicy(qt.Qt.NoFocus)
+        combo.setSizeAdjustPolicy(qt.QComboBox.AdjustToContents)
+        if minimumWidth:
+            combo.setMinimumWidth(minimumWidth)
+        combo.toolTip = toolTip
+        combo.connect("activated(int)", onChoose)
+        self.layout.addWidget(combo)
+        return combo
+
+    @staticmethod
+    def setItems(combo, items, current):
+        """Items [(text, data)] of a combo box and the current index, signals blocked."""
+        wasBlocked = combo.blockSignals(True)
+        combo.clear()
+        for text, data in items:
+            combo.addItem(text, data)
+        combo.setCurrentIndex(current if 0 <= current < len(items) else -1)
+        combo.blockSignals(wasBlocked)
 
     def mirrorCombo(self, target, label=None, toolTip=None):
         """A toolbar copy of a panel combo box (same items): a choice here sets the panel one, and it follows

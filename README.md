@@ -109,6 +109,7 @@ A second row holds the most used controls of the step on screen, so you can work
 
 | Step | Controls in the toolbar |
 |---|---|
+| Data roles | Add data…, Detect studies, the selected study with its role and gated sequence, Create static from gates, Process › |
 | Processing | Place ROI, Reset axes, Mask, Create SA / HLA / VLA, Review slices › |
 | Myocardium | Detect, Mask, the surfaces shown, layouts, Perfusion › |
 | Perfusion | Max % (top of the slice window), color map, FOV, Contours, Sync, Vessels / 17 seg, Scores, layouts, Gated QC › |
