@@ -8,12 +8,15 @@ labelling:
    90 deg at the center down to 0 deg on the axis). Every ray is a row (base -> apex) and column
    (angle around the axis) of one grid, so all results are 2D maps over the wall.
 2. Mid-wall. The count peak along each ray, refined to sub-sample precision. Iterated a few times:
-   the peaks are smoothed over the grid with count weights, so rays through a perfusion defect (few
-   counts) follow their neighbours instead of jumping to noise, and the next search is limited to a
-   window around the smoothed surface, which keeps the liver and gut out. Rays without a peak of their
-   own (a deep defect) follow a shape model of the whole LV instead (_shapeModel: a truncated ellipsoid
-   fitted to the walls that are seen, away from the defect's border, plus their smooth misfit), so a
-   defect takes the curve of the walls around it; at the apex the neighbours alone bridge it flat.
+   the peaks are smoothed over the grid, weighted by how clearly each wall stands out above the cavity's
+   blood pool (_wallVisibility, against the typical wall, so a hot spot does not make the other walls
+   look dim), so rays through a perfusion defect follow their neighbours instead of jumping to noise,
+   and the next search is limited to a window around the smoothed surface, which keeps the liver and gut
+   out. Rays without a peak of their own (a deep defect) follow a shape model of the whole LV instead
+   (_shapeModel: a truncated ellipsoid, its axis free to tilt, fitted to the walls that are seen, away
+   from the defect's border, plus their smooth misfit; the peaks' deviations from it fade out into a
+   defect), so a defect takes the curve of the walls around it; at the apex the neighbours alone bridge
+   it flat.
 3. Base. Along every column of rays (one angle around the axis), going from the LV center toward
    the base, the wall ends where its counts fall below a fraction of that column's own wall counts
    (so the dim atria and great vessels behind the valves are not taken as wall, and a perfusion
@@ -193,14 +196,17 @@ def _fitOnGrid(sample, grid):
     window = _angleWindow(grid, 9)
     for _ in range(int(p["iterations"])):
         peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
-        weight, reference = _peakWeights(grid, peakT, peakValue, lo, hi, window, 0.3 * t0)
-        surface, weight = _wallSurface(grid, profiles, peakT, weight, reference, p, p["smoothing"], 0.3 * t0)
+        cavity = _cavityLevel(profiles, grid.t, peakT)
+        weight, reference = _peakWeights(grid, peakT, peakValue, lo, hi, window, 0.3 * t0, cavity)
+        surface, weight = _wallSurface(grid, profiles, peakT, weight, reference, p, p["smoothing"], 0.3 * t0,
+                                       counts=peakValue)
         lo = np.maximum(surface - half, 1.0)
         hi = np.minimum(surface + half, grid.t[-1])
     peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
-    weight, reference = _peakWeights(grid, peakT, peakValue, lo, hi, window, 0.3 * t0)
+    cavity = _cavityLevel(profiles, grid.t, peakT)
+    weight, reference = _peakWeights(grid, peakT, peakValue, lo, hi, window, 0.3 * t0, cavity)
     mid, weight = _wallSurface(grid, profiles, peakT, weight, reference, p, 0.75 * p["smoothing"], 0.3 * t0,
-                               p["smoothing"])
+                               p["smoothing"], peakValue)
     peak = _interp(profiles, grid.t, mid)
 
     # 3. base: where each column's wall ends, then a plane through those points
@@ -216,7 +222,7 @@ def _fitOnGrid(sample, grid):
     resolution = float(p["resolution"])
     physical = np.sqrt(np.maximum(fwhm ** 2 - resolution ** 2, 0.0))
     if p.get("shapeModel", True):
-        thickness = _smoothFilled(physical, weight, p["thicknessSmoothing"])
+        thickness = _smoothFilled(physical, weight, p["thicknessSmoothing"], peakValue)
     else:
         thickness = _smoothMap(physical, np.maximum(weight, 1e-6), p["thicknessSmoothing"])
     thickness = np.clip(_poleSmooth(grid, thickness, np.maximum(weight, 1e-6), p["thicknessSmoothing"], mid),
@@ -227,17 +233,40 @@ def _fitOnGrid(sample, grid):
 
     return {"grid": grid, "mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
             "baseZ": baseZ, "detectedBaseZ": baseZ, "valvePlane": plane, "basePoints": basePoints,
-            "rowCounts": rowCounts}
+            "rowCounts": rowCounts, "cavityLevel": cavity}
 
 
-def _peakWeights(grid, peakT, peakValue, lo, hi, window, tolerance):
-    """Weight of every ray's peak (its counts against the brightest, squared) and the neighbour reference
-    the peaks are checked against. No weight: rays far from their neighbours (another organ, liver or
-    gut) and rays whose maximum lies on the edge of their search window (no peak there: a defect, the
-    counts only rise toward the bright walls around it)."""
-    weight = (peakValue / max(peakValue.max(), 1e-9)) ** 2
+def _cavityLevel(profiles, t, peakT):
+    """Counts of the blood pool in the LV cavity: the median over all rays of each profile's minimum
+    between the axis and its peak."""
+    inside = t[None, None, :] <= peakT[..., None]
+    return float(np.median(np.min(np.where(inside, profiles, np.inf), axis=2)))
+
+
+def _wallVisibility(peakValue, cavity, seen=None):
+    """0..1 per ray: how clearly the wall stands out, its counts above the cavity's blood pool against
+    those of the typical wall (VISIBILITY_REFERENCE percentile of the seen rays, by default of those above
+    the blood pool), 1 from the typical wall up. A hot spot (a bright lateral wall, a papillary muscle)
+    raises only its own rays, so a dimmer but plainly seen wall (a septum at half the lateral wall's
+    counts) still counts as wall; a defect, whose counts sink toward the blood pool's, does not."""
+    above = np.asarray(peakValue, dtype=float) - float(cavity)
+    seen = above > 0 if seen is None else seen
+    pool = above[seen] if np.any(seen) else above
+    typical = float(np.percentile(pool, VISIBILITY_REFERENCE)) if pool.size else 0.0
+    if typical <= 0:
+        return np.ones_like(above)
+    return np.clip(above / typical, 0.0, 1.0)
+
+
+def _peakWeights(grid, peakT, peakValue, lo, hi, window, tolerance, cavity=0.0):
+    """Weight of every ray's peak (its visibility above the cavity, _wallVisibility, squared) and the
+    neighbour reference the peaks are checked against. No weight: rays far from their neighbours (another
+    organ, liver or gut) and rays whose maximum lies on the edge of their search window (no peak there:
+    a defect, the counts only rise toward the bright walls around it)."""
     step = grid.t[1] - grid.t[0]
-    weight[(peakT - lo < step) | (hi - peakT < step)] = 0.0
+    edge = (peakT - lo < step) | (hi - peakT < step)
+    weight = _wallVisibility(peakValue, cavity, ~edge) ** 2
+    weight[edge] = 0.0
     reference = _circularMedian(peakT, window)
     nearPole = _nearPoleRows(grid, peakT)
     reference[nearPole] = np.median(peakT[nearPole], axis=1)[:, None]   # rays there nearly coincide
@@ -247,24 +276,34 @@ def _peakWeights(grid, peakT, peakValue, lo, hi, window, tolerance):
     return weight, reference
 
 
-def _wallSurface(grid, profiles, peakT, weight, reference, p, sigma, tolerance, poleSigma=None):
+def _wallSurface(grid, profiles, peakT, weight, reference, p, sigma, tolerance, poleSigma=None, counts=None):
     """Smooth mid-wall surface through the weighted peaks. Rays without a peak of their own take the shape
     model (_shapeModel, fitted to the walls on the LV side of a first valve plane) or, without it, their
     neighbours' reference; where the wall is dim over a wider area the surface leans on the model too.
-    Returns the surface and the weights (peaks far off the model lose theirs)."""
+    With the model the surface is the model plus the weighted peaks' smoothed deviations from it, which
+    fade out where the local weight drops (SHAPE_PRIOR_WEIGHT): rays next to a defect keep the model's
+    curve instead of their neighbours' level. Returns the surface and the weights (peaks far off the model
+    lose theirs)."""
     prior = reference
     if p.get("shapeModel", True):
         rough = np.where(weight > 0, peakT, reference)
         peak = _interp(profiles, grid.t, rough)
         plane, _ = _fitValvePlane(grid, rough, peak, p, _cavityFill(profiles, grid.t, rough, peak))
-        model, off = _shapeModel(grid, peakT, weight, ~_beyondBase(grid, rough, plane), tolerance, plane[0])
+        model, off = _shapeModel(grid, peakT, weight, ~_beyondBase(grid, rough, plane), tolerance, plane[0], counts)
         if model is not None:
             prior = model
             weight = np.where(off, 0.0, weight)
-    surface = _smoothSurface(np.where(weight > 0, peakT, prior), np.maximum(weight, 1e-6), sigma)
-    if prior is not reference:
-        density = _smoothMap(weight, np.ones_like(weight), sigma)        # local mean weight
-        surface = (density * surface + SHAPE_PRIOR_WEIGHT * prior) / (density + SHAPE_PRIOR_WEIGHT)
+    if prior is reference:
+        surface = _smoothSurface(np.where(weight > 0, peakT, prior), np.maximum(weight, 1e-6), sigma)
+    else:
+        # the model plus the peaks' smoothed deviations from it, which fade out where the local mean weight
+        # drops (a defect): rays next to a defect keep the model's curve instead of their neighbours' level
+        w = np.maximum(weight, 0.0)
+        deviation = np.where(w > 0, peakT - prior, 0.0) * w
+        if sigma > 0:
+            kernel = _gaussianKernel(sigma)
+            deviation, w = _convolve2d(deviation, kernel), _convolve2d(w, kernel)
+        surface = prior + deviation / (w + SHAPE_PRIOR_WEIGHT)
     return _poleSmooth(grid, surface, np.maximum(weight, 1e-6), sigma if poleSigma is None else poleSigma), weight
 
 
@@ -293,13 +332,18 @@ SHAPE_RESIDUAL_SIGMA = 3.0 # grid samples: width of the field that carries the m
 SHAPE_BASAL_WEIGHT = 0.25 # weight of the walls on the basal side of the grid center in the model fit
 SHAPE_CENTER_SIGMA = 15.0  # mm: how far the shape model's ellipsoid center may stray from the valve plane ...
 SHAPE_CENTER_PRIOR = 0.05  # ... and the weight of that prior (share of all wall weights)
+SHAPE_MAX_TILT = 25.0      # deg: how far the shape model's long axis may turn away from the LV axis ...
+SHAPE_TILT_SIGMA = 15.0    # ... and the width of the prior that keeps it close (same weight as the center's)
+SHAPE_TILT_CAP = 0.25      # share of the apical cap fitted from which any better-fitting tilt is kept ...
+SHAPE_TILT_GAIN = 0.25     # ... below it, only one that lowers the model's misfit by this share
+VISIBILITY_REFERENCE = 50.0  # percentile of the walls' counts above the cavity that counts as the typical wall
 SHAPE_DIM = 0.45          # walls dimmer than this share of the bright walls (counts) count as defect for the model ...
 SHAPE_BORDER_SIGMA = 2.0  # ... and the walls within about this many grid samples of them are left out of its fit
 SHAPE_FADE = 0.1           # how fast that misfit fades inside a defect (share of the typical local weight)
 MIN_DEFECT_SHIFT = 0.3      # share of maxWallShift searched on rays through a defect
 DEFECT_MOTION_SIGMA = 3.0   # x gateSmoothing: width of the motion field that rays through a defect follow
 DEFECT_PRIOR_WEIGHT = 0.03  # weight of that motion field against the rays' own peaks (weights 0..1)
-RELIABILITY_LOW = 0.25      # static peak / bright walls below which a ray counts as deep defect (scar)
+RELIABILITY_LOW = 0.15      # static visibility (_wallVisibility) below which a ray counts as deep defect (scar)
 RELIABILITY_HIGH = 0.60     # ... and from which it counts as normal wall
 THICKENING_SMOOTHING = 2.5        # thickeningMap: smoothing of the % map (map cells)
 THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES count maps
@@ -307,14 +351,20 @@ MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
 
 
 def _staticReliability(reference):
-    """0..1 per ray: how well the wall is seen in the static image (its peak counts against the bright
-    walls), 0 in a deep defect (below RELIABILITY_LOW of them, 25 %), 1 from RELIABILITY_HIGH (60 %)."""
-    peak = np.asarray(reference["peak"], dtype=float)
-    top = float(np.percentile(peak[np.isfinite(peak)], 90)) if np.isfinite(peak).any() else 0.0
-    if top <= 0:
-        return np.ones_like(peak)
-    low, high = float(RELIABILITY_LOW), max(float(RELIABILITY_HIGH), float(RELIABILITY_LOW) + 1e-3)
-    return np.clip((np.nan_to_num(peak) / top - low) / (high - low), 0.0, 1.0)
+    """0..1 per ray: how well the wall is seen in the static image (its visibility above the cavity's
+    blood pool, _wallVisibility), 0 in a deep defect (below RELIABILITY_LOW), 1 from RELIABILITY_HIGH.
+    A static fit without the cavity level (older scenes) measures the peaks against the bright walls."""
+    peak = np.nan_to_num(np.asarray(reference["peak"], dtype=float))
+    if "cavityLevel" in reference:
+        visibility = _wallVisibility(peak, reference["cavityLevel"])
+        low, high = float(RELIABILITY_LOW), float(RELIABILITY_HIGH)
+    else:
+        top = float(np.percentile(peak, 90))
+        if top <= 0:
+            return np.ones_like(peak)
+        visibility = peak / top
+        low, high = 0.25, 0.60
+    return np.clip((visibility - low) / max(high - low, 1e-3), 0.0, 1.0)
 
 
 def fitGate(sample, reference, params=None):
@@ -348,7 +398,7 @@ def fitGate(sample, reference, params=None):
     hi = np.minimum(refMid + rayShift, grid.t[-1])
     sigma = float(g["gateSmoothing"])
     peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
-    weight = (peakValue / max(peakValue.max(), 1e-9)) ** 2 * reliability ** 2
+    weight = _wallVisibility(peakValue, _cavityLevel(profiles, grid.t, peakT)) ** 2 * reliability ** 2
     # rays far from their neighbours (noise, a neighbouring organ inside the window) do not count
     reference2 = _circularMedian(peakT, _angleWindow(grid, 9))
     nearPole = _nearPoleRows(grid, peakT)
@@ -1489,11 +1539,18 @@ def _frameRays(grid):
 
 
 def _ellipsoidDistance(shape, origins, directions):
-    """Distance along every ray to the ellipsoid ((x - x0) / A)^2 + ((y - y0) / B)^2 + ((z - z0) / C)^2 = 1,
-    shape = (x0, y0, z0, A, B, C) in the cardiac frame (NaN where the ray does not leave it)."""
-    x0, y0, z0, sa, sb, sc = shape
+    """Distance along every ray to the ellipsoid ((x' - x0) / A)^2 + ((y' - y0) / B)^2 + ((z' - z0) / C)^2 = 1,
+    shape = (x0, y0, z0, A, B, C[, a, b]) in the cardiac frame, its axes turned by a about x and then by b
+    about y (radians; x', y', z' are the ellipsoid's own axes). NaN where the ray does not leave it."""
+    x0, y0, z0, sa, sb, sc = shape[:6]
     m = 1.0 / np.array([sa, sb, sc]) ** 2
     o = origins - np.array([x0, y0, z0])
+    if len(shape) > 6:
+        ca, sa_, cb, sb_ = math.cos(shape[6]), math.sin(shape[6]), math.cos(shape[7]), math.sin(shape[7])
+        turn = np.array([[1.0, 0.0, 0.0], [0.0, ca, -sa_], [0.0, sa_, ca]]) @ \
+            np.array([[cb, 0.0, sb_], [0.0, 1.0, 0.0], [-sb_, 0.0, cb]])     # ellipsoid axes in the frame
+        o = o @ turn
+        directions = directions @ turn
     q2 = (directions ** 2) @ m
     q1 = 2.0 * (o * directions) @ m
     q0 = (o ** 2) @ m - 1.0
@@ -1503,21 +1560,24 @@ def _ellipsoidDistance(shape, origins, directions):
     return np.where((disc >= 0) & (t > 0), t, np.nan)
 
 
-def _clearWalls(weight):
-    """Rays of seen wall away from any defect: weight > 0, counts (sqrt of the weight) at least SHAPE_DIM
-    of the bright walls, and no dimmer ray within about SHAPE_BORDER_SIGMA grid samples."""
+def _clearWalls(weight, counts=None):
+    """Rays of seen wall away from any defect: weight > 0, counts (the peak counts, or else the sqrt of the
+    weight) at least SHAPE_DIM of the bright walls' (90th percentile), and no dimmer ray within about
+    SHAPE_BORDER_SIGMA grid samples. Stricter than the weights: the walls kept here set the shape model and
+    the wall thickness, which need the walls well clear of a defect's blurred edge."""
     seen = weight > 1e-9
     if not np.any(seen):
         return seen
-    counts = np.sqrt(np.maximum(weight, 0.0))
+    counts = np.sqrt(np.maximum(weight, 0.0)) if counts is None else np.where(seen, counts, 0.0)
     dim = (counts < SHAPE_DIM * max(float(np.percentile(counts[seen], 90)), 1e-9)).astype(float)
     return seen & (_convolve2d(dim, _gaussianKernel(SHAPE_BORDER_SIGMA)) <= 0.1)
 
 
-def _shapeModel(grid, distance, weight, inside, tolerance, baseZ):
+def _shapeModel(grid, distance, weight, inside, tolerance, baseZ, counts=None):
     """Mid-wall distance of every ray from a smooth model of the whole LV, fitted to the rays the counts
-    show (weight > 0, inside: on the LV side of the valve plane): a truncated ellipsoid, its axes along
-    the cardiac frame, its center free (off the axis, along it), fitted to the distances along the rays
+    show (weight > 0, inside: on the LV side of the valve plane): a truncated ellipsoid, its center free
+    (off the axis, along it), its long axis tilted against the LV axis where that fits better (at most
+    SHAPE_MAX_TILT, a weak prior toward none), fitted to the distances along the rays
     (Levenberg-Marquardt, rays far from it given less weight). Where only straight side walls are seen
     (the apex is a defect) the center and the long semi-axis trade off; a weak prior keeps the center
     near the valve plane (baseZ, SHAPE_CENTER_SIGMA), where the classic truncated-ellipsoid model of the
@@ -1535,7 +1595,7 @@ def _shapeModel(grid, distance, weight, inside, tolerance, baseZ):
     # the walls next to a defect are left out of the fit: blurred together with the dark defect, their
     # peaks lie off the wall (the side walls bulge out at the edge of an apical defect, and an ellipsoid
     # through them would run far past the apex)
-    clear = _clearWalls(w)
+    clear = _clearWalls(w, counts)
     if np.count_nonzero(clear) >= max(12, grid.nTheta // 2):
         seen &= clear
     o, d, y = origins[seen], directions[seen], distance[seen]
@@ -1546,58 +1606,79 @@ def _shapeModel(grid, distance, weight, inside, tolerance, baseZ):
     side[grid.nCyl:] = False
     radius = float(np.median(distance[side])) if np.any(side) else float(np.median(y))
     reach = float(grid.t[-1])
-    lower = np.array([-reach, -reach, float(grid.z[0]) - reach, 5.0, 5.0, 5.0])
-    upper = np.array([reach, reach, 0.0, 1.5 * reach, 1.5 * reach, 4.0 * reach])
-    shape = np.array([0.0, 0.0, min(float(baseZ), -1.0), radius, radius, max(1.2 * radius - float(baseZ), 10.0)])
+    tilt = math.radians(SHAPE_MAX_TILT)
+    lower = np.array([-reach, -reach, float(grid.z[0]) - reach, 5.0, 5.0, 5.0, -tilt, -tilt])
+    upper = np.array([reach, reach, 0.0, 1.5 * reach, 1.5 * reach, 4.0 * reach, tilt, tilt])
+    shape = np.array([0.0, 0.0, min(float(baseZ), -1.0), radius, radius, max(1.2 * radius - float(baseZ), 10.0),
+                      0.0, 0.0])
     shape = np.clip(shape, lower, upper)
     priorWeight = SHAPE_CENTER_PRIOR * float(base.sum())
 
     def residuals(values, fitWeight):
         t = _ellipsoidDistance(values, o, d)
         r = np.where(np.isfinite(t), t - y, tolerance)       # a ray that misses: one tolerance off
-        prior = (values[2] - baseZ) / SHAPE_CENTER_SIGMA
-        return np.concatenate([np.sqrt(fitWeight) * r, [math.sqrt(priorWeight) * prior]]), r
+        prior = [(values[2] - baseZ) / SHAPE_CENTER_SIGMA, values[6] / math.radians(SHAPE_TILT_SIGMA),
+                 values[7] / math.radians(SHAPE_TILT_SIGMA)]
+        return np.concatenate([np.sqrt(fitWeight) * r, math.sqrt(priorWeight) * np.array(prior)]), r
 
-    fitWeight = base.copy()
-    scale = 2.0
-    for _ in range(4):                                         # robust: reweighted from the misfit
-        damping = 1e-2
-        current, r = residuals(shape, fitWeight)
-        cost = float(current @ current)
-        for _ in range(20):                                    # Levenberg-Marquardt, numeric Jacobian
-            jacobian = np.empty((len(current), 6))
-            for k in range(6):
-                step = np.zeros(6)
-                step[k] = 1e-3 * max(abs(shape[k]), 1.0)
-                jacobian[:, k] = (residuals(shape + step, fitWeight)[0] - current) / step[k]
-            normal = jacobian.T @ jacobian
-            gradient = jacobian.T @ current
-            improved = False
-            for _ in range(8):
-                try:
-                    delta = np.linalg.solve(normal + damping * np.diag(np.diag(normal) + 1e-9), -gradient)
-                except np.linalg.LinAlgError:
+    def solve(shape, lower, upper):
+        fitWeight = base.copy()
+        scale = 2.0
+        for _ in range(4):                                     # robust: reweighted from the misfit
+            damping = 1e-2
+            current, r = residuals(shape, fitWeight)
+            cost = float(current @ current)
+            for _ in range(20):                                # Levenberg-Marquardt, numeric Jacobian
+                jacobian = np.empty((len(current), len(shape)))
+                for k in range(len(shape)):
+                    step = np.zeros(len(shape))
+                    step[k] = 1e-3 * max(abs(shape[k]), 1.0) if k < 6 else 1e-3
+                    jacobian[:, k] = (residuals(shape + step, fitWeight)[0] - current) / step[k]
+                normal = jacobian.T @ jacobian
+                gradient = jacobian.T @ current
+                improved = False
+                for _ in range(8):
+                    try:
+                        delta = np.linalg.solve(normal + damping * np.diag(np.diag(normal) + 1e-9), -gradient)
+                    except np.linalg.LinAlgError:
+                        break
+                    trial = np.clip(shape + delta, lower, upper)
+                    trialResiduals, trialR = residuals(trial, fitWeight)
+                    trialCost = float(trialResiduals @ trialResiduals)
+                    if trialCost < cost:
+                        shape, current, r, damping = trial, trialResiduals, trialR, damping / 3.0
+                        improved = cost - trialCost > 1e-6 * cost
+                        cost = trialCost
+                        break
+                    damping *= 4.0
+                if not improved:
                     break
-                trial = np.clip(shape + delta, lower, upper)
-                trialResiduals, trialR = residuals(trial, fitWeight)
-                trialCost = float(trialResiduals @ trialResiduals)
-                if trialCost < cost:
-                    shape, current, r, damping = trial, trialResiduals, trialR, damping / 3.0
-                    improved = cost - trialCost > 1e-6 * cost
-                    cost = trialCost
-                    break
-                damping *= 4.0
-            if not improved:
-                break
-        scale = max(1.4826 * float(np.median(np.abs(r))), 2.0)
-        fitWeight = base * np.clip(1.0 - (r / (3.0 * scale)) ** 2, 0.0, 1.0) ** 2
+            scale = max(1.4826 * float(np.median(np.abs(r))), 2.0)
+            fitWeight = base * np.clip(1.0 - (r / (3.0 * scale)) ** 2, 0.0, 1.0) ** 2
+        return shape, r, fitWeight, scale
+
+    # first with the axes along the cardiac frame, then tilted. With part of the apical cap seen the tilt
+    # is kept whenever it fits better; with (nearly) none of it seen only where it fits the walls clearly
+    # better: there a tilt trades off against the long axis and can carry the apex far off (a straight tube)
+    capSeen = float(np.mean(seen[grid.nCyl:])) if grid.nRows > grid.nCyl else 0.0
+    gain = 0.0 if capSeen >= SHAPE_TILT_CAP else SHAPE_TILT_GAIN
+    level = lower.copy(), upper.copy()
+    level[0][6:], level[1][6:] = 0.0, 0.0
+    shape, r, fitWeight, scale = solve(shape, *level)
+    if SHAPE_MAX_TILT > 0:
+        tilted, tiltedR, tiltedWeight, tiltedScale = solve(shape, lower, upper)
+        straightCost = float(fitWeight @ np.minimum(r ** 2, (3.0 * scale) ** 2))
+        tiltedCost = float(fitWeight @ np.minimum(tiltedR ** 2, (3.0 * scale) ** 2))
+        if tiltedCost < (1.0 - gain) * straightCost:
+            shape, r, fitWeight, scale = tilted, tiltedR, tiltedWeight, tiltedScale
     model = _ellipsoidDistance(shape, origins, directions)
     if not np.all(np.isfinite(model[grid.nCyl:])):
         return None, None
     model = np.minimum(np.where(np.isfinite(model), model, distance), reach)
     off = (np.abs(distance - model) > max(float(tolerance), 3.0 * scale)) & (w > 0)
-    w = np.where(off, 0.0, w)
-    # what the ellipsoid misses on the seen walls, spread smoothly and fading out inside a defect
+    # what the ellipsoid misses on the walls it was fitted to, spread smoothly and fading out inside a
+    # defect (not on the walls at its edge: their bulging peaks would carry the bulge into it)
+    w = np.where(off | ~seen, 0.0, w)
     residual = np.where(w > 0, distance - model, 0.0)
     kernel = _gaussianKernel(SHAPE_RESIDUAL_SIGMA)
     spread = _convolve2d(residual * w, kernel)
@@ -1629,13 +1710,13 @@ def _smoothMap(values, weights, sigma):
     return out
 
 
-def _smoothFilled(values, weights, sigma):
+def _smoothFilled(values, weights, sigma, counts=None):
     """_smoothMap where the walls are seen; a ray far from any seen wall (inside a wide defect, where the
     profile width is that of noise) takes the weighted median of all seen walls instead of its own value.
     Walls in or next to a defect (_clearWalls) do not count as seen: the profile of a wall at the edge of a
     defect is cut short by it and looks thin."""
     w = np.maximum(np.asarray(weights, dtype=float), 0.0)
-    w = np.where(_clearWalls(w), w, 0.0)
+    w = np.where(_clearWalls(w, counts), w, 0.0)
     if not np.any(w > 0):
         return _smoothMap(values, np.maximum(w, 1e-6), sigma)
     order = np.argsort(values, axis=None)

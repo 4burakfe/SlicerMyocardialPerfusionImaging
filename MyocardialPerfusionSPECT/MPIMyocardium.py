@@ -1001,6 +1001,7 @@ class MPIMyocardiumTest(ScriptedLoadableModuleTest):
         self.setUp()
         self.test_PhantomWall()
         self.test_ApicalDefect()
+        self.test_TiltedApicalDefect()
 
     def test_PhantomWall(self):
         """A blurred LV-shaped shell with an oblique base (20 deg) and dim atria behind it: the
@@ -1087,6 +1088,51 @@ class MPIMyocardiumTest(ScriptedLoadableModuleTest):
         self.assertLess(bridged["centerShift"] + float(np.median(bridged["mid"][-1])), z0 + c - 8.0)
         self.delayDisplay(f"Apical defect OK: apex mid-wall {apexMid:.1f} mm (truth {z0 + c:.0f}), "
                           f"{bridged['centerShift'] + float(np.median(bridged['mid'][-1])):.1f} mm without the shape model")
+
+    def test_TiltedApicalDefect(self):
+        """The LV of test_ApicalDefect with its own axis tilted 15 deg against the fitted one and the
+        defect around that axis: the tilted shape model carries the mid-wall across the defect on the
+        curve of the LV (the untilted ellipsoid misses it by several mm on one side)."""
+        spacing, n = 2.0, 80
+        center = np.array([80.0, 80.0, 80.0])
+        u = unit([-0.6, 0.6, -0.4])
+        w = unit(np.cross(u, [1.0, 0.0, 0.0]))
+        tilt = np.radians(15.0)
+        axis = np.cos(tilt) * u + np.sin(tilt) * np.cross(u, w)     # the LV's own long axis
+        side = np.cross(axis, w)
+        k, j, i = np.mgrid[0:n, 0:n, 0:n]
+        points = np.stack([i, j, k], axis=-1) * spacing - center
+        a, c, z0, half = 28.0, 70.0, -30.0, 5.0
+
+        def normalDistance(points):
+            z = points @ axis
+            rho = np.linalg.norm(points - z[..., None] * axis, axis=-1)
+            g = np.sqrt((rho / a) ** 2 + ((z - z0) / c) ** 2)
+            gradient = np.sqrt((rho / a ** 2) ** 2 + ((z - z0) / c ** 2) ** 2) / np.maximum(g, 1e-9)
+            return (g - 1.0) / np.maximum(gradient, 1e-9)
+        z = points @ axis
+        wall = (np.abs(normalDistance(points)) < half) & (z >= z0)
+        q = np.stack([points @ w / a, points @ side / a, (z - z0) / c], axis=-1)
+        apical = q[..., 2] / np.maximum(np.linalg.norm(q, axis=-1), 1e-9) > np.cos(np.radians(35.0))
+        array = (wall & ~apical).astype(np.float32) * 100.0
+        array[(z < z0 - 3.0) & (z > z0 - 40.0)
+              & (np.linalg.norm(points - z[..., None] * axis, axis=-1) < a + 8.0)] += 25.0   # atria
+        for k in range(3):
+            for _ in range(3):
+                array = (np.roll(array, -1, k) + array + np.roll(array, 1, k)) / 3.0
+
+        def sample(world):
+            return sampleTrilinear(array, np.asarray(world, dtype=float) / spacing)
+        result = wallLib.fitWall(sample, center, u, w, 55.0, {"resolution": 8.0})
+        grid = result["grid"]
+        origins, directions = grid.rays()
+        steps = np.linspace(0.0, 60.0, 601)
+        along = origins[..., None, :] + steps[:, None] * directions[..., None, :] - center
+        truth = steps[np.argmax(normalDistance(along) > 0, axis=-1)]   # true mid-wall along every ray
+        error = np.abs(result["mid"] - truth)[grid.nCyl:]
+        self.assertLess(float(np.percentile(error, 90)), 3.0)
+        self.delayDisplay(f"Tilted apical defect OK: apical cap mid-wall error p90 {np.percentile(error, 90):.1f} mm, "
+                          f"max {error.max():.1f} mm")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
 parametersLib.applySaved()
