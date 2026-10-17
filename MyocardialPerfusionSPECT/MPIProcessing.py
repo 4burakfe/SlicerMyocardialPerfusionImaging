@@ -45,6 +45,7 @@ The helpers shared by the hub and the steps are in the MyocardialPerfusionSPECTL
 import os
 import sys
 import math
+import re
 import logging
 import traceback
 
@@ -425,6 +426,78 @@ class MPIProcessingLogic(ScriptedLoadableModuleLogic):
                     "n": nSlices, "nPlane": nPlane, "spacing": spacing, "thickness": thickness,
                     "sectionsPerSlice": sectionsPerSlice, "interpolation": interpolation}
         return outputNode, geometry
+
+    def createOrientations(self, inputNode, spacing, thickness, interpolation, masked):
+        """SA / HLA / VLA of a study in the current frame, masked with the current ellipsoid when asked, with
+        the frame saved on them (MPI.* attributes, also read by the later steps). Returns ({orientation: volume},
+        {orientation: geometry}, hottest voxel: of the whole volumes when masked, else of the ROI)."""
+        axes = self.orientationAxes()
+        baseName = inputNode.GetName()
+        maskAxes = self.maskAxes()
+        maskSemiAxes = np.array(self.maskSemiAxes, dtype=float)
+        semiAxesText = ", ".join(f"{a:.0f}" for a in maskSemiAxes)
+        maskText = f"ellipsoid semi-axes (long, anterior-inferior, septal-lateral) {semiAxesText} mm" if masked else "none"
+        suffix = " masked" if masked else ""
+        nodes, geometries = {}, {}
+        for name in ORIENTATIONS:
+            node, geometry = self.resampleOrientation(
+                inputNode, axes[name], spacing, f"{baseName} {name}{suffix}",
+                sliceThickness=thickness, mask=(maskAxes, maskSemiAxes) if masked else None,
+                interpolation=interpolation)
+            for attribute in inputNode.GetAttributeNames() or ():
+                node.SetAttribute(attribute, inputNode.GetAttribute(attribute))
+            node.SetAttribute("MPI.Orientation", name)
+            node.SetAttribute("MPI.SourceVolume", inputNode.GetID())
+            for attribute, value in self.frameAttributes().items():
+                node.SetAttribute(attribute, value)
+            node.SetAttribute("MPI.Mask", maskText)
+            node.SetAttribute("MPI.PixelSizeMm", f"{spacing:.2f}")
+            node.SetAttribute("MPI.SliceThicknessMm", f"{thickness:.2f}")
+            node.SetAttribute("MPI.Interpolation", interpolation)
+            placeNextTo(node, inputNode)
+            nodes[name], geometries[name] = node, geometry
+        # Scale to the hottest voxel of the reoriented data itself (thick slices average counts, so
+        # their peak is lower than the input's): the whole volume when masked, the ROI otherwise.
+        if masked:
+            peak = max(float(slicer.util.arrayFromVolume(n).max()) for n in nodes.values())
+        else:
+            peak = max(self.maxInSphere(n, self.center, self.radius) for n in nodes.values())
+        if peak > 0:
+            for node in nodes.values():
+                node.SetAttribute("MPI.DisplayMax", f"{peak:.6g}")
+        return nodes, geometries, peak
+
+    def frameAttributes(self):
+        """MPI.* attributes of the reoriented volumes that keep this frame and the mask ellipsoid (fromOutputs)."""
+        f = self.frame()
+        return {"MPI.Center": " ".join(f"{x:.2f}" for x in self.center),
+                "MPI.LongAxis": " ".join(f"{x:.4f}" for x in f["u"]),
+                "MPI.AnteriorAxis": " ".join(f"{x:.4f}" for x in f["w"]),
+                "MPI.RollDeg": f"{math.degrees(self.roll):.2f}",
+                "MPI.RadiusMm": f"{self.radius:.1f}",
+                "MPI.MaskSemiAxesMm": " ".join(f"{a:.2f}" for a in self.maskSemiAxes)}   # also when not masked
+
+    @classmethod
+    def fromOutputs(cls, outputNode):
+        """Logic in the frame a study's reoriented volume was made in (its MPI.* attributes), with the mask
+        ellipsoid it was made with (a default one for volumes made before the semi-axes were kept)."""
+        logic = cls()
+        logic.center = np.array([float(x) for x in outputNode.GetAttribute("MPI.Center").split()])
+        logic.radius = float(outputNode.GetAttribute("MPI.RadiusMm") or DEFAULT_ROI_RADIUS_MM)
+        logic.longAxis = unit([float(x) for x in outputNode.GetAttribute("MPI.LongAxis").split()])
+        logic.roll = 0.0
+        f = logic.frame()
+        w = np.array([float(x) for x in outputNode.GetAttribute("MPI.AnteriorAxis").split()])
+        logic.roll = math.atan2(float(np.dot(w, f["s0"])), float(np.dot(w, f["w0"])))
+        semiAxes = outputNode.GetAttribute("MPI.MaskSemiAxesMm")
+        found = re.findall(r"[-+]?\d*\.?\d+", outputNode.GetAttribute("MPI.Mask") or "") if not semiAxes else []
+        if semiAxes:
+            logic.maskSemiAxes = np.array([float(x) for x in semiAxes.split()])
+        elif len(found) == 3:
+            logic.maskSemiAxes = np.array([float(x) for x in found])
+        else:
+            logic.resetMaskEllipsoid()
+        return logic
 
 
 # ---------------------------------------------------------------------------
@@ -1364,49 +1437,12 @@ class ProcessingLane(VTKObservationMixin):
             thickness = float(self.widget.thicknessSpin.value)
             interpolation = self.widget.interpolationCombo.itemData(self.widget.interpolationCombo.currentIndex) \
                 or DEFAULT_INTERPOLATION
-            axes = self.logic.orientationAxes()
-            baseName = self.inputNode.GetName()
-            f = self.logic.frame()
             maskOutputs = bool(self.widget.maskCheckBox.checked and self.widget.maskOutputsCheckBox.checked)
-            maskAxes = self.logic.maskAxes()
-            maskSemiAxes = np.array(self.logic.maskSemiAxes, dtype=float)
-            maskText = ("ellipsoid semi-axes (long, anterior-inferior, septal-lateral) "
-                        + ", ".join(f"{a:.0f}" for a in maskSemiAxes) + " mm") if maskOutputs else "none"
-            suffix = " masked" if maskOutputs else ""
-            for name in ORIENTATIONS:
-                node, geometry = self.logic.resampleOrientation(
-                    self.inputNode, axes[name], spacing, f"{baseName} {name}{suffix}",
-                    sliceThickness=thickness, mask=(maskAxes, maskSemiAxes) if maskOutputs else None,
-                    interpolation=interpolation)
-                for attribute in self.inputNode.GetAttributeNames() or ():
-                    node.SetAttribute(attribute, self.inputNode.GetAttribute(attribute))
-                node.SetAttribute("MPI.Orientation", name)
-                node.SetAttribute("MPI.SourceVolume", self.inputNode.GetID())
-                node.SetAttribute("MPI.Center", " ".join(f"{x:.2f}" for x in self.logic.center))
-                node.SetAttribute("MPI.LongAxis", " ".join(f"{x:.4f}" for x in f["u"]))
-                node.SetAttribute("MPI.AnteriorAxis", " ".join(f"{x:.4f}" for x in f["w"]))
-                node.SetAttribute("MPI.RollDeg", f"{math.degrees(self.logic.roll):.2f}")
-                node.SetAttribute("MPI.RadiusMm", f"{self.logic.radius:.1f}")
-                node.SetAttribute("MPI.Mask", maskText)
-                node.SetAttribute("MPI.PixelSizeMm", f"{spacing:.2f}")
-                node.SetAttribute("MPI.SliceThicknessMm", f"{thickness:.2f}")
-                node.SetAttribute("MPI.Interpolation", interpolation)
-                placeNextTo(node, self.inputNode)
-                self.outputNodes[name] = node
-                self.outputGeometry[name] = geometry
-
-            # Scale to the hottest voxel of the reoriented data itself (thick slices average counts, so
-            # their peak is lower than the input's): the whole volume when masked, the ROI otherwise.
-            if maskOutputs:
-                peak = max(float(slicer.util.arrayFromVolume(n).max()) for n in self.outputNodes.values())
-            else:
-                peak = max(self.logic.maxInSphere(n, self.logic.center, self.logic.radius)
-                           for n in self.outputNodes.values())
+            self.outputNodes, self.outputGeometry, peak = self.logic.createOrientations(
+                self.inputNode, spacing, thickness, interpolation, maskOutputs)
             self.outputWindowMax = peak if peak > 0 else None
             for node in self.outputNodes.values():
                 setVolumeDisplay(node, self.widget.colormapCombo.currentText, 0.0, self.outputWindowMax or self.windowMax)
-                if self.outputWindowMax:
-                    node.SetAttribute("MPI.DisplayMax", f"{self.outputWindowMax:.6g}")
 
         return len(self.outputNodes) == len(ORIENTATIONS)
 
@@ -1685,10 +1721,13 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # --- workflow toolbar (second row) -----------------------------------------------------------------
     def buildToolbar(self, bar):
         self.toolbarBar = bar
-        bar.mirror(self.placeButton, "Place ROI")
+        bar.mirror(self.placeButton, "Place ROI", kind="action")
         bar.mirror(self.resetAxesButton, "Reset axes", "Back to the axes found automatically")
         bar.separator()
-        bar.mirror(self.createButton, "Create SA / HLA / VLA")
+        bar.mirror(self.maskCheckBox, "Mask", "Mask the bottom row (and the created volumes, when that is on) "
+                                              "outside the ellipsoid")
+        bar.separator()
+        bar.mirror(self.createButton, "Create SA / HLA / VLA", kind="create")
 
     def syncToolbar(self):
         bar = getattr(self, "toolbarBar", None)
@@ -1893,6 +1932,46 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 lane.updateGeometry()
                 lane.updateMaskedPreview()
 
+    # --- mask from the later steps (Myocardium toolbar) ------------------------------
+    @staticmethod
+    def outputsMasked(study):
+        """True / False: the SA / HLA / VLA of a study were made with / without the mask; None: not made."""
+        outputs = session.outputsForStudy(study)
+        reference = outputs.get("SA") or next(iter(outputs.values()), None)
+        if reference is None:
+            return None
+        return (reference.GetAttribute("MPI.Mask") or "none") != "none"
+
+    def remakeVolumes(self, study, masked):
+        """Make the SA / HLA / VLA of a study again with or without the mask ellipsoid, in the frame, pixel size,
+        slice thickness and interpolation they were made with (the ellipsoid as drawn here when the study is on
+        this screen, else the one kept on the volumes). The mask check boxes follow, so Create does the same.
+        True when all three were made."""
+        outputs = session.outputsForStudy(study)
+        reference = outputs.get("SA") or next(iter(outputs.values()), None)
+        if reference is None:
+            return False
+        logic = MPIProcessingLogic.fromOutputs(reference)
+        lane = next((l for l in self.lanes if l.inputNode is study and l.roiPlaced), None)
+        if lane is not None:
+            logic.maskSemiAxes = np.array(lane.logic.maskSemiAxes, dtype=float)
+        spacing = float(reference.GetAttribute("MPI.PixelSizeMm") or self.spacingSpin.value)
+        thickness = float(reference.GetAttribute("MPI.SliceThicknessMm") or self.thicknessSpin.value)
+        interpolation = reference.GetAttribute("MPI.Interpolation") or DEFAULT_INTERPOLATION
+        if masked:
+            self.maskCheckBox.checked = True
+        self.maskOutputsCheckBox.checked = bool(masked)
+        nodes, geometries, peak = logic.createOrientations(study, spacing, thickness, interpolation, bool(masked))
+        for node in outputs.values():   # the new ones are made: the old ones go
+            if node and slicer.mrmlScene.IsNodePresent(node):
+                slicer.mrmlScene.RemoveNode(node)
+        for node in nodes.values():
+            setVolumeDisplay(node, self.colormapCombo.currentText, 0.0, peak if peak > 0 else None)
+        if lane is not None:
+            lane.outputNodes, lane.outputGeometry, lane.outputWindowMax = nodes, geometries, (peak if peak > 0 else None)
+        self.updateButtonStates()
+        return len(nodes) == len(ORIENTATIONS)
+
     def onColormapChanged(self, index):
         self.forLanes("applyColormap")
 
@@ -1923,6 +2002,7 @@ class MPIProcessingTest(ScriptedLoadableModuleTest):
     def runTest(self):
         self.setUp()
         self.test_FrameIsOrthonormal()
+        self.test_FrameFromOutputs()
         self.setUp()
         self.test_ResamplingKeepsAnatomy()
         self.setUp()
@@ -1940,6 +2020,34 @@ class MPIProcessingTest(ScriptedLoadableModuleTest):
         logic.setLineDirection("VLA", logic.horizontalDirection() - 0.6 * SUPERIOR)
         logic.roll = math.radians(15.0)
         return logic
+
+    def test_FrameFromOutputs(self):
+        """The frame and mask ellipsoid kept on the volumes give the same axes back (Mask in the Myocardium
+        toolbar makes the volumes again from them)."""
+        logic = self._obliqueLogic()
+        logic.center = np.array([12.0, -30.0, 41.0])
+        logic.radius = 62.0
+        logic.maskSemiAxes = np.array([58.0, 44.0, 47.0])
+
+        class Volume:
+            def __init__(self, attributes):
+                self.attributes = attributes
+
+            def GetAttribute(self, name):
+                return self.attributes.get(name)
+        again = MPIProcessingLogic.fromOutputs(Volume(logic.frameAttributes()))
+        for name, axes in logic.orientationAxes().items():
+            for a, b in zip(axes, again.orientationAxes()[name]):
+                self.assertTrue(np.allclose(a, b, atol=1e-3), name)
+        self.assertTrue(np.allclose(again.center, logic.center, atol=0.01))
+        self.assertAlmostEqual(again.radius, 62.0, places=3)
+        self.assertTrue(np.allclose(again.maskSemiAxes, logic.maskSemiAxes))
+        # volumes made before the semi-axes were kept: read from the mask text, else the default ellipsoid
+        old = {k: v for k, v in logic.frameAttributes().items() if k != "MPI.MaskSemiAxesMm"}
+        text = dict(old, **{"MPI.Mask": "ellipsoid semi-axes (long, anterior-inferior, septal-lateral) 50, 40, 41 mm"})
+        self.assertTrue(np.allclose(MPIProcessingLogic.fromOutputs(Volume(text)).maskSemiAxes, [50.0, 40.0, 41.0]))
+        self.assertTrue(np.allclose(MPIProcessingLogic.fromOutputs(Volume(dict(old, **{"MPI.Mask": "none"}))).maskSemiAxes,
+                                    [MASK_LONG_FRACTION * 62.0, MASK_SHORT_FRACTION * 62.0, MASK_SHORT_FRACTION * 62.0]))
 
     def test_FrameIsOrthonormal(self):
         logic = self._obliqueLogic()

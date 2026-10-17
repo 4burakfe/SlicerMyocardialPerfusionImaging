@@ -49,7 +49,8 @@ from MyocardialPerfusionSPECTLib.geometry import worldToLocalMatrix  # noqa: E40
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
     rgbToQImage, gatedReviewMosaicPanel, gatedReviewMosaic2Panel, volumeCurvePanel, volumeCurvePanelState, polarPanel, polarPanelState,
-    existingPanel, DEFAULT_FOV_CM, REFIT_DELAY_MS, lastFirstSlice, fovCrop, cropStack, bestGrid, signedMotionTable)
+    existingPanel, DEFAULT_FOV_CM, REFIT_DELAY_MS, lastFirstSlice, fovCrop, cropStack, bestGrid, signedMotionTable,
+    FRAME_SCALES)
 from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
@@ -378,9 +379,15 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.colormapCombo.addItems([label for label, _ in COLORMAPS])
         form.addRow("Color map:", self.colormapCombo)
         self.windowRange = self._windowWidget(
-            "Color window (min - max) of the slices in % of the hottest frame near the LV (all frames of a study "
-            "on one scale, so the count changes over the cycle show)")
+            "Color window (min - max) of the slices in % of the hottest frame near the LV (or of each frame's own "
+            "hottest voxel, see Scale)")
         form.addRow("Window:", self.windowRange)
+        self.scaleCombo = qt.QComboBox()
+        for text, value, _, _ in FRAME_SCALES:
+            self.scaleCombo.addItem(text, value)
+        self.scaleCombo.toolTip = ("All frames together: one color scale for every frame of a study, so the count "
+                                   "changes over the cycle show. Each frame: every frame scaled to its own maximum")
+        form.addRow("Scale:", self.scaleCombo)
         gridRow = qt.QHBoxLayout()
         self.gridRowsSpin = qt.QSpinBox()
         self.gridRowsSpin.setRange(1, 8)
@@ -575,6 +582,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("speed", self.speedSpin)
         self.parameterPanel.bind("colormap", self.colormapCombo)
         self.parameterPanel.bind("window", self.windowRange)
+        self.parameterPanel.bind("scale", self.scaleCombo)
         self.parameterPanel.bind("gridRows", self.gridRowsSpin)
         self.parameterPanel.bind("gridColumns", self.gridColumnsSpin)
         self.parameterPanel.bind("autoFit", self.autoFitCheck)
@@ -613,6 +621,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.frameSlider.connect("valueChanged(int)", self.onFrameSliderMoved)
         self.colormapCombo.connect("currentIndexChanged(int)", lambda _: self.refresh())
         self.windowRange.connect("valuesChanged(double,double)", lambda a, b: self.refresh(rebuild3D=False))
+        self.scaleCombo.connect("currentIndexChanged(int)", lambda _: self.refreshSlices())
         for spin in (self.gridRowsSpin, self.gridColumnsSpin):
             spin.connect("valueChanged(int)", lambda _: self.onGridChanged())
         for spin in [self.stepSpin] + list(self.firstSliceSpins.values()):
@@ -663,10 +672,11 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Most used controls in the toolbar (toolbar.StepBar); they drive the controls of this panel."""
         self.toolbarBar = bar
         self.tbPlay = bar.toggle("▶ Play", self.playButton.toolTip,
-                                 lambda c: self.fromToolbar(lambda: setattr(self.playButton, "checked", c)))
+                                 lambda c: self.fromToolbar(lambda: setattr(self.playButton, "checked", c)), "primary")
         bar.separator()
         self.tbMax = bar.spin("Max", 10, 150, 5, " %", "Top of the slice color window (% of the hottest frame)",
                               self.onToolbarMax)
+        self.tbScale = bar.choice([(text, value, tip) for _, value, text, tip in FRAME_SCALES], self.onToolbarScale)
         self.tbFov = bar.spin("FOV", 4.0, 30.0, 0.5, " cm", self.fovSpin.toolTip,
                               lambda v: self.fromToolbar(lambda: self.fovSpin.setValue(v)), decimals=1)
         bar.separator()
@@ -688,6 +698,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self._toolbarFollows = True
             self.windowRange.connect("valuesChanged(double,double)", lambda a, b: self.syncToolbar())
             self.fovSpin.connect("valueChanged(double)", lambda _: self.syncToolbar())
+            self.scaleCombo.connect("currentIndexChanged(int)", lambda _: self.syncToolbar())
             for button in (self.playButton, self.contoursButton, self.syncCheck, self.scoresButton):
                 button.connect("toggled(bool)", lambda _: self.syncToolbar())
             self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.syncToolbar())
@@ -711,6 +722,12 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.windowRange.maximumValue = max(float(value), self.windowRange.minimumValue + 1.0)
         self.syncToolbar()
 
+    def onToolbarScale(self, value):
+        index = self.scaleCombo.findData(value)
+        if index >= 0:
+            self.scaleCombo.setCurrentIndex(index)
+        self.syncToolbar()
+
     def onToolbarOverlay(self, value):
         index = self.overlayCombo.findData(value)
         if index >= 0:
@@ -725,6 +742,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             bar.setChecked(self.tbPlay, self.playButton.checked)
             self.tbPlay.setText("■ Stop" if self.playButton.checked else "▶ Play")
             bar.setValue(self.tbMax, self.windowRange.maximumValue)
+            bar.setChoice(self.tbScale, self.scaleCombo.itemData(self.scaleCombo.currentIndex))
             bar.setValue(self.tbFov, self.fovSpin.value)
             bar.setChecked(self.tbContours, self.contoursButton.checked)
             bar.setChecked(self.tbSync, self.syncCheck.checked)
@@ -1321,10 +1339,13 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                        f"EF {data.phases[2]:.0f} %" if data.phases else "")
 
     # --- slices -----------------------------------------------------------------------------
-    def sliceWindow(self, data):
-        reference = max(data.gated.peaks) if data.gated.peaks else 1.0
-        low = reference * self.windowRange.minimumValue / 100.0
-        return low, max(reference * self.windowRange.maximumValue / 100.0, low + 1e-9)
+    def sliceWindows(self, data):
+        """(low, top) counts of every frame's color window: % of the hottest frame, or of each frame's own peak."""
+        peaks = list(data.gated.peaks) or [1.0] * data.count
+        if self.scaleCombo.itemData(self.scaleCombo.currentIndex) != "frame":
+            peaks = [max(peaks)] * len(peaks)
+        low, high = self.windowRange.minimumValue / 100.0, self.windowRange.maximumValue / 100.0
+        return [(r * low, max(r * high, r * low + 1e-9)) for r in peaks]
 
     def refreshSlices(self, show=True):
         """Tiles of every frame of every row at the current settings, made once (the cine only swaps them)."""
@@ -1349,7 +1370,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         synced = self.synced() and not fixed   # each study's own apical / mid / basal thirds
         mappings = {name: self.syncMapping(name) for name in ORIENTATIONS} if synced else {}
         for slot, data in self.shown():
-            window = self.sliceWindow(data)
+            windows = self.sliceWindows(data)
             for name in ORIENTATIONS:
                 attribute, rowKey = self.rowOf(slot, name)
                 panel = panels[attribute][0]
@@ -1370,7 +1391,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     shown = [first + cell * step for cell in range(cells)]
                 crop = self.tileCrop(slot, name, data)
                 self.slicePositions[(slot, name)] = tuple(int(k) for k in shown)
-                key = (id(data), size, self.colormapCombo.currentText, tuple(round(v, 6) for v in window),
+                key = (id(data), size, self.colormapCombo.currentText, tuple(round(v, 6) for w in windows for v in w),
                        tuple(shown), contours, round(float(panel.pixelRatio()), 2), tuple(crop))
                 cached = self.tiles.get((slot, name))
                 if cached and cached[0] == key:
@@ -1390,6 +1411,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     if size and valid:
                         stack = cropStack(data.gated.slices[name][index][valid], crop)[:, ::-1, :]   # top = highest j
                         zoomed = zoomInPlane(np.asarray(stack), size, size, interpolation)
+                        window = windows[index]
                         for k, values in zip(valid, zoomed):
                             rgb = colorize(values, window[1], table, window[0])
                             if contours and data.gated.results[index] is not None:

@@ -53,7 +53,7 @@ from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
     GATED_QC_LAYOUT_ID, ORIENTATIONS, ORIENTATION_TITLES, gatedQcLayoutXml, registerLayout)
 from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
     COLORMAPS, colorTableArray, colorize, rgbToQImage, gatedMosaicPanel, countCurvePanel, gatingInfoPanel,
-    existingPanel, tilePixelsToIjk, BoundedCache, packMask, unpackMask)
+    existingPanel, tilePixelsToIjk, BoundedCache, packMask, unpackMask, FRAME_SCALES)
 from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
@@ -63,7 +63,6 @@ CONTOUR_MAX_SIZE = 160
 TILE_CACHE_BYTES = 96 * 1024 * 1024      # frame tiles kept for scrolling back (oldest dropped first)
 CONTOUR_CACHE_BYTES = 16 * 1024 * 1024   # contour masks, bit-packed (also used by Gated Review)
 LABEL_GRID_MM = 2.0          # grid of the per-frame myocardium / cavity labels (counts and volumes)
-NORMALIZATIONS = (("All frames together", "common"), ("Each frame on its own", "frame"))
 SERIES_COLORS = {"projections": (120, 180, 255), "image": (210, 210, 210), "myocardium": (255, 140, 60)}
 MOSAIC_STATE, CURVE_STATE, INFO_STATE = "_mpiGatedMosaicState", "_mpiCountCurveState", "_mpiGatingInfoState"
 
@@ -319,7 +318,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.windowRange.toolTip = "Color window in % of the hottest voxel near the LV"
         form.addRow("Window:", self.windowRange)
         self.normalizationCombo = qt.QComboBox()
-        for text, value in NORMALIZATIONS:
+        for text, value, _, _ in FRAME_SCALES:
             self.normalizationCombo.addItem(text, value)
         self.normalizationCombo.toolTip = ("All frames together: one color scale for every frame, so count changes "
                                            "between frames show. Each frame: every frame scaled to its own maximum")
@@ -431,16 +430,40 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # --- workflow toolbar (second row) -----------------------------------------------------------------
     def buildToolbar(self, bar):
         self.toolbarBar = bar
-        bar.mirror(self.segmentButton, "Segment again", "Segment the frames again with the current settings")
+        bar.mirror(self.segmentButton, "Segment again", "Segment the frames again with the current settings", "create")
+        bar.separator()
+        self.tbMax = bar.spin("Max", 10, 150, 5, " %", "Top of the color window (% of the hottest voxel near the LV)",
+                              self.onToolbarMax)
+        self.tbScale = bar.choice([(text, value, tip) for _, value, text, tip in FRAME_SCALES], self.onToolbarScale)
         bar.mirror(self.contoursButton, "Contours")
         bar.separator()
         for slot, button in self.layoutButtons.items():
             bar.mirror(button, SLOT_TITLES[slot], f"Gated frames of the {SLOT_TITLES[slot].lower()} study")
+        if not getattr(self, "_toolbarFollows", False):   # the toolbar follows this panel's controls
+            self._toolbarFollows = True
+            self.windowRange.connect("valuesChanged(double,double)", lambda a, b: self.syncToolbar())
+            self.normalizationCombo.connect("currentIndexChanged(int)", lambda _: self.syncToolbar())
+
+    def onToolbarMax(self, value):
+        self.windowRange.maximumValue = max(float(value), self.windowRange.minimumValue + 1.0)
+        self.syncToolbar()
+
+    def onToolbarScale(self, value):
+        index = self.normalizationCombo.findData(value)
+        if index >= 0:
+            self.normalizationCombo.setCurrentIndex(index)
+        self.syncToolbar()   # a click on the checked button changed nothing: check it again
 
     def syncToolbar(self):
         bar = getattr(self, "toolbarBar", None)
-        if bar is not None:
+        if bar is None:
+            return
+        try:
             bar.syncMirrors()
+            bar.setValue(self.tbMax, self.windowRange.maximumValue)
+            bar.setChoice(self.tbScale, self.normalizationCombo.itemData(self.normalizationCombo.currentIndex))
+        except Exception:
+            logging.debug("MPI: could not update the toolbar:\n" + traceback.format_exc())
 
     def enter(self):
         self.studySelector.refresh()

@@ -109,11 +109,17 @@ A second row holds the most used controls of the step on screen, so you can work
 
 | Step | Controls in the toolbar |
 |---|---|
-| Processing | Place ROI, Reset axes, Create SA / HLA / VLA |
-| Myocardium | Detect, the surfaces shown, layouts |
+| Processing | Place ROI, Reset axes, Mask, Create SA / HLA / VLA |
+| Myocardium | Detect, Mask, the surfaces shown, layouts |
 | Perfusion | Max % (top of the slice window), FOV, Contours, Sync, Vessels / 17 seg, Scores, layouts |
-| Gated QC | Segment again, Contours, the study |
-| Gated Review | the Perfusion controls plus Play |
+| Gated QC | Segment again, Max %, All frames / Each frame, Contours, the study |
+| Gated Review | the Perfusion controls plus Play and All frames / Each frame |
+
+The main actions (Place ROI, Create, Detect, Segment again, Play) have the colors of their panel buttons.
+*Mask* in Myocardium makes the SA / HLA / VLA of the studies on screen again with the Processing
+ellipsoid mask (or without it), in the frame they were made in, and detects their walls again.
+*All frames* puts every gate frame of a study on one color scale, so the count changes over the cycle
+show; *Each frame* scales every frame to its own maximum.
 
 Only the layouts of the studies that are ready appear: the stress-rest ones when both are ready, else
 those of the one study. Perfusion and Gated Review open on the layout with slices and plots of the
@@ -307,7 +313,8 @@ frames is 1.25 by default.
 STRESS GATED shows the stress gated study:
 
 - **Left:** the SA / HLA / VLA rows of the gate frames as a cine, with the same grid, slices, colors and
-  window as Perfusion (taken over when the screen opens) and each frame's endo- and epicardium. The
+  window as Perfusion (taken over when the screen opens), one color scale for all frames (or each frame
+  on its own, *Scale*) and each frame's endo- and epicardium. The
   slices use the field of view, *Fit to the myocardium* and *Sync stress and rest* of Perfusion.
 - **Right, three polar maps** side by side, each with its own window:
   - perfusion,
