@@ -258,12 +258,6 @@ STEP_PARAMETERS = {
         P("outwardMotion", "Outward motion at full color", 4.0, f"{DISPLAY}:OUTWARD_MOTION_MM", 0.5, 20.0, 0.5, 1,
           " mm", "Outward (dyskinetic) motion reaches the full turquoise at this many mm", "Polar maps"),
         P("efFontSize", "EF text size", 26, "MPIGated:EF_FONT_SIZE", 8, 80, 1, suffix=" px", group="3D wall"),
-        P("surfaceOpacity", "Wall opacity, surface", 0.5, "MPIGated:WALL_OPACITY.surface", 0.0, 1.0, 0.05, 2,
-          group="3D wall"),
-        P("wireframeOpacity", "Wall opacity, wireframe", 0.5, "MPIGated:WALL_OPACITY.wireframe", 0.0, 1.0, 0.05, 2,
-          group="3D wall"),
-        P("pointsOpacity", "Wall opacity, points", 1.0, "MPIGated:WALL_OPACITY.points", 0.0, 1.0, 0.05, 2,
-          group="3D wall"),
         _color("ghostColor", "ED reference color", (1.0, 1.0, 1.0), "MPIGated:GHOST_COLOR", 1.0, "3D wall"),
         P("labelDistance", "Wall label distance", 45.0, "MPIGated:LABEL_DISTANCE_MM", 0.0, 120.0, 1.0, 0, " mm",
           "How far outside the epicardium the wall labels float in 3D", "3D wall"),
@@ -550,7 +544,8 @@ class ParameterPanel:
     # --- the step's own controls ---
     def bind(self, key, widget, kind=None):
         """Include one of the step's controls in Save / Restore. kind: "value" (spin box, slider), "checked"
-        (check box, checkable button), "range" (ctkRangeWidget), "combo" (item data, else text); guessed
+        (check box, checkable button), "range" (ctkRangeWidget), "combo" (item data, else text), "color"
+        (ctkColorPickerButton, 0-255 RGB); guessed
         from the widget when not given. Its current value is taken as its default, so bind it right after
         it got its built-in value."""
         kind = kind or _controlKind(widget)
@@ -611,6 +606,8 @@ def _controlKind(widget):
     name = widget.className()
     if name == "ctkRangeWidget":
         return "range"
+    if name == "ctkColorPickerButton":
+        return "color"
     if name == "QComboBox":
         return "combo"
     if name in ("QCheckBox", "QPushButton", "QRadioButton", "QToolButton"):
@@ -626,6 +623,9 @@ def _controlValue(widget, kind):
     if kind == "combo":
         data = widget.itemData(widget.currentIndex)
         return {"data": data} if data is not None else {"text": widget.currentText}
+    if kind == "color":
+        color = widget.color
+        return [color.red(), color.green(), color.blue()]
     return float(widget.value) if not isinstance(widget.value, int) else int(widget.value)
 
 
@@ -639,6 +639,9 @@ def _setControlValue(widget, kind, value):
         index = widget.findData(value["data"]) if "data" in value else widget.findText(value.get("text", ""))
         if index >= 0:
             widget.setCurrentIndex(index)
+    elif kind == "color":
+        import qt
+        widget.color = qt.QColor(*[int(v) for v in value[:3]])
     elif widget.className() in ("QSpinBox", "QDoubleSpinBox"):
         widget.setValue(value)
     else:
