@@ -109,13 +109,14 @@ A second row holds the most used controls of the step on screen, so you can work
 
 | Step | Controls in the toolbar |
 |---|---|
-| Processing | Place ROI, Reset axes, Mask, Create SA / HLA / VLA |
-| Myocardium | Detect, Mask, the surfaces shown, layouts |
-| Perfusion | Max % (top of the slice window), FOV, Contours, Sync, Vessels / 17 seg, Scores, layouts |
-| Gated QC | Segment again, Max %, All frames / Each frame, Contours, the study |
-| Gated Review | the Perfusion controls plus Play and All frames / Each frame |
+| Processing | Place ROI, Reset axes, Mask, Create SA / HLA / VLA, Review slices › |
+| Myocardium | Detect, Mask, the surfaces shown, layouts, Perfusion › |
+| Perfusion | Max % (top of the slice window), color map, FOV, Contours, Sync, Vessels / 17 seg, Scores, layouts, Gated QC › |
+| Gated QC | Segment again, Max %, All frames / Each frame, color map, Contours, the study, Gated Review › |
+| Gated Review | Play, previous / next frame, then the Perfusion controls plus All frames / Each frame |
 
-The main actions (Place ROI, Create, Detect, Segment again, Play) have the colors of their panel buttons.
+The main actions (Place ROI, Create, Detect, Segment again, Play, the next step) have the colors of their
+panel buttons.
 *Mask* in Myocardium makes the SA / HLA / VLA of the studies on screen again with the Processing
 ellipsoid mask (or without it), in the frame they were made in, and detects their walls again.
 *All frames* puts every gate frame of a study on one color scale, so the count changes over the cycle
@@ -299,12 +300,17 @@ Wall thickness of the frames (*Wall thickness* in the advanced section):
   hearts that thicken well, and it does not overestimate when the gated reconstruction is too smooth to
   show the thickening (gate profiles wider than about 20 mm keep the same width over the whole cycle, as
   with a Butterworth 0.30 cycles/cm gated filter).
+- **Each frame from its own profiles**: every frame's thickness from its own count profile widths, as
+  Myocardium does on the static image (at the blur estimated from the frames), with no volume kept
+  between the frames. A gate holds a fraction of the counts and its wall is thinner than the blur, so it
+  reads noisier, and with a smooth gated filter the widths stop changing over the cycle; it is there to
+  compare with the constant-volume models.
 
 In the constant-volume models, rays through a defect keep the wall thickness of the static fit in every
 frame: scar does not thicken, and its gate profiles show no wall to measure. A ray counts as defect by
 its visibility in the static image (counts above the cavity's blood pool against the typical wall's):
 no wall below 0.15, full wall from 0.60 (*Defect: no wall below* / *full wall from*). Surface smoothing of the
-frames is 1.25 by default.
+frames is 2 by default (the static fit uses 1.25): the gates are noisier.
 
 ### 6. Gated Review
 

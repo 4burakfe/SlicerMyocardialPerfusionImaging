@@ -1728,6 +1728,8 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                               "outside the ellipsoid")
         bar.separator()
         bar.mirror(self.createButton, "Create SA / HLA / VLA", kind="create")
+        bar.separator()
+        bar.mirror(self.reviewButton, "Review slices ›", kind="primary")
 
     def syncToolbar(self):
         bar = getattr(self, "toolbarBar", None)

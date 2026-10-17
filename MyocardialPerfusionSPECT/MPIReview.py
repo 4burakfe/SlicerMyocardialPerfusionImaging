@@ -394,6 +394,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.toolbarBar = bar
         self.tbMax = bar.spin("Max", 10, 150, 5, " %", "Top of the slice color window (% of the myocardial maximum) "
                               "of the studies shown", self.onToolbarMax)
+        bar.mirrorCombo(self.colormapCombo, toolTip="Color map of the slices and polar maps")
         self.tbFov = bar.spin("FOV", 4.0, 30.0, 0.5, " cm", self.fovSpin.toolTip,
                               lambda v: self.fromToolbar(lambda: self.fovSpin.setValue(v)), decimals=1)
         bar.separator()
@@ -410,6 +411,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         bar.separator()
         self.tbLayouts = bar.buttons([(key, self.shortLayoutName(key), MODES[key][5]) for row in MODE_GRID
                                       for key in row], lambda key: self.fromToolbar(lambda: self.chooseMode(key)))
+        bar.separator()
+        bar.mirror(self.gatedQCButton, "Gated QC ›", kind="primary")
         if not getattr(self, "_toolbarFollows", False):   # the toolbar follows this panel's controls
             self._toolbarFollows = True
             for slot in (STRESS, REST):
@@ -467,6 +470,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if bar is None:
             return
         try:
+            bar.syncMirrors()
             slots = self.toolbarSlots()
             anyReady = bool(slots)
             if slots:

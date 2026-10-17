@@ -673,10 +673,13 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.toolbarBar = bar
         self.tbPlay = bar.toggle("▶ Play", self.playButton.toolTip,
                                  lambda c: self.fromToolbar(lambda: setattr(self.playButton, "checked", c)), "primary")
+        self.tbPrevious = bar.action("|◀", "Previous frame (stops the cine)", lambda: self.stepFrame(-1))
+        self.tbNext = bar.action("▶|", "Next frame (stops the cine)", lambda: self.stepFrame(1))
         bar.separator()
         self.tbMax = bar.spin("Max", 10, 150, 5, " %", "Top of the slice color window (% of the hottest frame)",
                               self.onToolbarMax)
         self.tbScale = bar.choice([(text, value, tip) for _, value, text, tip in FRAME_SCALES], self.onToolbarScale)
+        bar.mirrorCombo(self.colormapCombo, toolTip="Color map of the slices")
         self.tbFov = bar.spin("FOV", 4.0, 30.0, 0.5, " cm", self.fovSpin.toolTip,
                               lambda v: self.fromToolbar(lambda: self.fovSpin.setValue(v)), decimals=1)
         bar.separator()
@@ -739,6 +742,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if bar is None:
             return
         try:
+            bar.syncMirrors()
             bar.setChecked(self.tbPlay, self.playButton.checked)
             self.tbPlay.setText("■ Stop" if self.playButton.checked else "▶ Play")
             bar.setValue(self.tbMax, self.windowRange.maximumValue)
@@ -1290,6 +1294,12 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.playButton.checked = False
             return
         self.showFrame((self.tick + 1) % max(d.count for _, d in shown))
+
+    def stepFrame(self, step):
+        """One frame back or forward (the cine stops)."""
+        self.playButton.checked = False
+        if self.shown():
+            self.showFrame(self.tick + step)
 
     def onFrameSliderMoved(self, value):
         self.playButton.checked = False

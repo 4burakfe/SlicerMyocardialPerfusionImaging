@@ -595,6 +595,8 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         bar.separator()
         bar.mirror(self.singleButton, "ACTIVE STUDY")
         bar.mirror(self.dualButton, "STRESS-REST")
+        bar.separator()
+        bar.mirror(self.perfusionButton, "Perfusion ›", kind="primary")
 
     def syncToolbar(self):
         bar = getattr(self, "toolbarBar", None)
