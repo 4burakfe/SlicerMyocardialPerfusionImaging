@@ -34,7 +34,7 @@ Myocardium instead of 12 mm).
 Only one module appears in Slicer's module list: *Nuclear Medicine > Myocardial Perfusion SPECT*. It shows
 an overview (active study, step status) and the five workflow steps inside its own panel:
 
-1. **Data roles**: studies in the scene, their roles (None leaves a volume out) and gated sequences. Study 1 (stress) and Study 2 (rest) come from the roles and can be changed at the top of every step.
+1. **Data roles**: studies in the scene, their roles (None leaves a volume out) and gated sequences. Study 1 (stress) and Study 2 (rest) come from the roles and can be changed at the top of every step. The case (patient name and ID) is read from the DICOM headers of the studies, can be typed instead (kept until *Read from DICOM*) and is shown in the workflow toolbar next to the logo; when the studies belong to more than one patient (different names or IDs), Data roles and the toolbar show a warning, once also as a message box. Volumes set to None are left out of that check.
 2. **Processing**: the active study loads when the step opens. Click the left ventricle in the anterior or
    left lateral MIP on the left (the depth goes to the count-weighted center along the projection line;
    drag the yellow point to move the ROI and the orange point to resize it), align the three axis lines in
@@ -189,6 +189,7 @@ MyocardialPerfusionSPECT/
     display.py                       colour maps, the slice panel, the polar map panel and the Gated QC charts
     studies.py                       study roles, gated sequence recognition and pairing
     session.py                       active study shared by the modules, workflow steps
+    case.py                          case (patient) name and ID from DICOM, mixed-patient warning
     toolbar.py                       workflow toolbar
     parameters.py                    adjustable constants of every step, Save parameters / Restore defaults
     widgets.py                       coloured action buttons

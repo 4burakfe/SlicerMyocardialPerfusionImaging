@@ -1,10 +1,12 @@
 """Workflow toolbar of the MPI modules, at the top of the Slicer main window.
 
-    [icon] Tarvos | (1) Data roles  >  (2) Processing  >  ...  >  (5) Gated QC  >  (6) Gated Review
+    [icon] Tarvos | Name · ID | (1) Data roles  >  (2) Processing  >  ...  >  (5) Gated QC  >  (6) Gated Review
     [controls of the step shown: e.g. Max % | FOV | Contours | Sync | Vessels / 17 seg | Scores | layouts]
 
 Shown only while the Myocardial Perfusion SPECT hub is the current module. The step buttons show
-that step in the hub; their badge shows the step's state (done, available, locked). The second row
+that step in the hub; their badge shows the step's state (done, available, locked). The case (patient
+name and ID, case.py) is shown next to the logo, in orange when the studies belong to more than one
+patient; a click opens Data roles. The second row
 holds the most used controls of the step shown, made by its widget (buildToolbar(bar) with a
 StepBar, kept up to date by its syncToolbar()); they drive the step panel's own controls.
 
@@ -12,6 +14,7 @@ One toolbar lives for the whole Slicer session. A developer reload never deletes
 (deleting Qt widgets that Python still wraps can crash Slicer): it is hidden and replaced.
 """
 
+import html
 import logging
 import os
 import traceback
@@ -21,11 +24,13 @@ import slicer
 
 from MyocardialPerfusionSPECTLib import session
 from MyocardialPerfusionSPECTLib import studies as studiesLib
+from MyocardialPerfusionSPECTLib import case as caseLib
 
 TOOLBAR_OBJECT_NAME = "MPIWorkflowToolbar"
 CONTROLS_OBJECT_NAME = "MPIStepControlsToolbar"
-TOOLBAR_VERSION = 8       # bump when the class changes, so a reload replaces the toolbar
+TOOLBAR_VERSION = 9       # bump when the class changes, so a reload replaces the toolbar
 BADGE_SIZE = 22
+CASE_MAX_CHARACTERS = 40   # longer case names are cut in the toolbar (the tooltip has all of it)
 ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Resources", "Icons",
                          "MyocardialPerfusionSPECT.png")
 
@@ -251,6 +256,15 @@ class WorkflowToolbar:
         tb.addWidget(self.hubButton)
         tb.addSeparator()
 
+        # Case: patient name and ID (Data roles)
+        self.caseButton = qt.QToolButton()
+        self.caseButton.setAutoRaise(True)
+        self.caseButton.setFocusPolicy(qt.Qt.NoFocus)
+        self.caseButton.connect("clicked(bool)", lambda checked: session.selectStep("roles"))
+        tb.addWidget(self.caseButton)
+        tb.addSeparator()
+        self.showCase([])
+
         self.stepButtons = {}
         group = qt.QButtonGroup(tb)
         group.setExclusive(True)
@@ -355,14 +369,34 @@ class WorkflowToolbar:
         if self.toolbar.visible:
             self.refreshTimer.start()
 
+    # -- Case --
+    def showCase(self, patients):
+        name, patientId, source = caseLib.currentCase()
+        text = caseLib.caseText(name, patientId)
+        warning = caseLib.mixedWarning(patients)
+        color = "#d08030" if warning else ("" if text else "#8f969c")
+        shown = text if len(text) <= CASE_MAX_CHARACTERS else text[:CASE_MAX_CHARACTERS - 1] + "\u2026"
+        self.caseButton.setText(("\u26a0 " if warning else "") + (shown or "No case"))
+        self.caseButton.setStyleSheet("QToolButton { border-radius: 5px; padding: 3px 8px; font-weight: bold; "
+                                      + (f"color: {color}; " if color else "") + "}")
+        tip = [f"Case: {text}" + (" (typed by hand)" if source == caseLib.SOURCE_MANUAL else
+                                  " (from the DICOM headers)") if text else "No patient name or ID"]
+        if warning:
+            tip.append(warning)
+        tip.append("Click to open Data roles")
+        self.caseButton.toolTip = "<br>".join(html.escape(t).replace("\n", "<br>") for t in tip)
+
     # -- State --
     def refresh(self):
         try:
-            studies = [s for s in studiesLib.scanStudies()
-                       if s.staticNode is not None and s.role != studiesLib.EXCLUDED_ROLE]
+            allStudies = studiesLib.scanStudies()
+            studies = [s for s in allStudies if s.staticNode is not None and s.role != studiesLib.EXCLUDED_ROLE]
         except Exception:
             logging.warning("MPI toolbar: could not list the studies:\n" + traceback.format_exc())
-            studies = []
+            allStudies, studies = [], []
+        patients = caseLib.updateFromDicom(allStudies)   # a change comes back here through the session listener
+        caseLib.warnIfMixed(patients)
+        self.showCase(patients)
         active = session.activeStudy()
         states = session.stepStates(studies, active)
         for key, (button, number) in self.stepButtons.items():
