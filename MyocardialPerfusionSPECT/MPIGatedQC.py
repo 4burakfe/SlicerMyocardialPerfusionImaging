@@ -5,10 +5,10 @@ Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before 
 
   - the myocardium is segmented in every gate frame, starting from the static wall detected in
     Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: mid-wall refitted per ray near the
-    static one, valve plane refitted within a limit; by default constantVolumeGates: every frame keeps
-    the myocardial volume of the ES frame, whose thickness comes from its own profile widths at the blur
-    estimated from the frames, rays through a defect at their static thickness; selectable: the same with
-    the ED frame, every ray at its wall volume of the static fit, or midWallGates, every ray at its
+    static one, valve plane refitted within a limit; by default ownProfileGates: every frame's thickness
+    from its own profile widths at the blur estimated from the frames, rays through a defect at their
+    static thickness; selectable: constantVolumeGates, every frame keeps the myocardial volume of the ES
+    (or ED) frame, every ray at its wall volume of the static fit, or midWallGates, every ray at its
     end-diastolic wall thickness, so only the mid-wall moves);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
@@ -370,17 +370,18 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.thicknessModelCombo.setCurrentIndex(
             max(0, self.thicknessModelCombo.findData(wallLib.GATE_DEFAULTS["thicknessModel"])))
         self.thicknessModelCombo.toolTip = (
-            "Wall thickness of the frames. Constant myocardial volume, ES reference (default): every frame "
+            "Wall thickness of the frames. Each frame from its own profiles (default): the thickness of every "
+            "frame from its own count profile widths, as Myocardium does on the static image (the blur estimated "
+            "from the frames). Constant myocardial volume, ES reference: every frame "
             "keeps the myocardial volume of end-systole, the thickest and brightest wall, whose thickness comes "
-            "from its own count profiles (the blur estimated from the frames). ED reference: the same from "
+            "from its own count profiles; it thins the diastolic wall and so reads a higher EF. ED reference: "
+            "the same from "
             "end-diastole. Per ray: each ray keeps its wall volume of the static fit (the summed image blurs the "
             "wall over the cycle, so the walls come out thicker and the EF higher, most in small hearts). "
             "Mid-wall only: only the mid-wall (the count peak, the surface the gates show best) is taken from "
             "each frame and every ray keeps its end-diastolic wall thickness, so no thickening model enters the "
             "volumes; it reads lower than the others in hearts that thicken well and does not overestimate when "
-            "the gates are too blurred to show the thickening. Each frame from its own profiles: the thickness of "
-            "every frame from its own count profile widths, as Myocardium does on the static image; a gate's wall is "
-            "thinner than the blur and holds a fraction of the counts, so it reads noisier and thickens less")
+            "the gates are too blurred to show the thickening")
         advancedForm.addRow("Wall thickness:", self.thicknessModelCombo)
         self.segmentButton = styleButton(qt.QPushButton("Segment frames again"), "create")
         advancedForm.addRow(self.segmentButton)

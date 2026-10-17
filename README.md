@@ -287,9 +287,14 @@ For the gated study of Study 1 or Study 2:
 
 Wall thickness of the frames (*Wall thickness* in the advanced section):
 
-- **Constant myocardial volume, ES reference** (default): every frame keeps the myocardial volume of
+- **Each frame from its own profiles** (default): every frame's thickness from its own count profile
+  widths, as Myocardium does on the static image (at the blur estimated from the frames), with no volume
+  kept between the frames. The diastolic wall stays as thick as its counts show, and the counts inside
+  the segmented myocardium follow the image counts more closely than with the constant-volume models.
+- **Constant myocardial volume, ES reference**: every frame keeps the myocardial volume of
   end-systole, where the wall is thickest and brightest, with the ES wall thickness from its own count
-  profiles and the image blur estimated from the frames.
+  profiles and the image blur estimated from the frames. Carried into end-diastole, that volume thins the
+  diastolic wall, which reads a higher EF.
 - **Constant myocardial volume, ED reference**: the same with end-diastole as the reference (QGS-like).
 - **Per ray, from the static wall**: every ray keeps its wall volume of the static fit. The summed static
   image blurs the wall over the cycle, so the walls come out thicker and the EF higher, most in small
@@ -300,13 +305,8 @@ Wall thickness of the frames (*Wall thickness* in the advanced section):
   hearts that thicken well, and it does not overestimate when the gated reconstruction is too smooth to
   show the thickening (gate profiles wider than about 20 mm keep the same width over the whole cycle, as
   with a Butterworth 0.30 cycles/cm gated filter).
-- **Each frame from its own profiles**: every frame's thickness from its own count profile widths, as
-  Myocardium does on the static image (at the blur estimated from the frames), with no volume kept
-  between the frames. A gate holds a fraction of the counts and its wall is thinner than the blur, so it
-  reads noisier, and with a smooth gated filter the widths stop changing over the cycle; it is there to
-  compare with the constant-volume models.
 
-In the constant-volume models, rays through a defect keep the wall thickness of the static fit in every
+In every model, rays through a defect keep the wall thickness of the static fit in every
 frame: scar does not thicken, and its gate profiles show no wall to measure. A ray counts as defect by
 its visibility in the static image (counts above the cavity's blood pool against the typical wall's):
 no wall below 0.15, full wall from 0.60 (*Defect: no wall below* / *full wall from*). Surface smoothing of the
