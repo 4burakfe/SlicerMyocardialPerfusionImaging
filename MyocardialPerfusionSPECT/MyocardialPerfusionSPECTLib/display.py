@@ -1186,6 +1186,10 @@ class GatingInfoPanel:
 
 
 DEFAULT_FOV_CM = 13.0     # field of view of the slice tiles (stress and rest alike)
+# color scale of the gated frames (Gated QC, Gated Review): (panel text, value, toolbar text, tooltip)
+FRAME_SCALES = (("All frames together", "common", "All frames",
+                 "One color scale for every frame of a study, so the count changes over the cycle show"),
+                ("Each frame on its own", "frame", "Each frame", "Every frame scaled to its own maximum"))
 MIN_VISIBLE_SLICES = 8   # a row scrolls past its last slice (black tiles) until this many slices are left
 REFIT_DELAY_MS = 1000    # wait after the last resize before the slice tiles are fitted and made again
 

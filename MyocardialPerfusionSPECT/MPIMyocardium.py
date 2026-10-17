@@ -584,7 +584,10 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     # --- workflow toolbar (second row) -----------------------------------------------------------------
     def buildToolbar(self, bar):
         self.toolbarBar = bar
-        bar.mirror(self.detectButton, "Detect")
+        bar.mirror(self.detectButton, "Detect", kind="create")
+        self.tbMask = bar.toggle("Mask", "Make the SA / HLA / VLA volumes again masked outside the Processing "
+                                         "ellipsoid (liver and gut out), or unmasked, and detect the wall again",
+                                 self.onToolbarMask)
         bar.separator()
         bar.label("Show")
         for key, check in self.showChecks.items():
@@ -595,8 +598,32 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def syncToolbar(self):
         bar = getattr(self, "toolbarBar", None)
-        if bar is not None:
-            bar.syncMirrors()
+        if bar is None:
+            return
+        bar.syncMirrors()
+        try:
+            states = [self.processingWidget().outputsMasked(study) for study, _ in self.lanes() if study is not None]
+            states = [state for state in states if state is not None]
+            bar.setChecked(self.tbMask, bool(states) and all(states))
+            self.tbMask.enabled = bool(states)
+        except Exception:
+            logging.debug("MPI: could not update the toolbar:\n" + traceback.format_exc())
+
+    @staticmethod
+    def processingWidget():
+        return slicer.modules.mpiprocessing.widgetRepresentation().self()
+
+    def onToolbarMask(self, masked):
+        """Make the volumes of the studies on screen again with / without the mask, then detect their walls."""
+        processing = self.processingWidget()
+        with slicer.util.tryWithErrorDisplay("Could not make the volumes again.", waitCursor=True):
+            for study, _ in self.lanes():
+                if study is not None and processing.outputsMasked(study) not in (None, bool(masked)):
+                    processing.remakeVolumes(study, masked)
+        session.notify()
+        if self.isShown():
+            self.enter()   # shows the new volumes and detects on them
+        self.syncToolbar()
 
     def enter(self):
         self.studySelector.refresh()

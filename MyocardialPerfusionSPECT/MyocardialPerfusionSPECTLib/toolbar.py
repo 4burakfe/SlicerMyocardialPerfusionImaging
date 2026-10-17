@@ -25,10 +25,11 @@ import slicer
 from MyocardialPerfusionSPECTLib import session
 from MyocardialPerfusionSPECTLib import studies as studiesLib
 from MyocardialPerfusionSPECTLib import case as caseLib
+from MyocardialPerfusionSPECTLib.widgets import BUTTON_COLORS
 
 TOOLBAR_OBJECT_NAME = "MPIWorkflowToolbar"
 CONTROLS_OBJECT_NAME = "MPIStepControlsToolbar"
-TOOLBAR_VERSION = 9       # bump when the class changes, so a reload replaces the toolbar
+TOOLBAR_VERSION = 10      # bump when the class changes, so a reload replaces the toolbar
 BADGE_SIZE = 22
 CASE_MAX_CHARACTERS = 40   # longer case names are cut in the toolbar (the tooltip has all of it)
 ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Resources", "Icons",
@@ -76,6 +77,16 @@ class StepBar:
     BUTTON_STYLE = ("QToolButton { border-radius: 4px; padding: 2px 7px; font-weight: bold; }"
                     "QToolButton:checked { background-color: rgba(47, 126, 216, 0.30); border: 1px solid #2f7ed8; }")
 
+    @staticmethod
+    def colorStyle(kind):
+        """Style of a main action button in the colors of its panel button (widgets.styleButton)."""
+        normal, hover, pressed = BUTTON_COLORS[kind]
+        return (f"QToolButton {{ background-color: {normal}; color: white; font-weight: bold; border: none;"
+                f" border-radius: 4px; padding: 2px 9px; }}"
+                f"QToolButton:hover {{ background-color: {hover}; }}"
+                f"QToolButton:pressed, QToolButton:checked {{ background-color: {pressed}; }}"
+                "QToolButton:disabled { background-color: #9aa1a7; color: #eceff1; }")
+
     def __init__(self):
         self.widget = qt.QWidget()
         self.layout = qt.QHBoxLayout(self.widget)
@@ -83,15 +94,16 @@ class StepBar:
         self.layout.setSpacing(4)
         self.mirrors = []   # (toolbar button, panel button)
 
-    def mirror(self, target, text, toolTip=None):
+    def mirror(self, target, text, toolTip=None, kind=None):
         """A toolbar copy of a panel button: a click clicks the panel button (same effect, also in an exclusive
-        group); enabled and checked follow it (syncMirrors)."""
+        group); enabled and checked follow it (syncMirrors). kind: colored as a main action (widgets.BUTTON_COLORS),
+        like its panel button."""
         button = qt.QToolButton()
         button.setText(text)
         button.setCheckable(bool(target.checkable))
-        button.setAutoRaise(True)
+        button.setAutoRaise(kind is None)
         button.setFocusPolicy(qt.Qt.NoFocus)
-        button.setStyleSheet(self.BUTTON_STYLE)
+        button.setStyleSheet(self.colorStyle(kind) if kind else self.BUTTON_STYLE)
         button.toolTip = toolTip or target.toolTip or target.text
 
         def onClick(checked=False):
@@ -143,14 +155,14 @@ class StepBar:
         self.layout.addWidget(spin)
         return spin
 
-    def toggle(self, text, toolTip, onToggle):
-        """Checkable button; onToggle(checked) when the user clicks it."""
+    def toggle(self, text, toolTip, onToggle, kind=None):
+        """Checkable button; onToggle(checked) when the user clicks it. kind: colored as in mirror."""
         button = qt.QToolButton()
         button.setText(text)
         button.setCheckable(True)
-        button.setAutoRaise(True)
+        button.setAutoRaise(kind is None)
         button.setFocusPolicy(qt.Qt.NoFocus)
-        button.setStyleSheet(self.BUTTON_STYLE)
+        button.setStyleSheet(self.colorStyle(kind) if kind else self.BUTTON_STYLE)
         button.toolTip = toolTip
         button.connect("clicked(bool)", onToggle)
         self.layout.addWidget(button)
