@@ -327,7 +327,7 @@ STRESS GATED shows the stress gated study:
   - perfusion,
   - **wall thickening**, count-based (ES / ED wall counts of every ray, first harmonic over the cycle),
     smoothed more than the others since a count ratio is noisy. *Thickening map* paints it as the mean
-    of each of the five walls (default), the mean of each of the 17 AHA segments, or per pixel. The five
+    of each of the five walls, the mean of each of the 17 AHA segments (default), or per pixel. The five
     walls are drawn on the bullseye itself, not grouped from the segments: the apex is the central disk
     (the size of segment 17) and the rest is cut by an X into anterior, septal, inferior and lateral
     quarters (borders at 45, 135, 225 and 315 deg). With an overlay shown, the per-wall map draws these
