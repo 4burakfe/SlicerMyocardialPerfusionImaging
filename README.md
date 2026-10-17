@@ -196,6 +196,12 @@ How it works:
   count-weighted peak along each ray gives the mid-wall. A ray far from its neighbours, or from the
   robust circle through its row (when a wide defect lets its neighbours share a wrong peak), follows the
   others.
+- Rays through a deep defect have no peak of their own. They follow a shape model of the whole LV: a
+  truncated ellipsoid fitted to the walls that are seen (the border of the defect left out, where the
+  blur pulls the peaks off the wall), plus the smooth misfit of those walls. A defect, also one over the
+  apex, takes the curve of the walls around it instead of being bridged straight across. The wall
+  thickness inside a defect comes from the walls that are seen. *Shape model through defects* (Advanced
+  parameters, Defects) turns it off.
 - The wall thickness comes from the profile width corrected for the system resolution, and the endo-
   and epicardium are placed half a thickness on either side.
 - At every angle the wall ends where its counts fall below 55 % of that angle's wall counts, or where
