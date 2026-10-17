@@ -1,7 +1,7 @@
 """Colour maps and the slice panel of the result screen.
 
 Tiles are drawn directly: each slice is first resized to the tile's size on screen in the data
-domain (cubic B-spline, see resampling.zoomInPlane), then colour mapped with numpy, then handed to
+domain (the interpolation chosen in Processing, see resampling.zoomInPlane), then colour mapped with numpy, then handed to
 Qt as an uncompressed in-memory PPM (the same route as the DICOM SPECT Recon previews). Qt never
 scales the colour image, so there is no PNG encoding, no temporary file and no bilinear blending
 of colours. The panel is painted at the screen's device pixel ratio, so a scaled Windows display

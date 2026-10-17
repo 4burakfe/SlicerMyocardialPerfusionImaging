@@ -245,16 +245,17 @@ GATE_DEFAULTS = {
     "maxWallShift": 25.0,      # mm, the mid-wall of a gate is searched this far from the static mid-wall
     "maxValveShift": 25.0,     # mm, the valve plane of a gate stays this close to the static one (base descent ~1 cm)
     "gateSmoothing": 1.25,     # Gaussian sigma of the gate surface smoothing (grid samples)
-    "thicknessModel": "ray",     # "ray": each ray keeps its wall volume of the static fit,
-                                 # "mid": only the mid-wall moves, every ray keeps its ED thickness,
-                                 # "volume": every frame keeps the myocardial volume of ED (QGS-like),
-                                 # "es": the same with end-systole as the reference
+    "thicknessModel": "es",      # "es": every frame keeps the myocardial volume of ES (thickness from
+                                 #       its own profiles),
+                                 # "volume": the same with ED as the reference (QGS-like),
+                                 # "ray": each ray keeps its wall volume of the static fit,
+                                 # "mid": only the mid-wall moves, every ray keeps its ED thickness
     "maxThicknessChange": 0.5,   # "volume": a ray's thickness stays within ED / (1 + x) .. ED x (1 + x)
 }
-THICKNESS_MODELS = (("Per ray, from the static wall", "ray"),
-                    ("Mid-wall only (ED wall thickness)", "mid"),
-                    ("Constant myocardial volume (ES reference)", "es"),
-                    ("Constant myocardial volume (ED reference)", "volume"))
+THICKNESS_MODELS = (("Constant myocardial volume (ES reference)", "es"),
+                    ("Constant myocardial volume (ED reference)", "volume"),
+                    ("Per ray, from the static wall", "ray"),
+                    ("Mid-wall only (ED wall thickness)", "mid"))
 
 
 MIN_DEFECT_SHIFT = 0.3      # share of maxWallShift searched on rays through a defect
@@ -1027,6 +1028,48 @@ def segmentValues(polar, resolution=181):
     image, segments = bullseye(polar, resolution)
     return np.array([float(np.nanmean(image[segments == n])) if np.any(segments == n) else float("nan")
                      for n in range(1, 18)])
+
+
+WALLS = ("Apex", "Anterior", "Septal", "Inferior", "Lateral")
+WALL_SEGMENTS = {   # the five walls as groups of the 17 segments (their borders are segment borders)
+    "Apex": (17,),
+    "Anterior": (1, 7, 13),
+    "Septal": (2, 3, 8, 9, 14),
+    "Inferior": (4, 10, 15),
+    "Lateral": (5, 6, 11, 12, 16),
+}
+REGION_VIEWS = ("walls", "segments", "pixels")   # how a polar map is painted: wall means, segment means, per pixel
+
+
+def wallValues(polar, resolution=181):
+    """Mean polar map value of each of the five WALLS, by bullseye area."""
+    image, segments = bullseye(polar, resolution)
+    values = []
+    for wall in WALLS:
+        inside = np.isin(segments, WALL_SEGMENTS[wall])
+        values.append(float(np.nanmean(image[inside])) if np.any(inside) else float("nan"))
+    return np.array(values)
+
+
+def wallBullseye(polar, size, resolution=181):
+    """Bullseye of the five wall means (apex, anterior, septal, inferior, lateral): every pixel of a
+    wall shows its mean, NaN outside the circle. Also returns the five means (order of WALLS)."""
+    values = wallValues(polar, resolution)
+    _, segments = bullseye(polar, size)
+    image = np.full(segments.shape, np.nan)
+    for wall, value in zip(WALLS, values):
+        image[np.isin(segments, WALL_SEGMENTS[wall])] = value
+    return image, values
+
+
+def regionBullseye(polar, size, view="pixels"):
+    """Bullseye painted per REGION_VIEWS: "walls" (five wall means), "segments" (17 segment means) or
+    "pixels" (the polar map itself)."""
+    if view == "walls":
+        return wallBullseye(polar, size)[0]
+    if view == "segments":
+        return segmentBullseye(polar, size)[0]
+    return bullseye(polar, size)[0]
 
 
 def segmentBullseye(polar, size, resolution=181):

@@ -10,8 +10,8 @@ Why higher-order interpolation
     original voxel values.
 
 Modes
-    bspline  cubic B-spline interpolation (default): smooth, exact at the voxel centers
-    sinc     Lanczos windowed sinc (half width 3): sharpest, slight ringing at hot edges
+    sinc     Lanczos windowed sinc (half width 3, default): sharpest, slight ringing at hot edges
+    bspline  cubic B-spline interpolation: smooth, exact at the voxel centers
     linear   trilinear: no overshoot, faceted on coarse input grids
 B-spline and sinc can overshoot a little next to steep edges; their output is clipped at zero
 so counts stay non-negative.
@@ -27,7 +27,7 @@ INTERPOLATION_LABELS = {
     "sinc": "Windowed sinc (Lanczos, sharp)",
     "linear": "Linear",
 }
-DEFAULT_INTERPOLATION = "bspline"
+DEFAULT_INTERPOLATION = "sinc"
 
 
 def _interpolator(mode):
