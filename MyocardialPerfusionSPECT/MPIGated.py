@@ -111,6 +111,7 @@ READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with
 MOTION_WINDOW = (0.0, 25.0, 0.0, 10.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
 EF_WINDOW = (-50.0, 100.0, 0.0, 80.0)    # range and default window of the regional EF map, %
 DEFAULT_EF_REFERENCE = "floating"        # regional EF: a wedge grows or shrinks with a heart that moves as a whole
+DEFAULT_EF_CUT = "axis"                  # regional EF: wallLib.REGIONAL_EF_CUTS
 DEFAULT_FPS = 8
 VOLUME_COLOR = (255, 200, 80)
 LABEL_DISTANCE_MM = 45.0
@@ -273,6 +274,7 @@ class GatedReviewData:
         self._motionInputs = None
         self.regionalEF = None             # regional EF polar map (%), made with the motion map
         self.efReference = DEFAULT_EF_REFERENCE   # wallLib.MOTION_REFERENCES value the regional EF was made with
+        self.efCut = DEFAULT_EF_CUT               # wallLib.REGIONAL_EF_CUTS value the regional EF was made with
         self.thickeningMessage = ""
         self.surfaces = {}                 # frame index -> vtkPolyData of the wall with "Uptake"
 
@@ -313,14 +315,17 @@ class GatedReviewData:
         self.motion = wallLib.motionMap(results, ed, es, weights=weights, reference=self.motionReference)
         self.surfaces = {}
 
-    def buildRegionalEF(self, reference=None):
-        """Regional EF map against the fixed or a floating reference."""
+    def buildRegionalEF(self, reference=None, cut=None):
+        """Regional EF map against the fixed or a floating reference, the cavity cut as REGIONAL_EF_CUTS."""
         if reference is not None:
             self.efReference = reference
+        if cut is not None:
+            self.efCut = cut
         if self._motionInputs is None:
             return
         results, ed, es, weights = self._motionInputs
-        self.regionalEF = wallLib.regionalEFMap(results, ed, es, weights=weights, reference=self.efReference)
+        self.regionalEF = wallLib.regionalEFMap(results, ed, es, weights=weights, reference=self.efReference,
+                                                cut=self.efCut)
 
     def surface(self, index, staticSample):
         """3D wall of one frame (the closed shell, shown as a surface, wireframe or points by its display
@@ -548,6 +553,18 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "(a 4 mm shift changes them by tens of %). Fixed: the static fit's LV center and axis. Myocardium mass "
             "center: as for the wall motion")
         polarForm.addRow("Regional EF reference:", self.efReferenceCombo)
+        self.efCutCombo = qt.QComboBox()
+        for text, value in wallLib.REGIONAL_EF_CUTS:
+            self.efCutCombo.addItem(text, value)
+        self.efCutCombo.setCurrentIndex(max(0, self.efCutCombo.findData(DEFAULT_EF_CUT)))
+        self.efCutCombo.toolTip = (
+            "How the cavity is cut into the patches of the regional EF map (the cavity volume can be split either "
+            "way; they differ in where the descent of the base counts). Wedges from the long axis (default): on "
+            "the basal and mid rings wedges from the axis between the valve plane and the LV center, so the descent "
+            "is shared along the rings, and cones from the LV center on the apex. Cones from each frame's base "
+            "center: cones from where the axis meets that frame's valve plane, which moves down with the valve, so "
+            "the descent shortens the apical and mid cones and the apex reads higher")
+        polarForm.addRow("Regional EF cut:", self.efCutCombo)
         overlayRow = qt.QHBoxLayout()
         self.overlayCombo = qt.QComboBox()
         for text, value in OVERLAY_CHOICES:
@@ -671,6 +688,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("regionalEFWindow", self.efRange)
         self.parameterPanel.bind("regionalEFView", self.efViewCombo)
         self.parameterPanel.bind("regionalEFReference", self.efReferenceCombo)
+        self.parameterPanel.bind("regionalEFCut", self.efCutCombo)
         self.parameterPanel.bind("overlay", self.overlayCombo)
         self.parameterPanel.bind("scores", self.scoresButton)
         self.parameterPanel.bind("representation", self.representationCombo)
@@ -716,6 +734,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.efRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
         self.efViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
         self.efReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onEFReferenceChanged())
+        self.efCutCombo.connect("currentIndexChanged(int)", lambda _: self.onEFReferenceChanged())
         self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onOverlaysChanged())
         self.scoresButton.connect("toggled(bool)", lambda _: self.onOverlaysChanged())
         self.representationCombo.connect("currentIndexChanged(int)", lambda _: self.updateRepresentation())
@@ -1042,6 +1061,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         data = GatedReviewData(gated, staticResult, frame, staticPolar)
         data.motionReference = self.motionReference()
         data.efReference = self.efReference()
+        data.efCut = self.efCut()
         data.buildThickening()
         self.data[slot] = (key, data)
         self.tiles = {k: v for k, v in self.tiles.items() if k[0] != slot}
@@ -1609,8 +1629,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if kind == "motion":
                 note = f"mm the endocardium moves inward (below 0: outward), {frames} (valve descent included)."
             elif kind == "ef":
-                note = (f"% of the cavity under each patch of endocardium emptied, {frames} (wedges from the long "
-                        f"axis, cones from the LV center at the apex)" + where)
+                cut = ("cones from the base center" if data.efCut == "base"
+                       else "wedges from the long axis, cones from the LV center at the apex")
+                note = f"% of the cavity under each patch of endocardium emptied, {frames} ({cut})" + where
             else:
                 note = f"% thickening from the wall counts, {frames} (first harmonic over the cycle)" + where
             panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
@@ -1905,11 +1926,14 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def efReference(self):
         return self.efReferenceCombo.itemData(self.efReferenceCombo.currentIndex) or DEFAULT_EF_REFERENCE
 
+    def efCut(self):
+        return self.efCutCombo.itemData(self.efCutCombo.currentIndex) or DEFAULT_EF_CUT
+
     def onEFReferenceChanged(self):
-        """The regional EF maps of the studies loaded, made again against the new reference."""
+        """The regional EF maps of the studies loaded, made again against the new reference or cut."""
         for slot, (_, data) in self.data.items():
-            if data.efReference != self.efReference():
-                data.buildRegionalEF(self.efReference())
+            if (data.efReference, data.efCut) != (self.efReference(), self.efCut()):
+                data.buildRegionalEF(self.efReference(), self.efCut())
                 tag = gatedTags(slot)["ef"]
                 self.polarImages.pop((slot, tag), None)
         self.refreshPolars()
@@ -2146,6 +2170,13 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         floating = wallLib.regionalEFMap(moving, 0, 4, reference="floating")["values"]
         self.assertGreater(float(np.percentile(np.abs(fixed), 90)), 10.0)
         self.assertLess(float(np.percentile(np.abs(floating), 90)), 3.0)
+        # cones from the base center: they fill the cavity (the valve opening adds nothing) and take out the
+        # same whole-heart shift with the floating reference
+        cones = wallLib._baseConeVolumes(moving[0])
+        self.assertAlmostEqual(float(cones.sum()) / 1000.0, wallLib._rayVolumes(moving[0], None, moving[0]["endo"], 0),
+                               delta=0.03 * float(cones.sum()) / 1000.0)
+        floating = wallLib.regionalEFMap(moving, 0, 4, reference="floating", cut="base")["values"]
+        self.assertLess(float(np.percentile(np.abs(floating), 90)), 5.0)
         self.delayDisplay("Regional EF test passed")
 
     def test_PolarAtPoints(self):

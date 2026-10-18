@@ -357,6 +357,8 @@ MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
                      ("Floating: each frame's myocardium mass center", "mass"))
 MOTION_APEX_ROWS = 2              # motionMap "floating": cap rows nearest the axis that place the epicardial apex
 REGIONAL_EF_SMOOTHING = 2.0       # regionalEFMap: smoothing of the % map (map cells)
+REGIONAL_EF_CUTS = (("Wedges from the long axis, cones from the LV center at the apex", "axis"),
+                    ("Cones from each frame's base center", "base"))   # regionalEFMap: how the cavity is cut
 
 
 def _staticReliability(reference):
@@ -785,7 +787,23 @@ def _wedgeVolumes(result):
     return volume
 
 
-def regionalEFMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixed"):
+def _baseConeVolumes(result):
+    """[rows, angles] volume of the LV cavity each polar map ray stands for, as cones from the frame's base
+    center (where the long axis meets its valve plane) to its patch of endocardium: |(p - b) . dA| / 3, the
+    patch's vector area dA from the neighbouring endocardial points (polarRays), up to one constant factor.
+    The base center lies in the valve plane, so the valve opening adds nothing and the cones add up to the
+    cavity; as it moves down with the valve, the descent of the base shortens the apical cones."""
+    grid = result["grid"]
+    origins, directions, endo, _, _ = polarRays(result)
+    points = origins + endo[..., None] * directions                       # [rows, angles, 3]
+    base = grid.center + valvePlane(result)[0] * grid.u
+    alongRows = np.gradient(points, axis=0)
+    aroundAxis = 0.5 * (np.roll(points, -1, axis=1) - np.roll(points, 1, axis=1))
+    area = np.cross(alongRows, aroundAxis)
+    return np.abs(np.sum((points - base) * area, axis=-1)) / 3.0
+
+
+def regionalEFMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixed", cut="axis"):
     """Regional ejection fraction polar map, in % = (1 - ES / ED volume) x 100 of the cavity under every polar
     map ray (_wedgeVolumes: wedges from the long axis on the cylinder, cones from the LV center on the apical
     cap; the cavity is cut into them like the bullseye, so they add up to the LV cavity). A percentage, so a
@@ -794,10 +812,13 @@ def regionalEFMap(gateResults, ed, es, weights=None, smoothing=None, reference="
     from its own moved center first (as motionMap), which matters here: a wedge grows or shrinks with a
     heart that moves as a whole. weights (e.g. the mean wall counts of each ray) let rays through a defect
     follow their neighbours when the map is smoothed. Returns a polar map dict like polarMap (rho of the ED
-    frame) with "values" in %. smoothing defaults to REGIONAL_EF_SMOOTHING."""
+    frame) with "values" in %. cut "base" (REGIONAL_EF_CUTS) cuts the cavity into cones from every frame's
+    own base center instead (_baseConeVolumes): the descent of the base then counts toward the apical and mid
+    cones rather than along the rings. smoothing defaults to REGIONAL_EF_SMOOTHING."""
     smoothing = REGIONAL_EF_SMOOTHING if smoothing is None else smoothing
     gateResults, _ = _referencedResults(gateResults, ed, reference)
-    stack = np.array([_wedgeVolumes(result) for result in gateResults])     # [frames, rows, angles]
+    volumes = _baseConeVolumes if cut == "base" else _wedgeVolumes
+    stack = np.array([volumes(result) for result in gateResults])            # [frames, rows, angles]
     _, edVolume, esVolume = _firstHarmonic(stack, ed, es)
     values = 100.0 * (1.0 - esVolume / np.maximum(edVolume, 1e-9))
     if weights is None:
