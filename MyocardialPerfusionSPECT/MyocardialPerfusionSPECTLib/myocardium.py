@@ -356,6 +356,7 @@ MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
                      ("Floating: each frame's LV center and epicardial apex", "floating"),
                      ("Floating: each frame's myocardium mass center", "mass"))
 MOTION_APEX_ROWS = 2              # motionMap "floating": cap rows nearest the axis that place the epicardial apex
+REGIONAL_EF_SMOOTHING = 2.0       # regionalEFMap: smoothing of the % map (map cells)
 
 
 def _staticReliability(reference):
@@ -740,11 +741,7 @@ def motionMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixe
     Returns a polar map dict like polarMap (rho of the ED frame) with "values" in mm.
     smoothing defaults to MOTION_SMOOTHING."""
     smoothing = MOTION_SMOOTHING if smoothing is None else smoothing
-    shifts = np.zeros((len(gateResults), 3))
-    if reference in ("floating", "mass"):
-        # every frame seen from its own moved center: points compared at the same place relative to it
-        shifts = frameShifts(gateResults, ed, reference)
-        gateResults = [shiftedResult(result, shift) for result, shift in zip(gateResults, shifts)]
+    gateResults, shifts = _referencedResults(gateResults, ed, reference)
     points, rhos, directions = [], [], []
     for result, shift in zip(gateResults, shifts):
         origins, rays, endo, _, rho = polarRays(result)
@@ -762,6 +759,53 @@ def motionMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixe
     weights = np.clip(np.asarray(weights, dtype=float) / max(float(np.nanmax(weights)), 1e-9), 0.0, 1.0) ** 2
     values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -30.0, 30.0)
     return {"values": values, "rho": np.asarray(rhos[ed]).copy(), "theta": gateResults[ed]["grid"].theta.copy()}
+
+
+def _referencedResults(gateResults, ed, reference):
+    """(frames, [frames, 3] shifts) for a motion reference (MOTION_REFERENCES): the frames as they are with
+    "fixed", else every frame seen from its own moved center (frameShifts, shiftedResult)."""
+    if reference not in ("floating", "mass"):
+        return list(gateResults), np.zeros((len(gateResults), 3))
+    shifts = frameShifts(gateResults, ed, reference)
+    return [shiftedResult(result, shift) for result, shift in zip(gateResults, shifts)], shifts
+
+
+def _wedgeVolumes(result):
+    """[rows, angles] volume of the LV cavity each polar map ray stands for, up to a factor fixed per row
+    (polarRays): on the cylinder a wedge from the long axis out to the endocardium, between the valve plane
+    and the LV center (the rows run from that angle's valve plane, so a wedge also shrinks as the base
+    descends), endo^2 x that length; on the apical cap a cone from the LV center to the endocardium, endo^3."""
+    grid = result["grid"]
+    nCyl = grid.nCyl
+    _, _, endo, _, _ = polarRays(result)
+    length = -_polarBaseZ(result)                                      # [angles] valve plane to LV center, mm
+    volume = np.empty(endo.shape)
+    volume[:nCyl] = endo[:nCyl] ** 2 * length[None, :]
+    volume[nCyl:] = endo[nCyl:] ** 3
+    return volume
+
+
+def regionalEFMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixed"):
+    """Regional ejection fraction polar map, in % = (1 - ES / ED volume) x 100 of the cavity under every polar
+    map ray (_wedgeVolumes: wedges from the long axis on the cylinder, cones from the LV center on the apical
+    cap; the cavity is cut into them like the bullseye, so they add up to the LV cavity). A percentage, so a
+    narrow apex that empties well reads high even though its wall moves only a few mm. The wedge volumes are
+    fitted with the first harmonic over the cycle; with reference "floating" or "mass" every frame is seen
+    from its own moved center first (as motionMap), which matters here: a wedge grows or shrinks with a
+    heart that moves as a whole. weights (e.g. the mean wall counts of each ray) let rays through a defect
+    follow their neighbours when the map is smoothed. Returns a polar map dict like polarMap (rho of the ED
+    frame) with "values" in %. smoothing defaults to REGIONAL_EF_SMOOTHING."""
+    smoothing = REGIONAL_EF_SMOOTHING if smoothing is None else smoothing
+    gateResults, _ = _referencedResults(gateResults, ed, reference)
+    stack = np.array([_wedgeVolumes(result) for result in gateResults])     # [frames, rows, angles]
+    _, edVolume, esVolume = _firstHarmonic(stack, ed, es)
+    values = 100.0 * (1.0 - esVolume / np.maximum(edVolume, 1e-9))
+    if weights is None:
+        weights = np.ones(values.shape)
+    weights = np.clip(np.asarray(weights, dtype=float) / max(float(np.nanmax(weights)), 1e-9), 0.0, 1.0) ** 2
+    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -100.0, 100.0)
+    _, _, _, _, rho = polarRays(gateResults[ed])
+    return {"values": values, "rho": np.asarray(rho).copy(), "theta": gateResults[ed]["grid"].theta.copy()}
 
 
 def _cavityFill(profiles, t, mid, peak):

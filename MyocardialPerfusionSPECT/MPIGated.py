@@ -8,9 +8,10 @@ STRESS GATED layout of Study 1 (stress), REST GATED the same of Study 2 (rest):
   top right      the perfusion, wall thickening (count-based: ES / ED wall counts of every ray, first
                  harmonic over the cycle; five wall means by default, or 17-segment means or per pixel)
                  and wall motion (mm the endocardium moves from ED to ES) polar maps side by side;
-  bottom right   the LV cavity volume of every frame (EDV, ESV, EF; the frame shown is marked) next to
-                 the cine 3D wall coloured by the perfusion (SSP style), the wall motion or one color, as a
-                 surface, wireframe or points.
+  bottom right   the LV cavity volume of every frame (EDV, ESV, EF; the frame shown is marked), the cine
+                 3D wall coloured by the perfusion (SSP style), the wall motion or one color, as a surface,
+                 wireframe or points, and the regional EF polar map (% of the cavity under each patch of
+                 endocardium emptied from ED to ES).
 STRESS-REST GATED shows the stress and rest rows interleaved, with the thickening and motion maps and the
 3D wall of each study (the perfusion map and the volume curve left out to make room). Every layout also
 comes as SLICES (only the slice rows), PLOTS (only the plots, all of them) and DUAL MONITOR (the slices
@@ -61,7 +62,7 @@ for _prefix, _slots, _title in (("stress", (STRESS,), "STRESS"), ("rest", (REST,
                                 ("stressRest", (STRESS, REST), "STRESS-REST")):
     _what = "Stress" if _slots == (STRESS,) else "Rest" if _slots == (REST,) else "Stress and rest"
     _plots = ("thickening and motion polar maps and cine 3D walls" if len(_slots) > 1
-              else "perfusion, thickening and motion polar maps, LV volume curve and cine 3D wall")
+              else "perfusion, thickening and motion polar maps, LV volume curve, cine 3D wall and regional EF map")
     MODES[_prefix + "Gated"] = (f"{_title} GATED", _slots, "full",
                                 f"{_what} gated: apical, mid and basal cine slices of each axis, {_plots}")
     MODES[_prefix + "GatedSlices"] = (f"{_title} GATED SLICES", _slots, "slices", f"{_what} gated: only the cine slices")
@@ -85,7 +86,7 @@ DUAL_KINDS = ("dual", "dualFull")          # slices on this window, plots on the
 REPRESENTATIVE_KINDS = ("full", "dual")   # as views.REPRESENTATIVE_LAYOUT_KINDS
 REPRESENTATIVE_LABELS = {"SA": ("APICAL", "MID", "BASAL"), "HLA": ("INF", "MID", "ANT"),
                          "VLA": ("SEPT", "MID", "LAT")}
-POLAR_KINDS = ("polar", "thickening", "motion")
+POLAR_KINDS = ("polar", "thickening", "motion", "ef")
 EF_FONT_SIZE = 26   # px, the EF in the 3D views
 _BIG_TEXT_ACTORS = {}   # 3D view node ID -> the text actor of its EF
 MONITOR2_PLACE_DELAY_MS = 300     # the second window is placed after the layout manager made its views
@@ -108,6 +109,8 @@ READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with
                 "when the whole heart moves down in systole, an apex that contracts well can show little motion "
                 "while its wall clearly thickens (Motion reference: Floating takes such a shift out).")
 MOTION_WINDOW = (0.0, 25.0, 0.0, 10.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
+EF_WINDOW = (-50.0, 100.0, 0.0, 80.0)    # range and default window of the regional EF map, %
+DEFAULT_EF_REFERENCE = "floating"        # regional EF: a wedge grows or shrinks with a heart that moves as a whole
 DEFAULT_FPS = 8
 VOLUME_COLOR = (255, 200, 80)
 LABEL_DISTANCE_MM = 45.0
@@ -268,6 +271,8 @@ class GatedReviewData:
         self.motion = None                 # wall motion polar map (mm), made with the thickening
         self.motionReference = "fixed"     # wallLib.MOTION_REFERENCES value the motion map was made with
         self._motionInputs = None
+        self.regionalEF = None             # regional EF polar map (%), made with the motion map
+        self.efReference = DEFAULT_EF_REFERENCE   # wallLib.MOTION_REFERENCES value the regional EF was made with
         self.thickeningMessage = ""
         self.surfaces = {}                 # frame index -> vtkPolyData of the wall with "Uptake"
 
@@ -296,6 +301,7 @@ class GatedReviewData:
         meanCounts = np.mean([p["values"] for p in polars], axis=0)
         self._motionInputs = ([self.result(i) for i in range(len(gates))], ed, es, meanCounts)
         self.buildMotion()
+        self.buildRegionalEF()
 
     def buildMotion(self, reference=None):
         """Wall motion map against the fixed or the floating reference (the 3D walls are made again)."""
@@ -306,6 +312,15 @@ class GatedReviewData:
         results, ed, es, weights = self._motionInputs
         self.motion = wallLib.motionMap(results, ed, es, weights=weights, reference=self.motionReference)
         self.surfaces = {}
+
+    def buildRegionalEF(self, reference=None):
+        """Regional EF map against the fixed or a floating reference."""
+        if reference is not None:
+            self.efReference = reference
+        if self._motionInputs is None:
+            return
+        results, ed, es, weights = self._motionInputs
+        self.regionalEF = wallLib.regionalEFMap(results, ed, es, weights=weights, reference=self.efReference)
 
     def surface(self, index, staticSample):
         """3D wall of one frame (the closed shell, shown as a surface, wireframe or points by its display
@@ -509,6 +524,30 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "frame's shift of the center of its myocardium is taken out; the base descent moves that center toward "
             "the apex too, so part of the longitudinal motion goes with it")
         polarForm.addRow("Motion reference:", self.motionReferenceCombo)
+        self.efRange = self._windowWidget(
+            "Color window of the regional EF maps, % of the cavity under each patch of endocardium emptied from "
+            "ED to ES (below the window: its lowest color)", *EF_WINDOW)
+        polarForm.addRow("Regional EF window:", self.efRange)
+        self.efViewCombo = qt.QComboBox()
+        for text, value in THICKENING_VIEWS:
+            self.efViewCombo.addItem(text, value)
+        self.efViewCombo.setCurrentIndex(max(0, self.efViewCombo.findData(DEFAULT_THICKENING_VIEW)))
+        self.efViewCombo.toolTip = ("How the regional EF map is painted: the mean of each of the five walls, of each "
+                                    "of the 17 segments (default), or every pixel")
+        polarForm.addRow("Regional EF map:", self.efViewCombo)
+        self.efReferenceCombo = qt.QComboBox()
+        for text, value in wallLib.MOTION_REFERENCES:
+            self.efReferenceCombo.addItem(text, value)
+        self.efReferenceCombo.setCurrentIndex(max(0, self.efReferenceCombo.findData(DEFAULT_EF_REFERENCE)))
+        self.efReferenceCombo.toolTip = (
+            "What the regional EF wedges are cut from. The cavity is cut like the bullseye: on the base and mid "
+            "rings into wedges from the long axis out to the endocardium, between the valve plane and the LV "
+            "center (so a basal wedge also shrinks as the valve plane descends), and on the apex into cones from "
+            "the LV center. Floating (default): every frame's own LV center and epicardial apex, since with a "
+            "fixed center a heart that moves as a whole makes the wedges on one side grow and on the other shrink "
+            "(a 4 mm shift changes them by tens of %). Fixed: the static fit's LV center and axis. Myocardium mass "
+            "center: as for the wall motion")
+        polarForm.addRow("Regional EF reference:", self.efReferenceCombo)
         overlayRow = qt.QHBoxLayout()
         self.overlayCombo = qt.QComboBox()
         for text, value in OVERLAY_CHOICES:
@@ -517,7 +556,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.scoresButton = qt.QPushButton("Scores")
         self.scoresButton.checkable = True
         self.scoresButton.checked = True
-        self.scoresButton.toolTip = "Show the region values (perfusion in % of the maximum, thickening in %)"
+        self.scoresButton.toolTip = ("Show the region values (perfusion in % of the maximum, thickening and regional "
+                                     "EF in %, motion in mm)")
         overlayRow.addWidget(self.overlayCombo, 1)
         overlayRow.addWidget(self.scoresButton)
         polarForm.addRow("Show:", overlayRow)
@@ -628,6 +668,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("thickeningView", self.thickeningViewCombo)
         self.parameterPanel.bind("motionWindow", self.motionRange)
         self.parameterPanel.bind("motionReference", self.motionReferenceCombo)
+        self.parameterPanel.bind("regionalEFWindow", self.efRange)
+        self.parameterPanel.bind("regionalEFView", self.efViewCombo)
+        self.parameterPanel.bind("regionalEFReference", self.efReferenceCombo)
         self.parameterPanel.bind("overlay", self.overlayCombo)
         self.parameterPanel.bind("scores", self.scoresButton)
         self.parameterPanel.bind("representation", self.representationCombo)
@@ -670,6 +713,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.thickeningViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
         self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.onMotionWindowChanged())
         self.motionReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onMotionReferenceChanged())
+        self.efRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
+        self.efViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
+        self.efReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onEFReferenceChanged())
         self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onOverlaysChanged())
         self.scoresButton.connect("toggled(bool)", lambda _: self.onOverlaysChanged())
         self.representationCombo.connect("currentIndexChanged(int)", lambda _: self.updateRepresentation())
@@ -995,6 +1041,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             raise ValueError(message)
         data = GatedReviewData(gated, staticResult, frame, staticPolar)
         data.motionReference = self.motionReference()
+        data.efReference = self.efReference()
         data.buildThickening()
         self.data[slot] = (key, data)
         self.tiles = {k: v for k, v in self.tiles.items() if k[0] != slot}
@@ -1485,7 +1532,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return low, max(float(source.maximumValue), low + 1e-6)
 
     def functionWindow(self, kind):
-        source = self.motionRange if kind == "motion" else self.thickeningRange
+        source = {"motion": self.motionRange, "ef": self.efRange}.get(kind, self.thickeningRange)
         low = float(source.minimumValue)
         return low, max(float(source.maximumValue), low + 1e-6)
 
@@ -1515,21 +1562,23 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                         self.polarImages[(slot, tags["polar"])] = cached
                     panel.setPolar(cached[1][0], cached[1][1], f"{title} perfusion",
                                    note="Static study, in % of the polar map maximum.")
-            for kind in ("thickening", "motion"):
+            for kind in ("thickening", "motion", "ef"):
                 if kind in kinds:
                     self.refreshFunctionPolar(slot, data, tags[kind], kind, table, title)
 
-    def thickeningView(self):
-        view = self.thickeningViewCombo.itemData(self.thickeningViewCombo.currentIndex)
+    def thickeningView(self, combo=None):
+        combo = self.thickeningViewCombo if combo is None else combo
+        view = combo.itemData(combo.currentIndex)
         return view if view in wallLib.REGION_VIEWS else DEFAULT_THICKENING_VIEW
 
     def refreshFunctionPolar(self, slot, data, tag, kind, table, title):
-        """The wall thickening or the wall motion polar map."""
+        """The wall thickening, wall motion or regional EF polar map."""
         panel = existingPanel(polarPanelState(tag))
         if panel is None:
             return
-        polar, name, unit = ((data.motion, "wall motion", "mm") if kind == "motion"
-                             else (data.thickening, "wall thickening", "%"))
+        polar, name, unit = {"motion": (data.motion, "wall motion", "mm"),
+                             "ef": (data.regionalEF, "regional EF", "%")}.get(
+                                 kind, (data.thickening, "wall thickening", "%"))
         if polar is None:
             panel.setLegend(None)
             panel.setPolar(None, None, f"{title} {name}", message=data.thickeningMessage)
@@ -1540,7 +1589,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         panel.setLegend(table, low, top, unit=unit)
         size = panel.polarSize()
         if size:
-            view = self.thickeningView() if kind == "thickening" else "pixels"
+            view = {"thickening": self.thickeningView(), "ef": self.thickeningView(self.efViewCombo)}.get(kind, "pixels")
             key = (id(data), int(size), self.colormapCombo.currentText, low, top, view)
             cached = self.polarImages.get((slot, tag))
             if cached is None or cached[0] != key:
@@ -1555,11 +1604,15 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             panel.regionOverride = "walls" if view == "walls" else None
             _, _, _, ed, es = data.phases
             frames = f"ED frame {data.gated.labels[ed]} to ES frame {data.gated.labels[es]}"
-            note = (f"mm the endocardium moves inward (below 0: outward), {frames} (valve descent included)."
-                    if kind == "motion"
-                    else f"% thickening from the wall counts, {frames} (first harmonic over the cycle)"
-                         + {"walls": ", mean of each of the five walls.", "segments": ", mean of each of the 17 segments.",
-                            "pixels": ", per pixel."}[view])
+            where = {"walls": ", mean of each of the five walls.", "segments": ", mean of each of the 17 segments.",
+                     "pixels": ", per pixel."}[view]
+            if kind == "motion":
+                note = f"mm the endocardium moves inward (below 0: outward), {frames} (valve descent included)."
+            elif kind == "ef":
+                note = (f"% of the cavity under each patch of endocardium emptied, {frames} (wedges from the long "
+                        f"axis, cones from the LV center at the apex)" + where)
+            else:
+                note = f"% thickening from the wall counts, {frames} (first harmonic over the cycle)" + where
             panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
 
     def refreshVolumeCurves(self):
@@ -1849,6 +1902,18 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.surfaceKeys.pop(slot, None)
         self.refresh()
 
+    def efReference(self):
+        return self.efReferenceCombo.itemData(self.efReferenceCombo.currentIndex) or DEFAULT_EF_REFERENCE
+
+    def onEFReferenceChanged(self):
+        """The regional EF maps of the studies loaded, made again against the new reference."""
+        for slot, (_, data) in self.data.items():
+            if data.efReference != self.efReference():
+                data.buildRegionalEF(self.efReference())
+                tag = gatedTags(slot)["ef"]
+                self.polarImages.pop((slot, tag), None)
+        self.refreshPolars()
+
     def onMotionWindowChanged(self):
         self.refreshPolars()
         if self.wallColorMode() == "motion":
@@ -1970,6 +2035,7 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         self.test_WallRegions()
         self.test_Motion()
         self.test_FloatingMotion()
+        self.test_RegionalEF()
         self.test_PolarAtPoints()
 
     def test_Thickening(self):
@@ -2044,6 +2110,43 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         floating = wallLib.motionMap(contracting, 0, 4, reference="floating")["values"]
         self.assertLess(float(np.percentile(np.abs(fixed - floating), 90)), 1.0)
         self.delayDisplay("Floating motion reference test passed")
+
+    def test_RegionalEF(self):
+        """An LV whose endocardium narrows from 22 to 16 mm with the valve plane in place empties 1 - (16/22)^2
+        of every wedge from the long axis and 1 - (16/22)^3 of every cone from the LV center; an LV that only
+        moves as a whole (4 mm sideways and 6 mm toward the apex in systole) shows large regional EFs against
+        the fixed reference and almost none against the floating one."""
+        u, w = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])
+        grid = wallLib.WallGrid(np.zeros(3), u, w, 55.0)
+        shape = (grid.nRows, grid.nTheta)
+        cycle = [0.5 - 0.5 * np.cos(2 * np.pi * k / 8) for k in range(8)]
+
+        def flat(endo):
+            return {"grid": grid, "endo": np.full(shape, endo), "mid": np.full(shape, endo + 5.0),
+                    "epi": np.full(shape, endo + 10.0), "valvePlane": (-30.0, 0.0, 0.0)}
+        ef = wallLib.regionalEFMap([flat(22.0 - 6.0 * f) for f in cycle], 0, 4)["values"]
+        self.assertAlmostEqual(float(np.median(ef[:grid.nCyl])), 100.0 * (1.0 - (16.0 / 22.0) ** 2), delta=1.5)
+        self.assertAlmostEqual(float(np.median(ef[grid.nCyl:])), 100.0 * (1.0 - (16.0 / 22.0) ** 3), delta=2.0)
+        origins, directions = grid.rays()
+
+        def hit(center, a, c):
+            # distance along every ray to an ellipsoid (semi-axes a, a, c along w, s, u) centered at center
+            o = (origins - center) / np.array([a, a, c])
+            d = directions / np.array([a, a, c])
+            qa, qb, qc = np.sum(d * d, -1), 2.0 * np.sum(o * d, -1), np.sum(o * o, -1) - 1.0
+            return (-qb + np.sqrt(np.maximum(qb * qb - 4.0 * qa * qc, 0.0))) / (2.0 * qa)
+
+        def moved(shift):
+            center = np.asarray(shift) - 10.0 * u
+            endo, epi = hit(center, 22.0, 45.0), hit(center, 32.0, 55.0)
+            return {"grid": grid, "endo": endo, "epi": epi, "mid": 0.5 * (endo + epi), "thickness": epi - endo,
+                    "valvePlane": (-30.0 + float(np.dot(shift, u)), 0.0, 0.0)}
+        moving = [moved(f * np.array([4.0, 0.0, 6.0])) for f in cycle]
+        fixed = wallLib.regionalEFMap(moving, 0, 4, reference="fixed")["values"]
+        floating = wallLib.regionalEFMap(moving, 0, 4, reference="floating")["values"]
+        self.assertGreater(float(np.percentile(np.abs(fixed), 90)), 10.0)
+        self.assertLess(float(np.percentile(np.abs(floating), 90)), 3.0)
+        self.delayDisplay("Regional EF test passed")
 
     def test_PolarAtPoints(self):
         """The 3D wall's motion colors: a polar map read at the wall points of its own rays gives back the
