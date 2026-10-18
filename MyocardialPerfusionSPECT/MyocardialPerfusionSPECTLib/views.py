@@ -63,8 +63,9 @@ GATED_POLAR_TAG = "mpigatedpolar"                  # Gated Review: perfusion pol
 GATED_THICKENING_TAG = "mpigatedthickening"        # Gated Review: wall thickening polar map
 GATED_MOTION_TAG = "mpigatedmotion"                # Gated Review: wall motion polar map
 GATED_VOLUME_TAG = "mpigatedvolume"                # Gated Review: LV cavity volume per frame
+GATED_EF_TAG = "mpigatedregionalef"                # Gated Review: regional EF polar map
 GATED_3D_VIEW = "MPIGated3D"                       # Gated Review: cine 3D wall with the perfusion colors
-GATED_PLOT_KINDS = ("polar", "thickening", "motion", "volume", "3d")   # the plots of one study, in layout order
+GATED_PLOT_KINDS = ("polar", "thickening", "motion", "volume", "3d", "ef")   # the plots of one study, in layout order
 
 ORIENTATION_TITLES = {
     "SA": "Short axis (apex \u2192 base)",
@@ -255,7 +256,7 @@ def gatedTags(slot):
     plain tags and the rest study its own ones, so both can be shown together."""
     suffix = "rest" if slot == "rest" else ""
     return {"polar": GATED_POLAR_TAG + suffix, "thickening": GATED_THICKENING_TAG + suffix,
-            "motion": GATED_MOTION_TAG + suffix, "volume": GATED_VOLUME_TAG + suffix,
+            "motion": GATED_MOTION_TAG + suffix, "volume": GATED_VOLUME_TAG + suffix, "ef": GATED_EF_TAG + suffix,
             "3d": GATED_3D_VIEW + ("Rest" if suffix else ""),
             "static3d": GATED_STATIC_3D_VIEW + ("Rest" if suffix else "")}
 
@@ -283,12 +284,13 @@ def _items(views, size=500):
 
 
 def _gatedPlotsXml(slots, kinds):
-    """The plots of the studies: one study as its polar maps (top row) over the volume curve and the
-    3D wall (bottom row); two studies as one row per study."""
+    """The plots of the studies: one study as a 2 x 3 grid, its perfusion, thickening and motion polar maps
+    (top row) over the volume curve, the 3D wall and the regional EF polar map (bottom row); two studies as
+    one row per study."""
     if len(slots) == 1:
         top = [_gatedPlotXml(slots[0], k) for k in kinds if k in ("polar", "thickening", "motion")]
-        bottom = [_gatedPlotXml(slots[0], k) for k in kinds if k in ("volume", "3d")]
-        rows = [(top, 400), (bottom, 600)]
+        bottom = [_gatedPlotXml(slots[0], k) for k in kinds if k in ("volume", "3d", "ef")]
+        rows = [(top, 500), (bottom, 500)]
     else:
         rows = [([_gatedPlotXml(slot, k) for k in kinds], 500) for slot in slots]
     return ('<layout type="vertical" split="true">'

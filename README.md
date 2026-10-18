@@ -8,7 +8,7 @@ stress, rest and gated studies through the whole reading workflow in one place:
 3. detect the left ventricular wall automatically,
 4. review stress and rest perfusion as slices, polar maps and 3D views, with TID,
 5. check the gated frames (counts, ECG gating, segmentation),
-6. review the gated study as a cine with thickening and motion maps, LV volumes and EF.
+6. review the gated study as a cine with thickening, motion and regional EF maps, LV volumes and EF.
 
 Author: Burak Demir, MD, FEBNM · License: [MIT](LICENSE)
 
@@ -323,7 +323,7 @@ STRESS GATED shows the stress gated study:
   window as Perfusion (taken over when the screen opens), one color scale for all frames (or each frame
   on its own, *Scale*) and each frame's endo- and epicardium. The
   slices use the field of view, *Fit to the myocardium* and *Sync stress and rest* of Perfusion.
-- **Right, three polar maps** side by side, each with its own window:
+- **Right, a 2 x 3 grid:** three polar maps side by side on top, each with its own window:
   - perfusion,
   - **wall thickening**, count-based (ES / ED wall counts of every ray, first harmonic over the cycle),
     smoothed more than the others since a count ratio is noisy. *Thickening map* paints it as the mean
@@ -348,6 +348,17 @@ STRESS GATED shows the stress gated study:
   window) or one color of your choice; *Wall opacity* sets how see-through it is (0.5 by default). The
   EF is written large in the cine 3D view. Settings saved earlier keep their values: *Restore defaults*
   under Advanced parameters brings in the new ones.
+- **Bottom right, the regional EF polar map:** the % of the cavity under each patch of endocardium that
+  empties from ED to ES. The cavity is cut like the bullseye: on the basal and mid rings into wedges from
+  the long axis out to the endocardium, between the valve plane and the LV center (so a basal wedge also
+  shrinks as the valve plane descends), and on the apex into cones from the LV center. A single point
+  such as the center of the base would leave the basal wedges almost flat and their ratio unstable. Being
+  a percentage, a small apex that empties well reads high although its wall moves only a few mm. The
+  wedge volumes are fitted with the first harmonic over the cycle, like the thickening. *Regional EF
+  window* (0-80 % by default), *Regional EF map* (17-segment means by default, five walls or per pixel)
+  and *Regional EF reference* (Floating by default: with a fixed LV center a heart that moves as a whole
+  makes the wedges on one side grow and on the other shrink, by tens of % for a 4 mm shift) set how it
+  is shown and measured.
 - The cine has play / stop, a speed and a frame slider.
 
 **Reading the maps together.** Wall motion, thickening, volumes and EF are meant to be read together,
