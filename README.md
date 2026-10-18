@@ -351,9 +351,13 @@ STRESS GATED shows the stress gated study:
 - **Bottom right, the regional EF polar map:** the % of the cavity under each patch of endocardium that
   empties from ED to ES. The cavity is cut like the bullseye: on the basal and mid rings into wedges from
   the long axis out to the endocardium, between the valve plane and the LV center (so a basal wedge also
-  shrinks as the valve plane descends), and on the apex into cones from the LV center. A single point
-  such as the center of the base would leave the basal wedges almost flat and their ratio unstable. Being
-  a percentage, a small apex that empties well reads high although its wall moves only a few mm. The
+  shrinks as the valve plane descends), and on the apex into cones from the LV center. *Regional EF cut:
+  Cones from each frame's base center* cuts it instead into cones from where the long axis meets that
+  frame's valve plane: the point moves down with the valve, so the descent of the base shortens the apical
+  and mid cones and the apex reads higher (a point fixed at the ED base would leave the basal rays looking
+  through the valve opening in ES). The cavity volume can be split either way; the two differ in where the
+  descent counts. Being a percentage, a small apex that empties well reads high although its wall moves
+  only a few mm. The
   wedge volumes are fitted with the first harmonic over the cycle, like the thickening. *Regional EF
   window* (0-80 % by default), *Regional EF map* (17-segment means by default, five walls or per pixel)
   and *Regional EF reference* (Floating by default: with a fixed LV center a heart that moves as a whole
