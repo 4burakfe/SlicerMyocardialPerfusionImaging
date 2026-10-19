@@ -36,7 +36,7 @@ from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E40
 from MyocardialPerfusionSPECTLib import case as caseLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import narrowLabel, styleButton  # noqa: E402
 
-STUDIES_STRETCH = 100   # share of the panel's free height the Studies section takes (the end stretch has 1)
+STUDIES_TABLE_HEIGHT = 500   # px, fixed height of the studies table
 
 
 def _installToolbar():
@@ -110,8 +110,7 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         studiesSection = ctk.ctkCollapsibleButton()
         studiesSection.text = "Studies"
-        # the studies table takes the free height of the panel, which is otherwise left empty below the buttons
-        self.layout.addWidget(studiesSection, STUDIES_STRETCH)
+        self.layout.addWidget(studiesSection)
         studiesLayout = qt.QVBoxLayout(studiesSection)
 
         self.studiesTable = qt.QTableWidget()
@@ -125,12 +124,12 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         header.setSectionResizeMode(0, qt.QHeaderView.Stretch)
         for column in (1, 2, 3):
             header.setSectionResizeMode(column, qt.QHeaderView.ResizeToContents)
-        self.studiesTable.setMinimumHeight(160)
+        self.studiesTable.setFixedHeight(STUDIES_TABLE_HEIGHT)
         self.studiesTable.toolTip = (
             "Static (or summed-gate) volumes found in the scene, their study role and the gated sequence "
             "that goes with them. Roles in italics are guesses from the names: pick the right one to "
             "confirm it. The selected row is the active study.")
-        studiesLayout.addWidget(self.studiesTable, 1)
+        studiesLayout.addWidget(self.studiesTable)
 
         studyButtons = qt.QHBoxLayout()
         self.detectStudiesButton = qt.QPushButton("Detect studies")
