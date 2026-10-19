@@ -102,7 +102,7 @@ OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "se
 REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points", "points"))
 THICKENING_VIEWS = (("5 walls (apex and an X: anterior, septal, inferior, lateral)", "walls"),
                    ("17 segments", "segments"), ("Per pixel", "pixels"))   # wallLib.REGION_VIEWS
-DEFAULT_THICKENING_VIEW = "segments"
+DEFAULT_THICKENING_VIEW = "pixels"
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
 READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with the perfusion and the patient's "
                 "data. With the fixed motion reference (default) motion is measured from one LV center and axis: "
@@ -110,7 +110,7 @@ READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with
                 "while its wall clearly thickens (Motion reference: Floating takes such a shift out).")
 MOTION_WINDOW = (0.0, 25.0, 0.0, 10.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
 EF_WINDOW = (-50.0, 100.0, 0.0, 80.0)    # range and default window of the regional EF map, %
-DEFAULT_EF_REFERENCE = "floating"        # regional EF: a wedge grows or shrinks with a heart that moves as a whole
+DEFAULT_EF_REFERENCE = "fixed"        # regional EF: a wedge grows or shrinks with a heart that moves as a whole
 DEFAULT_EF_CUT = "base"                  # regional EF: wallLib.REGIONAL_EF_CUTS
 DEFAULT_EF_VIEW = "pixels"               # regional EF map: wallLib.REGION_VIEWS
 DEFAULT_FPS = 8
