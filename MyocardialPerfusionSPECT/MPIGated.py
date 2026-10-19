@@ -294,10 +294,14 @@ class GatedReviewData:
             self.thickeningMessage = "Needs the LV cavity volume of at least two frames."
             return
         gates = MPIGatedQC.gateNodes(self.gated.sequence)
+        reference = self.gated.reference.get("SA")
+        mask = MPIGatedQC.maskOf(reference, self.frame) if reference is not None else None
+        center = np.asarray(self.frame["center"], dtype=float)
         polars = []
         for index, (_, node) in enumerate(gates):
             array = slicer.util.arrayFromVolume(node).astype(np.float32)
-            sample = MPIGatedQC.sampler(array, MPIGatedQC.worldToIjk(node, self.gated.study))
+            # wall counts of the gate masked like the static volume (as the frame's wall was fitted)
+            sample = MPIGatedQC.sampler(array, MPIGatedQC.worldToIjk(node, self.gated.study), mask, center)
             polars.append(wallLib.polarMap(self.result(index), sample))
         _, _, _, ed, es = self.phases
         self.thickening = wallLib.thickeningMap(polars, ed, es)

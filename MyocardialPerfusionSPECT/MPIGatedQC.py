@@ -126,11 +126,26 @@ def worldToIjk(volumeNode, spaceNode):
     return slicer.util.arrayFromVTKMatrix(rasToIjk) @ slicer.util.arrayFromVTKMatrix(worldToLocalMatrix(spaceNode))
 
 
-def sampler(array, matrix):
+def sampler(array, matrix, mask=None, center=None):
+    """Counts of a gate at world points; with mask (maskOf) and center, 0 outside the Processing ellipsoid,
+    as in the masked SA / HLA / VLA volumes the static wall was detected on."""
     def sample(points):
-        ijk = np.asarray(points, dtype=float) @ matrix[:3, :3].T + matrix[:3, 3]
-        return sampleTrilinear(array, ijk)
+        points = np.asarray(points, dtype=float)
+        ijk = points @ matrix[:3, :3].T + matrix[:3, 3]
+        values = sampleTrilinear(array, ijk)
+        if mask is not None and center is not None:
+            values = np.where(insideEllipsoid(points, center, *mask), values, 0.0)
+        return values
     return sample
+
+
+def insideEllipsoid(points, center, axes, semiAxes):
+    """[...] True for the world points inside the ellipsoid (axes: its unit axes, semiAxes: mm)."""
+    offset = np.asarray(points, dtype=float) - np.asarray(center, dtype=float)
+    quadratic = np.zeros(offset.shape[:-1])
+    for direction, semi in zip(np.asarray(axes, dtype=float), np.maximum(np.asarray(semiAxes, dtype=float), 1e-3)):
+        quadratic = quadratic + (offset @ direction / semi) ** 2
+    return quadratic <= 1.0
 
 
 def maskOf(referenceNode, frame):
@@ -168,14 +183,16 @@ def resliceLike(array, arrayToIjk, referenceNode, mask=None, center=None):
     return values.reshape(dims[2], sections, dims[1], dims[0]).mean(axis=1).astype(np.float32)
 
 
-def frameStatistics(result, frame, array, matrix, voxelVolumeMm3):
-    """Myocardium counts (the gate's counts inside the frame's myocardium), cavity and myocardium ml."""
+def frameStatistics(result, frame, array, matrix, voxelVolumeMm3, mask=None):
+    """Myocardium counts (the gate's counts inside the frame's myocardium, inside the Processing ellipsoid when
+    the volumes were masked), cavity and myocardium ml."""
     labels, labelMatrix = _labelGrid(result, frame, LABEL_GRID_MM)
     m = slicer.util.arrayFromVTKMatrix(labelMatrix)
     index = np.argwhere(labels == wallLib.LABEL_MYOCARDIUM)[:, ::-1].astype(float)   # (i, j, k)
     points = index @ m[:3, :3].T + m[:3, 3]
     voxel = LABEL_GRID_MM ** 3
-    counts = float(sampler(array, matrix)(points).sum()) * voxel / max(voxelVolumeMm3, 1e-9) if len(points) else 0.0
+    sample = sampler(array, matrix, mask, np.asarray(frame["center"], dtype=float))
+    counts = float(sample(points).sum()) * voxel / max(voxelVolumeMm3, 1e-9) if len(points) else 0.0
     return {"myocardiumCounts": counts,
             "cavityMl": float(np.count_nonzero(labels == wallLib.LABEL_CAVITY)) * voxel / 1000.0,
             "myocardiumMl": float(len(points)) * voxel / 1000.0}
@@ -220,7 +237,8 @@ class GatedStudy:
             matrix = worldToIjk(node, self.study)
             spacing = node.GetSpacing()
             try:
-                result = wallLib.fitGate(sampler(array, matrix), staticResult, params)
+                # on the gate masked like the static volume the wall was detected on (liver and gut out)
+                result = wallLib.fitGate(sampler(array, matrix, mask, center), staticResult, params)
             except Exception as e:
                 logging.warning(f"MPI: gate {label} could not be segmented:\n" + traceback.format_exc())
                 self.errors.append(f"frame {label}: {e}")
@@ -246,7 +264,7 @@ class GatedStudy:
             stats = {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
             if self.results[index] is not None:
                 try:
-                    stats = frameStatistics(self.results[index], frame, array, matrix, voxel)
+                    stats = frameStatistics(self.results[index], frame, array, matrix, voxel, mask)
                 except Exception as e:
                     logging.warning(f"MPI: gate {label} statistics failed:\n" + traceback.format_exc())
                     self.errors.append(f"frame {label}: {e}")
@@ -567,7 +585,8 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if staticResult is None or frame is None:
             raise ValueError("Detect the myocardium of this study first (Myocardium step).")
         key = (study.GetID(), sequence.GetID(), sequence.GetNumberOfDataNodes(), id(staticResult),
-               tuple(sorted((k, n.GetID()) for k, n in outputs.items())), tuple(sorted(self.params().items())))
+               tuple(sorted((k, n.GetID(), n.GetAttribute("MPI.Mask") or "") for k, n in outputs.items())),
+               tuple(sorted(self.params().items())))
         cached = self.data.get(slot)
         if cached and cached[0] == key and not rebuild:
             return cached[1]
@@ -803,6 +822,7 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.setUp()
         self.test_GatingText()
         self.test_GateFit()
+        self.test_MaskedSampler()
 
     def test_GatingText(self):
         values = {"GatingTimeSlots": "8", "GatingIntervalsAcquired": "1332", "GatingIntervalsRejected": "0",
@@ -814,6 +834,25 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         findings = gatingLib.qcFindings([100, 101, 99, 100, 100, 101, 99, 80], values=values)
         self.assertTrue(any(level == "warning" and "frame 8" in text for level, text in findings))
         self.delayDisplay("Gating text test passed")
+
+    def test_MaskedSampler(self):
+        """A gate sampled with the Processing mask reads 0 outside the ellipsoid and its counts inside, as the
+        masked static volume does; the mask text of the reoriented volumes gives its semi-axes."""
+        array = np.ones((20, 20, 20), dtype=np.float32)
+        matrix = np.eye(4)
+        center = np.array([10.0, 10.0, 10.0])
+        frame = {"u": np.array([0.0, 0.0, 1.0]), "w": np.array([1.0, 0.0, 0.0]), "s": np.array([0.0, 1.0, 0.0]),
+                 "center": center}
+
+        class Reference:
+            def GetAttribute(self, name):
+                return "ellipsoid semi-axes (long, anterior-inferior, septal-lateral) 8, 4, 4 mm"
+        mask = maskOf(Reference(), frame)
+        sample = sampler(array, matrix, mask, center)
+        points = center + np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 6.0], [6.0, 0.0, 0.0], [0.0, 3.0, 0.0]])
+        self.assertTrue(np.allclose(sample(points), [1.0, 1.0, 0.0, 1.0]))
+        self.assertTrue(np.allclose(sampler(array, matrix)(points), 1.0))
+        self.delayDisplay("Masked gate sampler test passed")
 
     def test_GateFit(self):
         """A frame of a thinner, smaller LV is found inside the static wall."""
