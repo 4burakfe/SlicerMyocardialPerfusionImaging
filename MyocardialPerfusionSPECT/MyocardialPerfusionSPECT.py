@@ -238,13 +238,16 @@ class MyocardialPerfusionSPECTWidget(ScriptedLoadableModuleWidget, VTKObservatio
             key, widget = session.HUB_STEP, self.overview
         if previous != key:
             self._callStep(previous, "exit")
-        # Only the shown page may set the height of the stack (QStackedWidget uses the tallest page)
-        for index in range(self.stack.count):
-            page = self.stack.widget(index)
-            policy = qt.QSizePolicy.Preferred if page is widget else qt.QSizePolicy.Ignored
-            page.setSizePolicy(policy, policy)
+        # Only the shown page stays in the stack. QStackedWidget takes the height of its tallest page (its
+        # heightForWidth ignores the size policies of hidden pages), which left short steps with a long empty panel.
+        # A removed page keeps the stack as its parent and is put back when it is shown again.
+        if self.stack.indexOf(widget) < 0:
+            self.stack.addWidget(widget)
         self.stack.setCurrentWidget(widget)
-        self.stack.adjustSize()
+        for index in reversed(range(self.stack.count)):
+            page = self.stack.widget(index)
+            if page is not widget:
+                self.stack.removeWidget(page)
         if key in self.stepPanels:
             if slicer.util.selectedModule() == session.HUB_MODULE:
                 self._callStep(key, "enter")
@@ -348,6 +351,8 @@ class MyocardialPerfusionSPECTTest(ScriptedLoadableModuleTest):
             session.selectStep(key)
             self.assertEqual(session.currentStep(), key)
             self.assertIs(hub.stack.currentWidget(), getattr(slicer.modules, moduleName.lower()).widgetRepresentation())
+            self.assertEqual(hub.stack.count, 1)   # hidden steps must not set the height of the panel
         session.selectStep(session.HUB_STEP)
         self.assertIs(hub.stack.currentWidget(), hub.overview)
+        self.assertEqual(hub.stack.count, 1)
         self.delayDisplay("Hub test passed")
