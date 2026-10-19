@@ -169,7 +169,8 @@ Roles, pairings and the case are stored on the nodes (`MPI.StudyRole`, `MPI.Gate
 Options:
 
 - **Ellipsoid mask** aligned with the cardiac axes hides extracardiac activity (liver, gut), in the
-  preview and optionally in the created volumes; Myocardium then detects the wall on the masked volume.
+  preview and optionally in the created volumes; Myocardium then detects the wall on the masked volume,
+  and Gated QC fits every gate frame (and Gated Review reads its wall counts) with the same mask.
 - **Pixel size and slice thickness** of the reoriented volumes; thick slices average the counts over the
   whole slab.
 - **Interpolation**: Lanczos windowed sinc (default), cubic B-spline or linear. Lanczos is the sharpest
