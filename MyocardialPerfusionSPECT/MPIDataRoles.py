@@ -36,7 +36,7 @@ from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E40
 from MyocardialPerfusionSPECTLib import case as caseLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import narrowLabel, styleButton  # noqa: E402
 
-STUDIES_TABLE_HEIGHT = 500   # px, fixed height of the studies table
+STUDIES_TABLE_HEIGHT = 250   # px, fixed height of the studies table
 
 
 def _installToolbar():
