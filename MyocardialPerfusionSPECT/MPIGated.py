@@ -111,7 +111,8 @@ READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with
 MOTION_WINDOW = (0.0, 25.0, 0.0, 10.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
 EF_WINDOW = (-50.0, 100.0, 0.0, 80.0)    # range and default window of the regional EF map, %
 DEFAULT_EF_REFERENCE = "floating"        # regional EF: a wedge grows or shrinks with a heart that moves as a whole
-DEFAULT_EF_CUT = "axis"                  # regional EF: wallLib.REGIONAL_EF_CUTS
+DEFAULT_EF_CUT = "base"                  # regional EF: wallLib.REGIONAL_EF_CUTS
+DEFAULT_EF_VIEW = "pixels"               # regional EF map: wallLib.REGION_VIEWS
 DEFAULT_FPS = 8
 VOLUME_COLOR = (255, 200, 80)
 LABEL_DISTANCE_MM = 45.0
@@ -527,7 +528,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "center across the axis and its epicardial apex along it (the apex stays put over the cycle while the "
             "base descends), so such a shift is taken out and the valve descent kept. Myocardium mass center: every "
             "frame's shift of the center of its myocardium is taken out; the base descent moves that center toward "
-            "the apex too, so part of the longitudinal motion goes with it")
+            "the apex too, so part of the longitudinal motion goes with it. Base center: every frame's own LV "
+            "center across the axis and its base center (where the axis meets its valve plane) along it, so the "
+            "motion is measured from the base: the valve descent is taken out and the longitudinal shortening "
+            "shows as the apex moving toward the base")
         polarForm.addRow("Motion reference:", self.motionReferenceCombo)
         self.efRange = self._windowWidget(
             "Color window of the regional EF maps, % of the cavity under each patch of endocardium emptied from "
@@ -536,9 +540,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.efViewCombo = qt.QComboBox()
         for text, value in THICKENING_VIEWS:
             self.efViewCombo.addItem(text, value)
-        self.efViewCombo.setCurrentIndex(max(0, self.efViewCombo.findData(DEFAULT_THICKENING_VIEW)))
+        self.efViewCombo.setCurrentIndex(max(0, self.efViewCombo.findData(DEFAULT_EF_VIEW)))
         self.efViewCombo.toolTip = ("How the regional EF map is painted: the mean of each of the five walls, of each "
-                                    "of the 17 segments (default), or every pixel")
+                                    "of the 17 segments, or every pixel (default)")
         polarForm.addRow("Regional EF map:", self.efViewCombo)
         self.efReferenceCombo = qt.QComboBox()
         for text, value in wallLib.MOTION_REFERENCES:
@@ -551,7 +555,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "the LV center. Floating (default): every frame's own LV center and epicardial apex, since with a "
             "fixed center a heart that moves as a whole makes the wedges on one side grow and on the other shrink "
             "(a 4 mm shift changes them by tens of %). Fixed: the static fit's LV center and axis. Myocardium mass "
-            "center: as for the wall motion")
+            "center and base center: as for the wall motion")
         polarForm.addRow("Regional EF reference:", self.efReferenceCombo)
         self.efCutCombo = qt.QComboBox()
         for text, value in wallLib.REGIONAL_EF_CUTS:
@@ -559,11 +563,11 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.efCutCombo.setCurrentIndex(max(0, self.efCutCombo.findData(DEFAULT_EF_CUT)))
         self.efCutCombo.toolTip = (
             "How the cavity is cut into the patches of the regional EF map (the cavity volume can be split either "
-            "way; they differ in where the descent of the base counts). Wedges from the long axis (default): on "
-            "the basal and mid rings wedges from the axis between the valve plane and the LV center, so the descent "
-            "is shared along the rings, and cones from the LV center on the apex. Cones from each frame's base "
-            "center: cones from where the axis meets that frame's valve plane, which moves down with the valve, so "
-            "the descent shortens the apical and mid cones and the apex reads higher")
+            "way; they differ in where the descent of the base counts). Cones from each frame's base center "
+            "(default): cones from where the axis meets that frame's valve plane, which moves down with the valve, "
+            "so the descent shortens the apical and mid cones and the apex reads higher. Wedges from the long axis: "
+            "on the basal and mid rings wedges from the axis between the valve plane and the LV center, so the "
+            "descent is shared along the rings, and cones from the LV center on the apex")
         polarForm.addRow("Regional EF cut:", self.efCutCombo)
         overlayRow = qt.QHBoxLayout()
         self.overlayCombo = qt.QComboBox()
@@ -2127,12 +2131,19 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         self.assertGreater(float(np.percentile(values["fixed"], 90)), 4.0)
         self.assertLess(float(np.percentile(values["floating"], 90)), 1.0)
         self.assertLess(float(np.percentile(values["mass"], 90)), 1.0)
+        self.assertLess(float(np.percentile(values["base"], 90)), 1.0)
         # contraction: the cavity narrows by 6 mm and shortens by 8 mm toward an apex that stays in place
         # (the ellipsoid's apex at z = -10 + c + 10 stays where it is: its center moves with the shortening)
         contracting = [wall(np.zeros(3), 22.0 - 6.0 * f, 45.0 - 8.0 * f, 8.0 * f) for f in cycle]
         fixed = wallLib.motionMap(contracting, 0, 4, reference="fixed")["values"]
         floating = wallLib.motionMap(contracting, 0, 4, reference="floating")["values"]
         self.assertLess(float(np.percentile(np.abs(fixed - floating), 90)), 1.0)
+        # the valve plane descending 8 mm with it: from the base center that shows at the apex, not at the base
+        descending = [dict(result, valvePlane=(-30.0 + 8.0 * f, 0.0, 0.0)) for result, f in zip(contracting, cycle)]
+        fixed = wallLib.motionMap(descending, 0, 4, reference="fixed")["values"]
+        base = wallLib.motionMap(descending, 0, 4, reference="base")["values"]
+        self.assertGreater(float(np.mean(base[-3:]) - np.mean(fixed[-3:])), 4.0)
+        self.assertLess(float(np.mean(base[:3])), float(np.mean(fixed[:3])))
         self.delayDisplay("Floating motion reference test passed")
 
     def test_RegionalEF(self):

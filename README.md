@@ -323,7 +323,8 @@ STRESS GATED shows the stress gated study:
   window as Perfusion (taken over when the screen opens), one color scale for all frames (or each frame
   on its own, *Scale*) and each frame's endo- and epicardium. The
   slices use the field of view, *Fit to the myocardium* and *Sync stress and rest* of Perfusion.
-- **Right, a 2 x 3 grid:** three polar maps side by side on top, each with its own window:
+- **Right, a 2 x 3 grid** (the slices and the plots share the width 4 : 5): three polar maps side by
+  side on top, each with its own window:
   - perfusion,
   - **wall thickening**, count-based (ES / ED wall counts of every ray, first harmonic over the cycle),
     smoothed more than the others since a count ratio is noisy. *Thickening map* paints it as the mean
@@ -339,7 +340,10 @@ STRESS GATED shows the stress gated study:
     out a shift of the whole heart (across the axis it follows the center of the endocardial rings, along
     the axis the epicardial apex, so the descent of the base is kept); or *Floating: each frame's
     myocardium mass center*, which also takes out the whole-heart shift but, since the base descending
-    pulls the mass center toward the apex, removes part of the longitudinal motion as well.
+    pulls the mass center toward the apex, removes part of the longitudinal motion as well; or
+    *Floating: each frame's base center*, which follows the ring center across the axis and the base
+    center (where the axis meets the valve plane) along it, so the motion is measured from the base: the
+    valve descent is taken out and the longitudinal shortening shows as the apex moving toward the base.
 - **Below them:** the LV cavity volume of every frame (EDV, ESV, EF, the frame shown marked; the curve
   starts at 0 ml) and the beating 3D wall, as a surface (default), wireframe or points, with the ED wall
   drawn on top in white as a faint wireframe (default, 3 % opacity), points or surface. *Color by* paints
@@ -349,17 +353,17 @@ STRESS GATED shows the stress gated study:
   EF is written large in the cine 3D view. Settings saved earlier keep their values: *Restore defaults*
   under Advanced parameters brings in the new ones.
 - **Bottom right, the regional EF polar map:** the % of the cavity under each patch of endocardium that
-  empties from ED to ES. The cavity is cut like the bullseye: on the basal and mid rings into wedges from
-  the long axis out to the endocardium, between the valve plane and the LV center (so a basal wedge also
-  shrinks as the valve plane descends), and on the apex into cones from the LV center. *Regional EF cut:
-  Cones from each frame's base center* cuts it instead into cones from where the long axis meets that
-  frame's valve plane: the point moves down with the valve, so the descent of the base shortens the apical
-  and mid cones and the apex reads higher (a point fixed at the ED base would leave the basal rays looking
-  through the valve opening in ES). The cavity volume can be split either way; the two differ in where the
-  descent counts. Being a percentage, a small apex that empties well reads high although its wall moves
+  empties from ED to ES. *Regional EF cut* sets how the cavity is cut. *Cones from each frame's base
+  center* (default): cones from where the long axis meets that frame's valve plane; the point moves down
+  with the valve, so the descent of the base shortens the apical and mid cones and the apex reads higher
+  (a point fixed at the ED base would leave the basal rays looking through the valve opening in ES).
+  *Wedges from the long axis*: cut like the bullseye, on the basal and mid rings into wedges from the long
+  axis out to the endocardium, between the valve plane and the LV center (so a basal wedge also shrinks as
+  the valve plane descends), and on the apex into cones from the LV center. The cavity volume can be split
+  either way; the two differ in where the descent counts. Being a percentage, a small apex that empties well reads high although its wall moves
   only a few mm. The
   wedge volumes are fitted with the first harmonic over the cycle, like the thickening. *Regional EF
-  window* (0-80 % by default), *Regional EF map* (17-segment means by default, five walls or per pixel)
+  window* (0-80 % by default), *Regional EF map* (per pixel by default, 17-segment or five wall means)
   and *Regional EF reference* (Floating by default: with a fixed LV center a heart that moves as a whole
   makes the wedges on one side grow and on the other shrink, by tens of % for a 4 mm shift) set how it
   is shown and measured.
