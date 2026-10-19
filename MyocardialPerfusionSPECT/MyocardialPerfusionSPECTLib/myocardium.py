@@ -354,7 +354,8 @@ THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES coun
 MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
 MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
                      ("Floating: each frame's LV center and epicardial apex", "floating"),
-                     ("Floating: each frame's myocardium mass center", "mass"))
+                     ("Floating: each frame's myocardium mass center", "mass"),
+                     ("Floating: each frame's base center", "base"))
 MOTION_APEX_ROWS = 2              # motionMap "floating": cap rows nearest the axis that place the epicardial apex
 REGIONAL_EF_SMOOTHING = 2.0       # regionalEFMap: smoothing of the % map (map cells)
 REGIONAL_EF_CUTS = (("Wedges from the long axis, cones from the LV center at the apex", "axis"),
@@ -683,7 +684,10 @@ def frameShifts(gateResults, ed, reference="floating"):
     is symmetric, so it does not move it); along the axis, the shift of the epicardial apex, which stays put
     over the cycle while the base descends toward it, so the valve descent is kept and only a heart that
     moves as a whole is taken out. "mass": the shift of the myocardium's center (myocardiumCenter); the base
-    descent moves it toward the apex too, so part of the longitudinal motion is taken out with it."""
+    descent moves it toward the apex too, so part of the longitudinal motion is taken out with it. "base":
+    across the axis as "floating", along it the shift of the valve plane on the axis (each frame's base
+    center), so the wall motion is measured from the base: the valve descent is taken out and the
+    longitudinal shortening shows as the apex moving toward the base."""
     if reference == "mass":
         centers = np.array([myocardiumCenter(result) for result in gateResults])
         return centers - centers[ed]
@@ -691,15 +695,18 @@ def frameShifts(gateResults, ed, reference="floating"):
     for result in gateResults:
         grid = result["grid"]
         nCyl = grid.nCyl
+        if reference == "base":
+            apexes.append(valvePlane(result)[0])
+        else:
+            rows = slice(grid.nRows - min(MOTION_APEX_ROWS, grid.nCap), grid.nRows)
+            along = np.asarray(result["epi"])[rows] * np.cos(grid.phi[-(rows.stop - rows.start):])[:, None]
+            apexes.append(float(np.median(along)))
         endo = np.asarray(result["endo"])[:nCyl]
         rings = ~_beyondBase(grid, result["mid"], result["valvePlane"])[:nCyl].any(axis=1)
         rings = rings if rings.any() else np.ones(nCyl, dtype=bool)
         # a ring r(theta) = R + c . n(theta) around the axis has its center c at twice the mean of r n
         offAxis = endo[rings][..., None] * grid.radial(grid.theta)[None]
         centers.append(2.0 * offAxis.mean(axis=1).mean(axis=0))
-        rows = slice(grid.nRows - min(MOTION_APEX_ROWS, grid.nCap), grid.nRows)
-        along = np.asarray(result["epi"])[rows] * np.cos(grid.phi[-(rows.stop - rows.start):])[:, None]
-        apexes.append(float(np.median(along)))
     u = gateResults[ed]["grid"].u
     centers = np.array(centers)
     apexes = np.array(apexes)
@@ -739,7 +746,8 @@ def motionMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixe
     a defect follow their neighbours when the map is smoothed. The rays are those of the static fit
     (fixed LV center and axis), so with reference "fixed" a translation of the whole heart is not corrected;
     with "floating" each frame's translation against ED (frameShifts: its LV center across the axis, its
-    epicardial apex along it), with "mass" that of its myocardium's center, is taken out first.
+    epicardial apex along it), with "mass" that of its myocardium's center, with "base" that of its LV center
+    and base center (so the valve descent goes too and the apex moves toward the base), is taken out first.
     Returns a polar map dict like polarMap (rho of the ED frame) with "values" in mm.
     smoothing defaults to MOTION_SMOOTHING."""
     smoothing = MOTION_SMOOTHING if smoothing is None else smoothing
@@ -766,7 +774,7 @@ def motionMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixe
 def _referencedResults(gateResults, ed, reference):
     """(frames, [frames, 3] shifts) for a motion reference (MOTION_REFERENCES): the frames as they are with
     "fixed", else every frame seen from its own moved center (frameShifts, shiftedResult)."""
-    if reference not in ("floating", "mass"):
+    if reference not in ("floating", "mass", "base"):
         return list(gateResults), np.zeros((len(gateResults), 3))
     shifts = frameShifts(gateResults, ed, reference)
     return [shiftedResult(result, shift) for result, shift in zip(gateResults, shifts)], shifts

@@ -363,10 +363,10 @@ def gatedLayoutXml(slots, kind, mainViewport=None):
         return plots
     if kind in ("dual", "dualFull"):
         return _twoMonitorXml(slices, plots, "MPIGatedMonitor2", GATED_MONITOR2_TITLE, mainViewport)
-    # full: the 2 x 2 slice area (three slices per axis) needs more width than the rows of all slices
+    # full: the slices and the plots 4 : 5 in width
     return ('<layout type="horizontal" split="true">'
-            f'<item splitSize="{720 if len(slots) == 1 else 760}">{slices}</item>'
-            f'<item splitSize="{540 if len(slots) == 1 else 500}">{plots}</item>'
+            f'<item splitSize="400">{slices}</item>'
+            f'<item splitSize="500">{plots}</item>'
             '</layout>')
 
 
