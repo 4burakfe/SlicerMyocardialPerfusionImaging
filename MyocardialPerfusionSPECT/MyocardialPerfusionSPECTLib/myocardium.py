@@ -2119,6 +2119,9 @@ def _shapeModel(grid, distance, weight, inside, tolerance, baseZ, counts=None):
     norm = _convolve2d(w, kernel)
     level = max(float(np.percentile(norm[norm > 0], 50)), 1e-9) if np.any(norm > 0) else 1.0
     correction = spread / (norm + SHAPE_FADE * level)
+    # the grid smoothing narrows to nothing in mm toward the apex, where the rays of a row converge (and
+    # those of the last row coincide): there the field is smoothed over the same mm as at the equator
+    correction = _poleSmooth(grid, correction, np.ones_like(correction), SHAPE_RESIDUAL_SIGMA, model)
     return np.maximum(model + correction, 1.0), off
 
 
