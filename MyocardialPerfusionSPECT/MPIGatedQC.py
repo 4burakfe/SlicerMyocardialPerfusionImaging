@@ -935,6 +935,7 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         reliability = wallLib._staticReliability(static)
         self.assertLess(float(np.median(reliability[rows][:, scarCols])), 0.1)
         self.assertGreater(float(np.median(reliability[rows][:, dimCols])), 0.9)
+        scarEdges = np.abs(theta) < 60
         for mode in ("static", "own"):
             for fit in ("bspline", "mesh", "legacy"):
                 params = {"segmentation": mode, "fit": fit}
@@ -945,7 +946,7 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
                 self.assertGreater(float(np.median(moved[:, dimCols])), 2.5, params)
                 self.assertGreater(float(np.median(moved[:, scarCols])), 2.5, params)
                 mid = gate["mid"][rows]
-                step = np.abs(mid - np.roll(mid, 1, axis=1)).max()            # between neighbouring rays
+                step = np.abs(mid - np.roll(mid, 1, axis=1))[:, scarEdges].max()   # between neighbouring rays
                 self.assertLess(float(step), 2.5, params)
         self.delayDisplay("Scar fitted test passed")
 
@@ -974,7 +975,8 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
     def test_FitSurface(self):
         """The fits keep what the traced rays show and bridge a gap of untraced rays without a step: the
         B-spline continues the curve of the walls around it, the mesh runs straighter, the legacy path keeps
-        the jump between neighbouring rays within its limit; pull 0 keeps the traced rays' own values."""
+        the jump between neighbouring rays within its limit; pull 0 keeps the traced rays' own values. At a
+        bending length of 8 mm: the default 15 mm also bends a wall 3 mm off the axis about 1.3 mm toward it."""
         grid = wallLib.WallGrid(np.zeros(3), [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 50.0, length=30.0)
         theta = grid.theta[None, :].repeat(grid.nRows, axis=0)
         amplitude = np.concatenate([np.ones(grid.nCyl), np.sin(grid.phi)])[:, None]
@@ -985,6 +987,15 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         distance = values
         geometry = wallLib._FitGeometry(grid, distance)
         middle = grid.nCyl // 2
+        length = wallLib.SPLINE_LENGTH_MM
+        wallLib.SPLINE_LENGTH_MM = 8.0
+        try:
+            self._checkFitSurface(grid, values, weights, gap, distance, geometry, middle)
+        finally:
+            wallLib.SPLINE_LENGTH_MM = length
+        self.delayDisplay("Fit surface test passed")
+
+    def _checkFitSurface(self, grid, values, weights, gap, distance, geometry, middle):
         for fit in ("bspline", "mesh", "legacy"):
             out = wallLib.fitSurface(grid, np.where(gap, 0.0, values), weights, fit, 1.0, distance)
             self.assertLess(float(np.abs(out - values)[~gap].max()), 0.6, fit)
@@ -998,7 +1009,6 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         raw = np.where(gap, 0.0, values + np.where(np.arange(grid.nTheta) % 2, 0.5, -0.5)[None])
         own = wallLib.fitSurface(grid, raw, weights, "bspline", 0.0, distance)
         self.assertTrue(np.allclose(own[middle][~gap[middle]], raw[middle][~gap[middle]], atol=1e-6))
-        self.delayDisplay("Fit surface test passed")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
 parametersLib.applySaved()

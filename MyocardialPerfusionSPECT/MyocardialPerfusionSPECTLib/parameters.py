@@ -204,7 +204,7 @@ STEP_PARAMETERS = {
     "gatedqc": [
         P("splineKnot", "B-spline knot spacing", 8.0, f"{MYO}:SPLINE_KNOT_MM", 3.0, 30.0, 0.5, 1, " mm",
           "B-spline fit (also Myocardium): spacing of the spline's knots over the wall; smaller follows finer detail", "Frame fit"),
-        P("splineLength", "B-spline bending length", 8.0, f"{MYO}:SPLINE_LENGTH_MM", 1.0, 40.0, 0.5, 1, " mm",
+        P("splineLength", "B-spline bending length", 15.0, f"{MYO}:SPLINE_LENGTH_MM", 1.0, 40.0, 0.5, 1, " mm",
           "B-spline fit (also Myocardium): wall features shorter than this are smoothed out (the bending penalty is length^4)",
           "Frame fit"),
         P("meshLength", "Mesh tension length", 4.0, f"{MYO}:MESH_LENGTH_MM", 0.5, 30.0, 0.5, 1, " mm",
