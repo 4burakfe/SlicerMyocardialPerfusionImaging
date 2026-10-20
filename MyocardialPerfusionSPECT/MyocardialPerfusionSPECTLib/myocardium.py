@@ -387,11 +387,6 @@ TRACE_POOL_FLOOR = 0.05     # share of the bright walls' counts below which the 
 THICKENING_SMOOTHING = 2.5        # thickeningMap: smoothing of the % map (map cells)
 THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES count maps
 MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
-THICKENING_METHODS = (("Hybrid: mean of the count-based and geometric maps", "hybrid"),
-                      ("Count-based: ES / ED wall counts", "counts"),
-                      ("Geometric: ES / ED wall thickness (endo- to epicardium, as QGS)", "geometry"))
-HYBRID_WEIGHTS = (("Fixed: half counts, half geometry", "fixed"),
-                  ("Phase coherence: counts where their phases agree", "coherence"))
 PHASE_COHERENCE_SMOOTHING = 3.0   # phaseCoherenceMap: neighbourhood (Gaussian sigma, map cells) the phases are pooled over
 PHASE_COHERENCE_LOW = 50.0        # %: coherence below which the overlay hatches the thickening map
 MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
@@ -873,38 +868,6 @@ def thickeningMap(gatePolars, ed, es, smoothing=None, countSmoothing=None):
     return {"values": values, "rho": np.asarray(reference["rho"]).copy(), "theta": np.asarray(reference["theta"]).copy()}
 
 
-def geometricThickeningMap(gateResults, ed, es, smoothing=None):
-    """Geometric wall thickening polar map, as QGS measures it: % = (ES thickness / ED thickness - 1) x 100,
-    the thickness between the endo- and epicardium of every frame's wall on the polar map rays (polarRays),
-    fitted with the first harmonic over the cycle as in thickeningMap. The frames' thickness comes from their
-    own profile widths (Gated QC), so it reads low: a wall thinner than the resolution keeps about the same
-    profile width over the cycle. A defect reads the thickening the fit draws from the walls around it. The %
-    map is smoothed (smoothing, map cells, THICKENING_SMOOTHING by default) without count weights.
-    gateResults: the wall of every frame. Returns a polar map dict like thickeningMap."""
-    smoothing = THICKENING_SMOOTHING if smoothing is None else smoothing
-    stack = []
-    for result in gateResults:
-        _, _, endo, epi, _ = polarRays(result)
-        stack.append(np.maximum(epi - endo, 1e-3))
-    _, edThickness, esThickness = _firstHarmonic(np.array(stack), ed, es)
-    values = 100.0 * (esThickness / np.maximum(edThickness, 1e-3) - 1.0)
-    values = np.clip(_smoothMap(np.nan_to_num(values), np.ones_like(values), smoothing), -100.0, 200.0)
-    rho = polarRays(gateResults[ed])[4]
-    return {"values": values, "rho": rho, "theta": gateResults[ed]["grid"].theta.copy()}
-
-
-def hybridThickeningMap(countMap, geometricMap, coherence=None):
-    """Weighted mean of the count-based (thickeningMap) and geometric (geometricThickeningMap) thickening
-    maps, %: the counts read a wall's thickening low where its counts sit on a large background, the geometry
-    reads it low where the wall is thinner than the resolution; their errors differ, so the mean is steadier than either. Without
-    coherence half and half; with a phase coherence map (phaseCoherenceMap, %) the counts weigh as much as
-    their phases agree (0 where they are random, all where they all agree) and the geometry the rest."""
-    counts, geometry = np.asarray(countMap["values"]), np.asarray(geometricMap["values"])
-    weight = 0.5 if coherence is None else np.clip(np.asarray(coherence["values"]) / 100.0, 0.0, 1.0)
-    return {"values": weight * counts + (1.0 - weight) * geometry,
-            "rho": np.asarray(countMap["rho"]).copy(), "theta": np.asarray(countMap["theta"]).copy()}
-
-
 def phaseCoherenceMap(gatePolars, ed, es, smoothing=None):
     """How consistently the wall counts around every ray change over the cycle, in % (after Cooke et al.,
     J Nucl Med 1994: the first-harmonic phase of a pixel whose wall thickens falls in systole; in noise it is
@@ -912,7 +875,7 @@ def phaseCoherenceMap(gatePolars, ed, es, smoothing=None):
     ES. The share f of positive rays is pooled over a neighbourhood (Gaussian, smoothing map cells,
     PHASE_COHERENCE_SMOOTHING by default) and the coherence is |2 f - 1|: 0 where the phases are random
     (f about 50 %), 100 % where they all agree, thickening (f near 100 %) or thinning (f near 0). It shows
-    where the count-based thickening is more than noise; a background that changes the same way in every
+    where the thickening is more than noise; a background that changes the same way in every
     cycle (the walls around a scar brightening in systole) is coherent too.
     Returns a polar map dict like thickeningMap with "values" in % and "positive" (f, %)."""
     smoothing = PHASE_COHERENCE_SMOOTHING if smoothing is None else smoothing

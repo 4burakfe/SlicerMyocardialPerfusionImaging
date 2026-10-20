@@ -270,7 +270,7 @@ STEP_PARAMETERS = {
           0.25, 2, " cells", "Smoothing of the ED and ES count maps before their ratio", "Polar maps"),
         P("phaseCoherenceSmoothing", "Phase coherence neighbourhood", 3.0, f"{MYO}:PHASE_COHERENCE_SMOOTHING", 0.5,
           8.0, 0.25, 2, " cells", "Neighbourhood (Gaussian sigma) over which the first-harmonic phases of the wall "
-          "counts are pooled for the phase coherence (overlay and coherence-weighted hybrid thickening)",
+          "counts are pooled for the phase coherence overlay of the thickening maps",
           "Polar maps"),
         P("phaseCoherenceLow", "Phase coherence hatched below", 50.0, f"{MYO}:PHASE_COHERENCE_LOW", 0.0, 100.0, 5.0,
           0, " %", "The phase coherence overlay hatches the thickening map where the coherence is below this "

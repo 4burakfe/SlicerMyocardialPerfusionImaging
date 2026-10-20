@@ -47,8 +47,8 @@ Author: Burak Demir, MD, FEBNM · License: [MIT](LICENSE)
   myocardial volume and mass, as models and a segmentation.
 - **Perfusion review.** Stress and rest slices side by side or interleaved, polar maps with coronary
   territories or the 17 AHA segments, rest - stress difference maps, 3D uptake views, and the TID ratio.
-- **Gated review.** Per-frame segmentation and QC, a cine of every slice, thickening (count-based,
-  geometric or both) and wall motion polar maps, LV volume curve with EDV, ESV and EF, and a beating
+- **Gated review.** Per-frame segmentation and QC, a cine of every slice, count-based thickening
+  and wall motion polar maps, LV volume curve with EDV, ESV and EF, and a beating
   3D wall.
 - **Dual monitor layouts** put the slices on the main screen and the plots on a second one.
 - **Nuclear medicine color maps**: PET-DICOM, Hel, PET-HotMetalBlue, PET-HotIron, Jotun, Vanaheim,
@@ -345,14 +345,12 @@ STRESS GATED shows the stress gated study:
 - **Right, a 2 x 3 grid** (the slices and the plots share the width 4 : 5): three polar maps side by
   side on top, each with its own window:
   - perfusion,
-  - **wall thickening**, ED to ES with the first harmonic over the cycle, by one of three methods
-    (*Thickening method*). **Count-based**: ES / ED wall counts of every ray (partial volume), smoothed
-    more than the others since a count ratio is noisy; the background under the wall dilutes it, and a
-    change of that background can read as thickening in a dim wall. **Geometric** (as QGS): ES / ED
-    distance between the endo- and epicardium, from the frames' own profile widths of Gated QC (it reads
-    low: the widths change less than the wall, blurred by the reconstruction). **Hybrid**
-    (default): the mean of the two, half and half, or with *Hybrid weight: Phase coherence* the counts
-    weigh as much as their phases agree and the geometry the rest. *Phase coherence* (off by default)
+  - **wall thickening**, ED to ES with the first harmonic over the cycle, from the counts: ES / ED wall
+    counts of every ray (partial volume), smoothed since a count ratio is noisy; the background under the
+    wall dilutes it, and a change of that background can read as thickening in a dim wall. (There is no
+    geometric endo- to epicardium thickening, as QGS reads it: QGS holds the myocardial volume of ED and
+    ES constant when it draws the walls, which a wall drawn from each frame's own profiles does not.)
+    *Phase coherence* (on by default)
     hatches the thickening maps where the count change is noise (after Cooke et al., J Nucl Med 1994): the
     first-harmonic phase of the wall counts of every ray is positive when its peak lies within a quarter
     cycle of ES, the share f of positive rays is pooled around each ray, and the coherence |2 f - 1| is 0
