@@ -103,8 +103,6 @@ REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points"
 THICKENING_VIEWS = (("5 walls (apex and an X: anterior, septal, inferior, lateral)", "walls"),
                    ("17 segments", "segments"), ("Per pixel", "pixels"))   # wallLib.REGION_VIEWS
 DEFAULT_THICKENING_VIEW = "pixels"
-DEFAULT_THICKENING_METHOD = "hybrid"   # wallLib.THICKENING_METHODS value
-DEFAULT_HYBRID_WEIGHT = "fixed"        # wallLib.HYBRID_WEIGHTS value
 COHERENCE_HATCH_PX = 3                 # width of the stripes the phase coherence overlay hatches with
 COHERENCE_HATCH_DIM = 0.25             # brightness the hatched stripes keep
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
@@ -283,10 +281,7 @@ class GatedReviewData:
         self.staticPolar = staticPolar     # perfusion polar map of the static study
         self.volumes = gated.cavityMl()
         self.phases = ejectionFraction(self.volumes)
-        self.thickening = None             # thickening polar map (%) of thickeningMethod
-        self.thickeningMaps = {}           # wallLib.THICKENING_METHODS value -> thickening polar map (%)
-        self.thickeningMethod = DEFAULT_THICKENING_METHOD
-        self.hybridWeight = DEFAULT_HYBRID_WEIGHT   # wallLib.HYBRID_WEIGHTS value the hybrid map was made with
+        self.thickening = None             # count-based thickening polar map (%)
         self.coherence = None              # phase coherence polar map (%) of the wall counts
         self.motion = None                 # wall motion polar map (mm), made with the thickening
         self.motionReference = "fixed"     # wallLib.MOTION_REFERENCES value the motion map was made with
@@ -306,21 +301,6 @@ class GatedReviewData:
         result = self.gated.results[index]
         return result if result is not None else self.staticResult
 
-    def selectThickening(self, method):
-        """Show the thickening map of one of wallLib.THICKENING_METHODS (all are made by buildThickening)."""
-        self.thickeningMethod = method
-        self.thickening = self.thickeningMaps.get(method)
-
-    def buildHybrid(self, weight):
-        """The hybrid thickening map with fixed or phase-coherence weights (wallLib.HYBRID_WEIGHTS)."""
-        self.hybridWeight = weight
-        counts, geometry = self.thickeningMaps.get("counts"), self.thickeningMaps.get("geometry")
-        if counts is None or geometry is None:
-            return
-        self.thickeningMaps["hybrid"] = wallLib.hybridThickeningMap(
-            counts, geometry, self.coherence if weight == "coherence" else None)
-        self.selectThickening(self.thickeningMethod)
-
     def buildThickening(self):
         import MPIGatedQC
         if self.phases is None:
@@ -337,11 +317,8 @@ class GatedReviewData:
             sample = MPIGatedQC.sampler(array, MPIGatedQC.worldToIjk(node, self.gated.study), mask, center)
             polars.append(wallLib.polarMap(self.result(index), sample))
         _, _, _, ed, es = self.phases
-        counts = wallLib.thickeningMap(polars, ed, es)
-        geometry = wallLib.geometricThickeningMap([self.result(i) for i in range(len(gates))], ed, es)
+        self.thickening = wallLib.thickeningMap(polars, ed, es)
         self.coherence = wallLib.phaseCoherenceMap(polars, ed, es)
-        self.thickeningMaps = {"counts": counts, "geometry": geometry}
-        self.buildHybrid(self.hybridWeight)
         meanCounts = np.mean([p["values"] for p in polars], axis=0)
         self._motionInputs = ([self.result(i) for i in range(len(gates))], ed, es, meanCounts)
         self.buildMotion()
@@ -554,39 +531,15 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "shows these walls and their scores), the mean of each of the 17 segments (default), or every pixel "
             "(a count ratio per pixel is noisy)")
         polarForm.addRow("Thickening map:", self.thickeningViewCombo)
-        self.thickeningMethodCombo = qt.QComboBox()
-        for text, value in wallLib.THICKENING_METHODS:
-            self.thickeningMethodCombo.addItem(text, value)
-        self.thickeningMethodCombo.setCurrentIndex(
-            max(0, self.thickeningMethodCombo.findData(DEFAULT_THICKENING_METHOD)))
-        self.thickeningMethodCombo.toolTip = (
-            "How the wall thickening is measured. Count-based: the wall counts of every ray grow with its thickness "
-            "(partial volume), % = ES / ED counts - 1; the background under the wall dilutes it (it reads low "
-            "against MRI) and a change of that background can read as thickening where the wall is dim. "
-            "Geometric (as QGS): the distance between the endo- and epicardium of every frame, % = ES / ED "
-            "thickness - 1, from the frames' own profile widths of Gated QC (a wall thinner than the resolution "
-            "keeps about the same profile width, so it reads low; a defect reads what the fit draws from the walls "
-            "around it). Hybrid (default): the mean of the two, whose errors differ")
-        polarForm.addRow("Thickening method:", self.thickeningMethodCombo)
-        self.hybridWeightCombo = qt.QComboBox()
-        for text, value in wallLib.HYBRID_WEIGHTS:
-            self.hybridWeightCombo.addItem(text, value)
-        self.hybridWeightCombo.setCurrentIndex(max(0, self.hybridWeightCombo.findData(DEFAULT_HYBRID_WEIGHT)))
-        self.hybridWeightCombo.toolTip = (
-            "How the hybrid thickening mixes its two maps. Fixed (default): half count-based, half geometric. "
-            "Phase coherence: the count-based map weighs as much as the first-harmonic phases of the wall counts "
-            "around each ray agree (none where they are random, all where they all agree, see the phase coherence "
-            "overlay), the geometric map the rest")
-        polarForm.addRow("Hybrid weight:", self.hybridWeightCombo)
         self.coherenceCheck = qt.QCheckBox("Hatch where the count phases are random")
-        self.coherenceCheck.checked = False
+        self.coherenceCheck.checked = True
         self.coherenceCheck.toolTip = (
             "Phase coherence overlay on the thickening maps (after Cooke et al., J Nucl Med 1994). The first-harmonic "
             "phase of the wall counts of a ray that thickens falls in systole, that of noise anywhere; where the "
             "phases around a ray agree (thickening or thinning) the count change is real, where they are random "
-            "(about half in systole) it is noise. Hatched: coherence below the threshold of Advanced parameters "
-            "(50 % by default). A background that changes the same way in every cycle (the walls around a scar "
-            "brightening in systole) is coherent too, so a scar is not always hatched")
+            "(about half in systole) it is noise. Hatched (default): coherence below the threshold of Advanced "
+            "parameters (50 % by default). A background that changes the same way in every cycle (the walls around "
+            "a scar brightening in systole) is coherent too, so a scar is not always hatched")
         polarForm.addRow("Phase coherence:", self.coherenceCheck)
         self.motionRange = self._windowWidget(
             "Color window of the inward wall motion, mm of endocardial motion from ED to ES (outward motion: "
@@ -762,9 +715,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("polarWindow", self.polarWindowRange)
         self.parameterPanel.bind("thickeningWindow", self.thickeningRange)
         self.parameterPanel.bind("thickeningView", self.thickeningViewCombo)
-        self.parameterPanel.bind("thickeningMethod", self.thickeningMethodCombo)
-        self.parameterPanel.bind("hybridWeight", self.hybridWeightCombo)
-        self.parameterPanel.bind("phaseCoherenceOverlay", self.coherenceCheck)
+        self.parameterPanel.bind("phaseCoherenceHatch", self.coherenceCheck)   # was "phaseCoherenceOverlay", off
         self.parameterPanel.bind("motionWindow", self.motionRange)
         self.parameterPanel.bind("motionReference", self.motionReferenceCombo)
         self.parameterPanel.bind("regionalEFWindow", self.efRange)
@@ -811,8 +762,6 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarWindowRange.connect("valuesChanged(double,double)", lambda a, b: self.refresh(rebuild3D=False))
         self.thickeningRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
         self.thickeningViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
-        self.thickeningMethodCombo.connect("currentIndexChanged(int)", lambda _: self.onThickeningMethodChanged())
-        self.hybridWeightCombo.connect("currentIndexChanged(int)", lambda _: self.onHybridWeightChanged())
         self.coherenceCheck.connect("toggled(bool)", lambda _: self.refreshPolars())
         self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.onMotionWindowChanged())
         self.motionReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onMotionReferenceChanged())
@@ -1147,8 +1096,6 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         data.motionReference = self.motionReference()
         data.efReference = self.efReference()
         data.efCut = self.efCut()
-        data.thickeningMethod = self.thickeningMethod()
-        data.hybridWeight = self.hybridWeight()
         data.buildThickening()
         self.data[slot] = (key, data)
         self.tiles = {k: v for k, v in self.tiles.items() if k[0] != slot}
@@ -1724,11 +1671,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                        else "wedges from the long axis, cones from the LV center at the apex")
                 note = f"% of the cavity under each patch of endocardium emptied, {frames} ({cut})" + where
             else:
-                source = {"counts": "the wall counts", "geometry": "the wall thickness (endo- to epicardium)"}.get(
-                    data.thickeningMethod, "the mean of the wall counts and the wall thickness")
-                if data.thickeningMethod == "hybrid" and data.hybridWeight == "coherence":
-                    source = "the wall counts where their phases agree and the wall thickness elsewhere"
-                note = f"% thickening from {source}, {frames} (first harmonic over the cycle)" + where
+                note = f"% thickening from the wall counts, {frames} (first harmonic over the cycle)" + where
                 if hatch:
                     note += f" Hatched: count phases random (coherence below {wallLib.PHASE_COHERENCE_LOW:.0f} %)."
             panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
@@ -2026,25 +1969,6 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def efCut(self):
         return self.efCutCombo.itemData(self.efCutCombo.currentIndex) or DEFAULT_EF_CUT
 
-    def thickeningMethod(self):
-        return self.thickeningMethodCombo.itemData(self.thickeningMethodCombo.currentIndex) or DEFAULT_THICKENING_METHOD
-
-    def hybridWeight(self):
-        return self.hybridWeightCombo.itemData(self.hybridWeightCombo.currentIndex) or DEFAULT_HYBRID_WEIGHT
-
-    def onHybridWeightChanged(self):
-        """The hybrid thickening maps of the studies loaded, mixed again with the new weights."""
-        for _, data in self.data.values():
-            if data.hybridWeight != self.hybridWeight():
-                data.buildHybrid(self.hybridWeight())
-        self.refreshPolars()
-
-    def onThickeningMethodChanged(self):
-        """The studies loaded show the thickening map of the new method (all three are made with the data)."""
-        for _, data in self.data.values():
-            data.selectThickening(self.thickeningMethod())
-        self.refreshPolars()
-
     def onEFReferenceChanged(self):
         """The regional EF maps of the studies loaded, made again against the new reference or cut."""
         for slot, (_, data) in self.data.items():
@@ -2188,29 +2112,11 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
                   for v in volumes]
         thickening = wallLib.thickeningMap(polars, 0, 4)
         self.assertGreater(float(np.median(thickening["values"])), 25.0)
-        # geometric: a wall 10 mm thick at ED and 14 mm at ES (mid-wall in place) reads about 40 %, and a wall
-        # that keeps its thickness reads 0; the hybrid map is their mean
-        grid = wallLib.WallGrid(np.zeros(3), np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]), 55.0)
-        shape = (grid.nRows, grid.nTheta)
-        scar = grid.theta > np.pi                                       # half the wall keeps 10 mm
-
-        def wall(thickness):
-            t = np.where(scar[None, :], 10.0, np.full(shape, thickness))
-            return {"grid": grid, "mid": np.full(shape, 25.0), "endo": 25.0 - t / 2, "epi": 25.0 + t / 2,
-                    "valvePlane": (-30.0, 0.0, 0.0)}
-        walls = [wall(10.0 + 4.0 * (100 - v) / 50.0) for v in volumes]
-        geometry = wallLib.geometricThickeningMap(walls, 0, 4, smoothing=0.0)
-        self.assertAlmostEqual(float(np.median(geometry["values"][:, ~scar])), 40.0, delta=4.0)
-        self.assertAlmostEqual(float(np.median(geometry["values"][:, scar])), 0.0, delta=0.5)
-        counts = {"values": np.full(geometry["values"].shape, 20.0), "rho": geometry["rho"], "theta": geometry["theta"]}
-        hybrid = wallLib.hybridThickeningMap(counts, geometry)
-        self.assertAlmostEqual(float(np.median(hybrid["values"][:, scar])), 10.0, delta=0.5)
         self.delayDisplay("Thickening test passed")
 
     def test_PhaseCoherence(self):
         """Wall counts that peak at ES on one half of the map are coherent, random counts on the other half are
-        not; the coherence-weighted hybrid takes the counts on the first half and the geometry on the second,
-        and the overlay hatches only the random half."""
+        not, and the overlay hatches only the random half."""
         frames, es = 8, 4
         rho, theta = np.linspace(1, 0, 20), np.linspace(0, 2 * np.pi, 60, endpoint=False)
         random = theta >= np.pi
@@ -2225,12 +2131,6 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
         self.assertGreater(float(np.median(coherence["values"][inner][:, ~random][:, 5:-5])), 90.0)
         self.assertLess(float(np.median(coherence["values"][inner][:, random][:, 5:-5])), 40.0)
         self.assertGreater(float(np.median(coherence["positive"][inner][:, ~random][:, 5:-5])), 95.0)
-        counts = {"values": np.full((20, 60), 20.0), "rho": rho, "theta": theta}
-        geometry = {"values": np.full((20, 60), 40.0), "rho": rho, "theta": theta}
-        hybrid = wallLib.hybridThickeningMap(counts, geometry, coherence)
-        self.assertLess(float(np.median(hybrid["values"][inner][:, ~random][:, 5:-5])), 22.0)
-        self.assertGreater(float(np.median(hybrid["values"][inner][:, random][:, 5:-5])), 32.0)
-        self.assertAlmostEqual(float(np.median(wallLib.hybridThickeningMap(counts, geometry)["values"])), 30.0)
         rgb = np.full((4, 4, 3), 200, dtype=np.uint8)
         image = np.array([[10.0, 10.0, 90.0, 90.0]] * 4)
         hatchIncoherent(rgb, image, 50.0)
