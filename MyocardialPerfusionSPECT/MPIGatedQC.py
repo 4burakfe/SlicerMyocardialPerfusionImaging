@@ -362,6 +362,19 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         advanced.collapsed = True
         self.layout.addWidget(advanced)
         advancedForm = qt.QFormLayout(advanced)
+        self.segmentationCombo = qt.QComboBox()
+        for text, value in wallLib.GATE_SEGMENTATIONS:
+            self.segmentationCombo.addItem(text, value)
+        self.segmentationCombo.setCurrentIndex(
+            max(0, self.segmentationCombo.findData(wallLib.GATE_DEFAULTS["segmentation"])))
+        self.segmentationCombo.toolTip = (
+            "How the wall of every frame is found. From the static wall (default): the mid-wall of a frame is "
+            "searched near the static wall of Myocardium; rays through a defect stay close to it and follow the "
+            "motion of the walls around them. Each frame from scratch: every frame is detected on its own as "
+            "Myocardium detects the static image (same rays), with no static wall as prior; a defect is bridged "
+            "by the frame's own shape model, and the motion and valve plane limits do not apply")
+        self.segmentationCombo.connect("currentIndexChanged(int)", lambda _: self.updateSegmentationControls())
+        advancedForm.addRow("Frames:", self.segmentationCombo)
         self.wallShiftSpin = qt.QDoubleSpinBox()
         self.wallShiftSpin.setRange(2.0, 40.0)
         self.wallShiftSpin.setValue(wallLib.GATE_DEFAULTS["maxWallShift"])
@@ -429,6 +442,8 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("valveShift", self.valveShiftSpin)
         self.parameterPanel.bind("gateSmoothing", self.gateSmoothingSlider)
         self.parameterPanel.bind("thicknessModel", self.thicknessModelCombo)
+        self.parameterPanel.bind("gateSegmentation", self.segmentationCombo)
+        self.updateSegmentationControls()
         self.layout.addStretch(1)
 
         self.resizeTimer = qt.QTimer()
@@ -567,11 +582,22 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.layoutButtons[self.slot].checked = True
         self.syncToolbar()
 
+    def segmentation(self):
+        return (self.segmentationCombo.itemData(self.segmentationCombo.currentIndex)
+                or wallLib.GATE_DEFAULTS["segmentation"])
+
+    def updateSegmentationControls(self):
+        """The motion and valve limits and the smoothing belong to the search near the static wall."""
+        static = self.segmentation() == "static"
+        for widget in (self.wallShiftSpin, self.valveShiftSpin, self.gateSmoothingSlider):
+            widget.enabled = static
+
     def params(self):
         return {"maxWallShift": float(self.wallShiftSpin.value), "maxValveShift": float(self.valveShiftSpin.value),
                 "gateSmoothing": float(self.gateSmoothingSlider.value),
                 "thicknessModel": (self.thicknessModelCombo.itemData(self.thicknessModelCombo.currentIndex)
-                                   or wallLib.GATE_DEFAULTS["thicknessModel"])}
+                                   or wallLib.GATE_DEFAULTS["thicknessModel"]),
+                "segmentation": self.segmentation()}
 
     def gatedStudy(self, slot, rebuild=False):
         """GatedStudy of a slot, built once per study, gated sequence, static wall and settings."""
@@ -886,6 +912,13 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.assertEqual(own[1]["thicknessModel"], "frame")
         self.assertAlmostEqual(float(np.median(own[1]["thickness"][middle])), float(np.median(own[0]["thickness"][middle])),
                                delta=2.0)
+        # each frame from scratch: no static prior, so the smaller frame is found as well, outside the motion limit too
+        scratch = wallLib.fitGate(sampleOf(ventricle(21.0)), static, {"segmentation": "own", "maxWallShift": 2.0})
+        self.assertEqual(scratch["grid"], static["grid"])
+        self.assertAlmostEqual(float(np.median(scratch["mid"][middle])), float(np.median(gate["mid"][middle])), delta=1.5)
+        self.assertTrue(np.all(scratch["reliability"] == 1.0))
+        own = wallLib.ownProfileGates([wallLib.fitGate(sampleOf(ventricle(25.0)), static, {"segmentation": "own"}), scratch])
+        self.assertLess(float(np.median(own[1]["endo"][middle])), float(np.median(own[0]["endo"][middle])) - 2.0)
         self.delayDisplay("Gate fit test passed")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
