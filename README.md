@@ -226,7 +226,18 @@ How it works:
   moved along the axis between the valve plane and the apex (toward the apex when a steep valve plane
   needs room) and the wall is fitted again, so the result does not depend on where the LV center was
   placed.
-- Surface smoothing is 1.25 by default; higher values bridge defects more.
+- *Fit* sets the surface through the peaks, as in Gated QC (see there): **B-spline** (default), **deformable
+  mesh** or **legacy**. A ray's peak counts by its wall counts against the cavity's blood pool (up to
+  1.25 x it does not count, from 1.75 x fully), and the fit draws the rays that do not count. With *Shape
+  model through defects* (on by default) the fit is of the peaks' deviation from the ellipsoid above, so
+  a defect keeps the ellipsoid's curve; without it the fit alone bridges a defect, flatter (an apical
+  defect over a prolate apex: 31 mm instead of 40 in the test phantom, against 40.6 with the model).
+  *Smoothing (pull to the fit)* (0.8) is how far a traced ray is moved from its own peak to the fit.
+  The wall thickness goes through the same fit. The stiffness of the fits is set in the Gated QC
+  Advanced parameters (Frame fit), shared by both steps.
+- *Fit: Ellipsoid (previous)* is the earlier method described above: the ellipsoid with the peaks'
+  smoothed deviations and *Surface smoothing* (1.25 by default; higher values bridge defects more). A
+  scene saved before the surface fits opens with it, so its wall stays the same.
 
 ### 4. Perfusion
 
@@ -273,16 +284,36 @@ Navigation:
 
 For the gated study of Study 1 or Study 2:
 
-- **Frame segmentation.** The myocardium is segmented in every frame, starting from the static wall of
-  Myocardium. The mid-wall of each ray is searched near the static one. A wall that cannot be traced
-  (scar, see below) is searched only within a third of that distance and stays where the static wall is
-  in every frame, so neither noise nor the contraction of the walls around it moves it; a dim wall that
-  can still be traced keeps its own motion. The valve plane is
-  fitted again with the static tilt, at most 25 mm away (the base descends about 1 cm in systole).
-  With *Frames: Each frame from scratch, like Myocardium* (advanced section) every frame is instead
-  detected on its own as Myocardium detects the static image, on the same rays and with no static wall
-  as prior, and the motion and valve plane limits do not apply. A wall that cannot be traced stays where
-  the static wall is here too. The frames are noisier than the static image, so check their contours.
+- **Frame segmentation.** The myocardium is segmented in every frame on the rays of the static wall of
+  Myocardium. *Frames* (advanced section) sets how each ray's wall is found:
+  - **Track the static wall** (default): the count peak of every ray is searched within 25 mm of the
+    static mid-wall and the fit is of its displacement from it, so a frame keeps the static wall's shape
+    where it does not show its own. The valve plane is fitted again with the static tilt, at most 25 mm
+    away (the base descends about 1 cm in systole).
+  - **Each frame from scratch**: every frame is detected on its own and the fit is of its wall itself;
+    the motion and valve plane limits do not apply.
+
+  A ray counts as traced by its wall counts against the frame's blood pool (and, when tracking, the static
+  image's): up to 1.25 x the blood pool it does not count, from 1.75 x fully however dim, partly in
+  between (*Wall not traced up to* / *traced from*, Advanced parameters). Rays at the edge of their search
+  window or far from their neighbours do not count either. *Fit* sets the surface that runs through the
+  traced rays and draws the others (a defect):
+  - **B-spline** (default): a cubic spline surface with a thin-plate bending penalty over the wall, so a
+    defect continues the curve of the walls around it. Knot spacing and bending length (8 mm each: wall
+    features shorter than that are smoothed out) are in Advanced parameters.
+  - **Deformable mesh**: every ray tied to its neighbours around and along the axis (a membrane, tension
+    length 4 mm), so a defect is bridged straighter.
+  - **Legacy**: the change between neighbouring rays is limited (0.6 mm per mm of wall) and the path
+    closest to the traced rays within that limit is found by dynamic programming (after Brigger et al.,
+    J Nucl Cardiol 1999), ring by ring, then along the axis, then by ring again.
+
+  Rays far off the first fit (another organ, noise) lose their weight and the fit is made again.
+  *Smoothing (pull to the fit)* (0.8 by default) is how far a traced ray is moved from its own peak to
+  the fit: 1 takes the fit, 0 keeps the peak. Nothing holds a defect in place: the fit draws it from the
+  walls around it, motion included. The frames are noisier than the static image, so check their contours.
+- **Wall thickness** of every frame comes from its own count profile widths, as Myocardium does on the
+  static image (at the blur estimated from the frames), on the walls clear of a defect, and goes through
+  the same fit, which draws the thickness of the others. No volume is kept between the frames.
 - **Frames on screen.** Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in
   three rows, one tile per frame, all at the same slice (the mouse wheel over a row scrolls), with its
   contours and one color scale for all frames (or each frame on its own).
@@ -292,34 +323,6 @@ For the gated study of Study 1 or Study 2:
   beats, heart rate, frame width, and R-R per projection view when the scanner stores it (e.g. Mediso).
 - A per-frame table with the LV cavity volume and a preliminary EF, and the QC findings. The per-frame
   results are kept on the gated sequence (`MPI.Gate*` attributes).
-
-Wall thickness of the frames (*Wall thickness* in the advanced section):
-
-- **Each frame from its own profiles** (default): every frame's thickness from its own count profile
-  widths, as Myocardium does on the static image (at the blur estimated from the frames), with no volume
-  kept between the frames. The diastolic wall stays as thick as its counts show, and the counts inside
-  the segmented myocardium follow the image counts more closely than with the constant-volume models.
-- **Constant myocardial volume, ES reference**: every frame keeps the myocardial volume of
-  end-systole, where the wall is thickest and brightest, with the ES wall thickness from its own count
-  profiles and the image blur estimated from the frames. Carried into end-diastole, that volume thins the
-  diastolic wall, which reads a higher EF.
-- **Constant myocardial volume, ED reference**: the same with end-diastole as the reference (QGS-like).
-- **Per ray, from the static wall**: every ray keeps its wall volume of the static fit. The summed static
-  image blurs the wall over the cycle, so the walls come out thicker and the EF higher, most in small
-  hearts.
-- **Mid-wall only**: only the mid-wall (the count peak, the surface a gate shows best) is taken from each
-  frame and every ray keeps its end-diastolic wall thickness, so the endocardium follows the mid-wall at
-  a fixed distance and no thickening model enters the volumes. It reads lower than the other models in
-  hearts that thicken well, and it does not overestimate when the gated reconstruction is too smooth to
-  show the thickening (gate profiles wider than about 20 mm keep the same width over the whole cycle, as
-  with a Butterworth 0.30 cycles/cm gated filter).
-
-In every model, rays whose wall cannot be traced keep the wall position and thickness of the static fit
-in every frame: scar neither moves on its own nor thickens, and its gate profiles show no wall to measure.
-Whether a wall can be traced is its counts in the static image against the cavity's blood pool: up to
-1.25 x the blood pool it cannot (held), from 1.75 x it is traced like normal wall however dim, partly held
-in between (*Defect: untraceable up to* / *traced from*, Advanced parameters). Surface smoothing of the
-frames is 2 by default (the static fit uses 1.25): the gates are noisier.
 
 ### 6. Gated Review
 
@@ -338,9 +341,8 @@ STRESS GATED shows the stress gated study:
     (*Thickening method*). **Count-based**: ES / ED wall counts of every ray (partial volume), smoothed
     more than the others since a count ratio is noisy; the background under the wall dilutes it, and a
     change of that background can read as thickening in a dim wall. **Geometric** (as QGS): ES / ED
-    distance between the endo- and epicardium; it follows the thickness model of Gated QC (with the
-    frames' own profile widths it reads low, with a constant myocardial volume it turns the mid-wall's
-    inward motion into thickening), and a defect held at its static thickness reads 0. **Hybrid**
+    distance between the endo- and epicardium, from the frames' own profile widths of Gated QC (it reads
+    low: the widths change less than the wall, blurred by the reconstruction). **Hybrid**
     (default): the mean of the two, half and half, or with *Hybrid weight: Phase coherence* the counts
     weigh as much as their phases agree and the geometry the rest. *Phase coherence* (off by default)
     hatches the thickening maps where the count change is noise (after Cooke et al., J Nucl Med 1994): the

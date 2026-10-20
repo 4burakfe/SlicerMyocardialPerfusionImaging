@@ -440,12 +440,36 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.anglesSpin.toolTip = "Rays around the long axis"
         form.addRow("Rays around the axis:", self.anglesSpin)
 
+        self.fitCombo = qt.QComboBox()
+        for text, value in wallLib.WALL_FITS:
+            self.fitCombo.addItem(text, value)
+        self.fitCombo.setCurrentIndex(max(0, self.fitCombo.findData(defaults["fit"])))
+        self.fitCombo.toolTip = (
+            "Surface fit through the rays whose wall stands out of the blood pool, which draws the others (a "
+            "defect) and smooths them, as in Gated QC: B-spline (default, a bending penalty: a defect continues the "
+            "curve of the walls around it), deformable mesh (every ray tied to its neighbours, bridges straighter) "
+            "or legacy (limited jump between neighbouring rays). With Shape model through defects (Advanced "
+            "parameters, on by default) the fit is of the walls' deviation from an ellipsoid fitted to the whole "
+            "LV, so a defect keeps its curve (a prolate apex behind an apical defect). Ellipsoid (previous): the "
+            "shape model with Gaussian smoothing, set by Surface smoothing")
+        self.fitCombo.connect("currentIndexChanged(int)", lambda _: self.updateFitControls())
+        form.addRow("Fit:", self.fitCombo)
+
+        self.fitPullSlider = ctk.ctkSliderWidget()
+        self.fitPullSlider.minimum, self.fitPullSlider.maximum = 0.0, 1.0
+        self.fitPullSlider.singleStep = 0.05
+        self.fitPullSlider.decimals = 2
+        self.fitPullSlider.value = defaults["fitPull"]
+        self.fitPullSlider.toolTip = ("How far a traced ray is pulled from its own count peak to the fit: 1 the fit, "
+                                      "0 its own peak (the rays without a wall always take the fit)")
+        form.addRow("Smoothing (pull to the fit):", self.fitPullSlider)
+
         self.smoothingSlider = ctk.ctkSliderWidget()
         self.smoothingSlider.minimum, self.smoothingSlider.maximum = 0.0, 4.0
         self.smoothingSlider.singleStep = 0.25
         self.smoothingSlider.decimals = 2
         self.smoothingSlider.value = defaults["smoothing"]
-        self.smoothingSlider.toolTip = ("Smoothing of the wall surface (rays), 1.25 by default. Higher values "
+        self.smoothingSlider.toolTip = ("Fit: Ellipsoid only. Smoothing of the wall surface (rays), 1.25 by default. Higher values "
                                         "bridge perfusion defects more, lower values follow the counts more closely. "
                                         "The apex is kept consistent around the axis at any value.")
         form.addRow("Surface smoothing:", self.smoothingSlider)
@@ -554,6 +578,9 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             hint=("The wall fit parameters apply the next time the myocardium is detected, the display ones the next time it is shown."))
         self.parameterPanel.bind("angles", self.anglesSpin)
         self.parameterPanel.bind("smoothing", self.smoothingSlider)
+        self.parameterPanel.bind("fit", self.fitCombo)
+        self.parameterPanel.bind("fitPull", self.fitPullSlider)
+        self.updateFitControls()
         self.parameterPanel.bind("baseThreshold", self.baseSlider)
         self.parameterPanel.bind("minThickness", self.minThicknessSpin)
         self.parameterPanel.bind("maxThickness", self.maxThicknessSpin)
@@ -819,8 +846,16 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             logging.warning("MPI: could not place the 3D camera:\n" + traceback.format_exc())
 
     # --- detection -------------------------------------------------------------
+    def updateFitControls(self):
+        """Surface smoothing belongs to the ellipsoid fit, the pull to the surface fits."""
+        ellipsoid = (self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.DEFAULTS["fit"]) == "ellipsoid"
+        self.smoothingSlider.enabled = ellipsoid
+        self.fitPullSlider.enabled = not ellipsoid
+
     def parameters(self):
         return {"angles": int(self.anglesSpin.value), "smoothing": float(self.smoothingSlider.value),
+                "fit": self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.DEFAULTS["fit"],
+                "fitPull": float(self.fitPullSlider.value),
                 "baseFraction": float(self.baseSlider.value) / 100.0,
                 "resolution": float(self.resolutionSpin.value),
                 "minThickness": float(self.minThicknessSpin.value),
@@ -896,6 +931,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             params = json.loads(segmentation.GetAttribute("MPI.MyocardiumParams") or "{}")
         except ValueError:
             params = {}
+        params.setdefault("fit", "ellipsoid")       # detected before the surface fits: the same wall again
         result = wallLib.fitWall(volumeSampler(detectionVolume(studyNode)), frame["center"], frame["u"],
                                  frame["w"], frame["radius"], params)
         self.results[studyNode.GetID()] = result
@@ -1110,9 +1146,10 @@ class MPIMyocardiumTest(ScriptedLoadableModuleTest):
 
         def sample(world):
             return sampleTrilinear(array, np.asarray(world, dtype=float) / spacing)
-        result = wallLib.fitWall(sample, center, u, w, 55.0, {"resolution": 8.0})
-        apexMid = result["centerShift"] + float(np.median(result["mid"][-1]))
-        self.assertAlmostEqual(apexMid, z0 + c, delta=4.0)
+        for fit in ("ellipsoid", "mesh", "legacy", "bspline"):      # the default last, for the message
+            result = wallLib.fitWall(sample, center, u, w, 55.0, {"resolution": 8.0, "fit": fit})
+            apexMid = result["centerShift"] + float(np.median(result["mid"][-1]))
+            self.assertAlmostEqual(apexMid, z0 + c, delta=4.0, msg=fit)
         bridged = wallLib.fitWall(sample, center, u, w, 55.0, {"resolution": 8.0, "shapeModel": False})
         self.assertLess(bridged["centerShift"] + float(np.median(bridged["mid"][-1])), z0 + c - 8.0)
         self.delayDisplay(f"Apical defect OK: apex mid-wall {apexMid:.1f} mm (truth {z0 + c:.0f}), "

@@ -133,12 +133,14 @@ STEP_PARAMETERS = {
         P("iterations", "Fit iterations", 3, f"{MYO}:DEFAULTS.iterations", 1, 10, 1, group="Wall fit",
           tooltip="Rounds of mid-wall search and smoothing"),
         P("thicknessSmoothing", "Thickness map smoothing", 3.0, f"{MYO}:DEFAULTS.thicknessSmoothing", 0.0, 8.0, 0.25,
-          2, " samples", "Gaussian sigma of the wall thickness map", "Wall fit"),
+          2, " samples", "Fit: Ellipsoid only. Gaussian sigma of the wall thickness map (the surface fits fit the "
+                         "thickness as the wall, with the Gated QC fit parameters)", "Wall fit"),
         P("poleSpacing", "Smoothing width at the axis", 3.0, f"{MYO}:POLE_SPACING_MM", 0.5, 10.0, 0.25, 2, " mm",
           "Smoothing near the long axis (apex) per unit of surface smoothing", "Wall fit"),
         P("shapeModel", "Shape model through defects", True, f"{MYO}:DEFAULTS.shapeModel",
           tooltip="Rays without a wall peak (a defect, also at the apex) follow an ellipsoid fitted to the whole "
-                  "LV instead of bridging between their neighbours", group="Defects"),
+                  "LV instead of bridging between their neighbours; with a surface fit (B-spline, mesh, legacy) the "
+                  "fit is of the walls' deviation from that ellipsoid", group="Defects"),
         P("shapePriorWeight", "Shape model weight", 0.03, f"{MYO}:SHAPE_PRIOR_WEIGHT", 0.0, 1.0, 0.01, 3,
           tooltip="Weight of the shape model against the rays' own count peaks (weights 0..1); higher: dim walls "
                   "follow the model more", group="Defects"),
@@ -200,22 +202,27 @@ STEP_PARAMETERS = {
                                              "Gated Review)", group="Screen"),
     ],
     "gatedqc": [
-        P("maxThicknessChange", "Thickness change limit", 0.5, f"{MYO}:GATE_DEFAULTS.maxThicknessChange", 0.0, 3.0,
-          0.05, 2, tooltip="Constant-volume models: a ray's thickness stays within reference / (1 + x) .. "
-                           "reference x (1 + x)", group="Frame segmentation"),
-        P("traceLow", "Defect: untraceable up to", 1.25, f"{MYO}:TRACE_RATIO_LOW", 1.0, 5.0, 0.05, 2,
-          " x blood pool", "Rays whose wall counts in the static image are at most this multiple of the cavity's "
-                           "blood pool cannot be traced (scar): their wall stays where the static wall is in "
-                           "every frame (akinetic, no thickening)", "Defects"),
-        P("traceHigh", "Defect: traced from", 1.75, f"{MYO}:TRACE_RATIO_HIGH", 1.0, 5.0, 0.05, 2,
-          " x blood pool", "Rays whose wall reaches this multiple of the blood pool are traced in every frame "
-                           "like normal wall, however dim; in between they are partly held", "Defects"),
-        P("minDefectShift", "Defect search window", 0.3, f"{MYO}:MIN_DEFECT_SHIFT", 0.0, 1.0, 0.05, 2,
-          " x limit", "Share of the wall motion limit searched on rays through a deep defect", "Defects"),
-        P("defectMotionSigma", "Defect motion field width", 3.0, f"{MYO}:DEFECT_MOTION_SIGMA", 0.5, 10.0, 0.25, 2,
-          " x smoothing", "Width of the motion field of the walls around a defect that its rays follow", "Defects"),
-        P("defectPriorWeight", "Defect motion prior weight", 0.03, f"{MYO}:DEFECT_PRIOR_WEIGHT", 0.0, 1.0, 0.01, 3,
-          tooltip="Weight of that motion field against the rays' own count peaks (weights 0..1)", group="Defects"),
+        P("splineKnot", "B-spline knot spacing", 8.0, f"{MYO}:SPLINE_KNOT_MM", 3.0, 30.0, 0.5, 1, " mm",
+          "B-spline fit (also Myocardium): spacing of the spline's knots over the wall; smaller follows finer detail", "Frame fit"),
+        P("splineLength", "B-spline bending length", 8.0, f"{MYO}:SPLINE_LENGTH_MM", 1.0, 40.0, 0.5, 1, " mm",
+          "B-spline fit (also Myocardium): wall features shorter than this are smoothed out (the bending penalty is length^4)",
+          "Frame fit"),
+        P("meshLength", "Mesh tension length", 4.0, f"{MYO}:MESH_LENGTH_MM", 0.5, 30.0, 0.5, 1, " mm",
+          "Deformable mesh fit (also Myocardium): wall features shorter than this are smoothed out (the tension is length^2)",
+          "Frame fit"),
+        P("legacySlope", "Legacy largest jump", 0.6, f"{MYO}:LEGACY_MAX_SLOPE", 0.05, 3.0, 0.05, 2,
+          " mm / mm", "Legacy fit (also Myocardium): largest change between neighbouring rays, per mm of wall between them",
+          "Frame fit"),
+        P("fitOutlier", "Fit outlier limit", 3.0, f"{MYO}:FIT_OUTLIER", 1.0, 10.0, 0.5, 1, " x misfit",
+          "Rays further from the first fit than this many robust misfits (another organ, noise) lose their "
+          "weight and the fit is made again", "Frame fit"),
+        P("traceLow", "Wall not traced up to", 1.25, f"{MYO}:TRACE_RATIO_LOW", 1.0, 5.0, 0.05, 2,
+          " x blood pool", "Rays whose wall counts are at most this multiple of the cavity's blood pool (in the "
+                           "frame, and in the static image when tracking it) are not traced: the fit draws them "
+                           "from the walls around them", "Frame fit"),
+        P("traceHigh", "Wall traced from", 1.75, f"{MYO}:TRACE_RATIO_HIGH", 1.0, 5.0, 0.05, 2,
+          " x blood pool", "Rays whose wall reaches this multiple of the blood pool count fully in the fit, "
+                           "however dim; in between they count partly", "Frame fit"),
         P("labelGrid", "Frame label grid", 2.0, "MPIGatedQC:LABEL_GRID_MM", 0.5, 5.0, 0.25, 2, " mm",
           "Voxel size of the per-frame myocardium / cavity labels (counts, cavity volumes, EF)", "Results"),
         P("countBand", "Count deviation flagged", 10.0, f"{GATING}:COUNT_BAND_PERCENT", 1.0, 50.0, 1.0, 0, " %",
