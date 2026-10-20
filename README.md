@@ -233,7 +233,8 @@ How it works:
   a defect keeps the ellipsoid's curve; without it the fit alone bridges a defect, flatter (an apical
   defect over a prolate apex: 31 mm instead of 40 in the test phantom, against 40.6 with the model).
   *Smoothing (pull to the fit)* (0.8) is how far a traced ray is moved from its own peak to the fit.
-  The wall thickness goes through the same fit. The stiffness of the fits is set in the Gated QC
+  The wall thickness goes through the same fit, each side of a profile measured against its own floor
+  (the blood pool inside, the counts outside; see Gated QC). The stiffness of the fits is set in the Gated QC
   Advanced parameters (Frame fit), shared by both steps.
 - *Fit: Ellipsoid (previous)* is the earlier method described above: the ellipsoid with the peaks'
   smoothed deviations and *Surface smoothing* (1.25 by default; higher values bridge defects more). A
@@ -313,7 +314,14 @@ For the gated study of Study 1 or Study 2:
   walls around it, motion included. The frames are noisier than the static image, so check their contours.
 - **Wall thickness** of every frame comes from its own count profile widths, as Myocardium does on the
   static image (at the blur estimated from the frames), on the walls clear of a defect, and goes through
-  the same fit, which draws the thickness of the others. No volume is kept between the frames.
+  the same fit, which draws the thickness of the others. No volume is kept between the frames. Each side
+  of a profile is measured against its own floor: the edge toward the cavity half way between the wall
+  peak and the blood pool, the outer edge half way to the counts outside. With one floor for both sides
+  (the lower, outer one) the inner edge sat out in the blood pool, the more so the dimmer the wall against
+  it, so a dim end-diastolic wall read thicker than the end-systolic one (negative thickening, a low EF):
+  in a phantom with the pool at 40 % of the wall, 8.9 mm at ED and 6.0 at ES before, 11.7 and 11.1 now
+  (truth 10 and 13). The blur is estimated from the outer half of the profiles, which the pool does not
+  reach. Profile widths still change less than the wall at this blur, so the frames' thickening reads low.
 - **Frames on screen.** Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in
   three rows, one tile per frame, all at the same slice (the mouse wheel over a row scrolls), with its
   contours and one color scale for all frames (or each frame on its own).

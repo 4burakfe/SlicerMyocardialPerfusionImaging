@@ -831,6 +831,7 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.test_GateFit()
         self.test_ScarFitted()
         self.test_FitSurface()
+        self.test_PoolFloor()
         self.test_MaskedSampler()
 
     def test_GatingText(self):
@@ -947,6 +948,28 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
                 step = np.abs(mid - np.roll(mid, 1, axis=1)).max()            # between neighbouring rays
                 self.assertLess(float(step), 2.5, params)
         self.delayDisplay("Scar fitted test passed")
+
+    def test_PoolFloor(self):
+        """The width of a wall profile is measured with each side against its own floor: a blood pool on the
+        cavity side does not widen it (one floor for both sides puts the inner edge out in the pool, more so
+        the dimmer the wall against it)."""
+        t = np.arange(0.0, 60.0, 0.5)
+        sigma = 10.0 / 2.3548
+        edge = lambda x: 0.5 * (1.0 + np.vectorize(math.erf)(x / (sigma * math.sqrt(2.0))))
+        widths = {}
+        for pool in (0.0, 15.0, 40.0, 60.0):
+            # a 10 mm wall at 25 mm (counts 100) and the blood pool inside it, both blurred to 10 mm FWHM
+            profile = 100.0 * (edge(t - 20.0) - edge(t - 30.0)) + pool * (1.0 - edge(t - 20.0))
+            profiles = profile[None, None, :]
+            peak = np.array([[profile.max()]])
+            position = np.array([[float(t[np.argmax(profile)])]])
+            widths[pool] = float(wallLib._profileWidth(profiles, t, position, peak, 14.0)[0][0, 0])
+            single = float(wallLib._fwhm(profiles, t, position, peak, 14.0, np.array([[profile[-1]]]))[0, 0])
+            if pool >= 40.0:
+                self.assertGreater(single, widths[0.0] + 2.0)     # one floor: the pool widens the wall
+        for pool, width in widths.items():
+            self.assertAlmostEqual(width, widths[0.0], delta=1.0, msg=pool)
+        self.delayDisplay("Pool floor test passed")
 
     def test_FitSurface(self):
         """The fits keep what the traced rays show and bridge a gap of untraced rays without a step: the

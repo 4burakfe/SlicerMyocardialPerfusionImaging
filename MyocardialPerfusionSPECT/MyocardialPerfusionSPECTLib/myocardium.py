@@ -262,8 +262,8 @@ def _fitOnGridSurface(grid, profiles):
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
     half = max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
-    fwhm = _fwhm(profiles, grid.t, mid, peak, 1.6 * half)
-    physical = np.sqrt(np.maximum(fwhm ** 2 - float(p["resolution"]) ** 2, 0.0))
+    width = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)[0]     # each side against its own floor
+    physical = np.sqrt(np.maximum(width ** 2 - float(p["resolution"]) ** 2, 0.0))
     clear = np.where(_clearWalls(weight, peak), weight, 0.0)
     thickness = fitSurface(grid, physical, clear, p["fit"], p["fitPull"], mid)
     thickness = _holdBeyondBase(np.clip(thickness, p["minThickness"], p["maxThickness"]), beyond)
@@ -459,11 +459,11 @@ def fitGate(sample, reference, params=None):
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
     half = max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
-    fwhm, base, area = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
+    width, fwhm, height, area = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
     result = {"grid": grid, "mid": mid, "peak": peak, "baseZ": plane[0], "detectedBaseZ": plane[0],
               "valvePlane": plane, "basePoints": basePoints, "rowCounts": np.median(peak[:grid.nCyl], axis=1),
-              "gateWeight": weight, "profileFwhm": fwhm,
-              "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
+              "gateWeight": weight, "profileFwhm": width,
+              "resolutionEstimate": estimateResolution(fwhm, height, area, weight),
               "segmentation": g["segmentation"], "fit": g["fit"], "fitPull": float(g["fitPull"])}
     return _withThickness(result, p["resolution"])
 
@@ -1832,16 +1832,25 @@ def _interp(profiles, t, position):
 
 
 def _profileWidth(profiles, t, position, peak, reach):
-    """(FWHM above the local background, background, area above it) of the wall profile of every ray:
-    the background is the lowest count within reach of the mid-wall, the area is summed within
-    1.5 FWHM of it."""
-    window = np.abs(t[None, None, :] - position[..., None]) <= reach
-    base = np.where(window, profiles, np.inf).min(axis=2)
-    base = np.where(np.isfinite(base), np.minimum(base, peak), 0.0)
-    fwhm = _fwhm(profiles, t, position, peak, reach, base)
-    inside = np.abs(t[None, None, :] - position[..., None]) <= 1.5 * fwhm[..., None]
-    area = (np.clip(profiles - base[..., None], 0.0, None) * inside).sum(axis=2) * float(t[1] - t[0])
-    return fwhm, base, area
+    """Width of the wall profile of every ray with each side measured against its own floor: the lowest
+    count within reach on the cavity side (the blood pool) and on the outer side. Each edge is where the
+    profile is half way between the peak and that side's floor, where a blurred step between the wall
+    and the level beyond it sits; one floor for both sides (the outer, lower one) would put the inner edge
+    out in the blood pool, the more so the dimmer the wall against it, and thicken a dim end-diastolic wall
+    more than the brighter end-systolic one. Returns (width, and for estimateResolution the outer half
+    mirrored as a whole profile: its FWHM, height and area above the outer floor, within 1.5 FWHM)."""
+    d = t[None, None, :] - position[..., None]
+    window = np.abs(d) <= reach
+
+    def floor(side):
+        level = np.where(window & side, profiles, np.inf).min(axis=2)
+        return np.where(np.isfinite(level), np.minimum(level, peak), 0.0)
+    inner, outer = floor(d < 0), floor(d > 0)
+    toInner, toOuter = _halfWidths(profiles, t, position, peak, reach, inner, outer)
+    mirrored = 2.0 * toOuter
+    outside = (d >= 0) & (d <= 1.5 * mirrored[..., None])
+    area = 2.0 * (np.clip(profiles - outer[..., None], 0.0, None) * outside).sum(axis=2) * float(t[1] - t[0])
+    return toInner + toOuter, mirrored, peak - outer, area
 
 
 _RECT_GAUSS = {}
@@ -1900,11 +1909,18 @@ def estimateResolution(fwhm, height, area, weight, rays=800):
 def _fwhm(profiles, t, position, peak, reach, base=None):
     """Full width at half maximum around the peak (half way between base and peak when given),
     searched up to reach mm on each side."""
+    base = np.zeros_like(peak) if base is None else base
+    return sum(_halfWidths(profiles, t, position, peak, reach, base, base))
+
+
+def _halfWidths(profiles, t, position, peak, reach, innerBase, outerBase):
+    """Distances from the mid-wall to where the profile falls half way from the peak to innerBase (toward
+    the axis) and to outerBase (away from it), searched up to reach mm on each side."""
     step = 0.5 * (t[1] - t[0])
-    halfValue = 0.5 * peak if base is None else base + 0.5 * (peak - base)
     offsets = np.arange(step, reach + 1e-6, step)
-    widths = np.zeros_like(position)
-    for sign in (-1.0, 1.0):
+    widths = []
+    for sign, base in ((-1.0, innerBase), (1.0, outerBase)):
+        halfValue = base + 0.5 * (peak - base)
         previousValue, previousOffset = peak.copy(), 0.0
         found = np.full(position.shape, reach)
         done = np.zeros(position.shape, dtype=bool)
@@ -1917,8 +1933,8 @@ def _fwhm(profiles, t, position, peak, reach, base=None):
                 found[crossing] = (previousOffset + fraction * (offset - previousOffset))[crossing]
                 done |= crossing
             previousValue, previousOffset = value, offset
-        widths += found
-    return widths
+        widths.append(found)
+    return widths[0], widths[1]
 
 
 POLE_SPACING_MM = 3.0   # smoothing width around the axis is set by the spacing of the rays at the equator
