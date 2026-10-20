@@ -135,6 +135,16 @@ STEP_PARAMETERS = {
         P("thicknessSmoothing", "Thickness map smoothing", 3.0, f"{MYO}:DEFAULTS.thicknessSmoothing", 0.0, 8.0, 0.25,
           2, " samples", "Fit: Ellipsoid only. Gaussian sigma of the wall thickness map (the surface fits fit the "
                          "thickness as the wall, with the Gated QC fit parameters)", "Wall fit"),
+        P("thicknessModel", "Wall borders", "width", f"{MYO}:DEFAULTS.thicknessModel",
+          tooltip="Surface fits and Gated QC: the endo- and epicardium where the count profile falls half way to the "
+                  "static image's blood pool and to the counts outside (no resolution model), or the profile width "
+                  "read as a slab blurred at the system resolution, leaning to the thickness prior",
+          group="Wall fit", choices=(("Half way to blood pool / outside", "width"),
+                                     ("Blurred slab with a prior", "slab"))),
+        P("cavityGap", "Blood pool gap from the endocardium", 5.0, f"{MYO}:CAVITY_GAP_MM", 0.0, 20.0, 0.5, 1, " mm",
+          "The blood pool level (the inner wall edge's floor, taken from the static image for every frame) is "
+          "sampled this far inside the endocardium; a cavity too small for it is sampled up to the endocardium",
+          "Wall fit"),
         P("thicknessPrior", "Wall thickness prior", 10.0, f"{MYO}:THICKNESS_PRIOR_MM", 4.0, 20.0, 0.5, 1, " mm",
           "Surface fits and Gated QC: the thickness a wall leans to where the blur hides its own (a wall thinner "
           "than the resolution keeps about the same profile width)", "Wall fit"),

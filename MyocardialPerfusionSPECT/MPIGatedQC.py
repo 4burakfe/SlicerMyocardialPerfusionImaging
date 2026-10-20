@@ -819,6 +819,20 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return "".join(parts)
 
 
+class _defaults:
+    """Myocardium DEFAULTS changed inside a with block (a static fit's grid keeps them for its frames)."""
+
+    def __init__(self, **values):
+        self.values = values
+
+    def __enter__(self):
+        self.saved = {key: wallLib.DEFAULTS[key] for key in self.values}
+        wallLib.DEFAULTS.update(self.values)
+
+    def __exit__(self, *exc):
+        wallLib.DEFAULTS.update(self.saved)
+
+
 class MPIGatedQCTest(ScriptedLoadableModuleTest):
     def setUp(self):
         slicer.mrmlScene.Clear()
@@ -831,6 +845,7 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.test_FitSurface()
         self.test_PoolFloor()
         self.test_SlabThickness()
+        self.test_EndSystolicWall()
         self.test_MaskedSampler()
 
     def test_GatingText(self):
@@ -969,6 +984,47 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         for pool, width in widths.items():
             self.assertAlmostEqual(width, widths[0.0], delta=1.0, msg=pool)
         self.delayDisplay("Pool floor test passed")
+
+    def test_EndSystolicWall(self):
+        """A gated LV blurred at 12 mm (blood pool at 10 % of the wall, the same counts in every frame): the
+        end-systolic wall (15 mm around a 11 mm cavity) reads thicker than the end-diastolic one (10 mm around
+        25 mm). Measured against its own floor, the small cavity's blood pool, filled by the walls' blur, put
+        the inner edge close to the peak and the end-systolic wall read narrower; with the static image's blood
+        pool its edges are half way to that pool and to the counts outside."""
+        n, spacing = 64, 2.0
+        center = np.array([n * spacing / 2.0] * 3)
+        u, w = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])
+        ii = np.arange(n) * spacing
+        p = np.stack(np.meshgrid(ii, ii, ii, indexing="ij"), -1)[..., ::-1] - center   # array [k, j, i]
+        z, rho = p[..., 2], np.hypot(p[..., 0], p[..., 1])
+        frequency = np.fft.fftfreq(n, spacing)
+        f2 = frequency[:, None, None] ** 2 + frequency[None, :, None] ** 2 + frequency[None, None, :] ** 2
+        blur = np.exp(-2.0 * (math.pi * 12.0 / 2.3548) ** 2 * f2)
+
+        def ventricle(radius, length, thickness):
+            def inside(a, c):
+                return (np.where(z > 0, (rho / a) ** 2 + (z / c) ** 2, (rho / a) ** 2) <= 1.0) & (z >= -25.0)
+            epi, endo = inside(radius + thickness, length + thickness), inside(radius, length)
+            image = np.where(epi & ~endo, 1.0, 0.0) + np.where(endo, 0.1, 0.0)
+            image = np.real(np.fft.ifftn(np.fft.fftn(image) * blur))
+            return (image / image.sum() * 1e6).astype(np.float32)
+
+        def sampleOf(array):
+            return lambda pts: sampleTrilinear(array, np.asarray(pts) / spacing)
+        ed, es = ventricle(25.0, 38.0, 10.0), ventricle(11.0, 24.0, 15.0)
+        for model in ("width", "slab"):
+            with _defaults(thicknessModel=model):
+                static = wallLib.fitWall(sampleOf(0.5 * (ed + es)), center, u, w, 55.0)
+            self.assertEqual(static["grid"].params["thicknessModel"], model)
+            rows = slice(static["grid"].nCyl // 3, static["grid"].nCyl)
+            walls = [wallLib.fitGate(sampleOf(frame), static) for frame in (ed, es)]
+            thickness = [float(np.median(wall["thickness"][rows])) for wall in walls]
+            # half way to the pool the blur keeps the walls close (13 and 14 mm), the slab reads 8.4 and 15.8 mm;
+            # before, the width model read 14.1 and 11.8 mm and the slab 10.0 and 10.7 mm
+            self.assertGreater(thickness[1], thickness[0] + (0.8 if model == "width" else 4.0), (model, thickness))
+            endo = [float(np.median(wall["endo"][rows])) for wall in walls]
+            self.assertLess(endo[1], endo[0] - 8.0, (model, endo))
+        self.delayDisplay("End-systolic wall test passed")
 
     def test_SlabThickness(self):
         """A wall's thickness from its profile width, measured as the walls are (_profileWidth, within reach of

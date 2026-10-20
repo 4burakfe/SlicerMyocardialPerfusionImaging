@@ -23,16 +23,18 @@ labelling:
    defect does not end its column early relative to the others). A plane is fitted through these
    end points (robust least squares, tilt limited), so the valve plane may be oblique to the long
    axis. It can be moved along the axis and tilted afterwards (valve offset and tilt).
-4. Endo- and epicardium. Mid-wall -/+ half the wall thickness, the thickness taken from the width
-   of the count profile (each side against its own floor), limited to a plausible range. With the
-   surface fits the width is that of a slab of uniform uptake blurred at the system resolution, leaning
-   to a prior thickness where the blur hides it (slabThickness); the ellipsoid fit removes the
-   resolution from the width in quadrature.
+4. Endo- and epicardium. With the surface fits (thicknessModel "width") where the count profile falls
+   half way from the wall peak to the blood pool (_poolLevel: the cavity sampled CAVITY_GAP_MM inside
+   the endocardium) and to the lowest counts outside, each half width fitted over the wall, with no
+   model of the system resolution; with "slab" the mid-wall -/+ half a thickness read from the width as
+   a slab of uniform uptake blurred at the system resolution, leaning to a prior thickness where the
+   blur hides it (slabThickness). The ellipsoid fit removes the resolution from the width in quadrature.
 
 Gate frames (fitGate): every frame's wall is tracked from the static wall or detected from scratch on
 the same rays, and a surface fit (fitSurface: a B-spline, a deformable mesh or the legacy jump-limited
-path) runs through the rays whose wall the frame shows and draws the others. Every frame's thickness
-comes from its own profiles (slabThickness at the static study's resolution), fitted the same way.
+path) runs through the rays whose wall the frame shows and draws the others. Every frame's borders
+come from its own profiles, fitted the same way, the cavity side against the static image's blood pool
+(_gatePool: a frame's own cavity is filled by the walls' blur at end-systole).
 
 Coordinates: center c, u base -> apex, w anterior, s = u x w septum (as in MPIProcessing). The angle
 around the axis is measured from w toward s.
@@ -59,6 +61,9 @@ DEFAULTS = {
     "maxValveTilt": 40.0,      # deg, largest tilt of the valve plane against the short-axis plane
     "maxBaseNarrowing": 35.0,  # deg, steepest the wall may turn toward the axis on its way to the base
     "resolution": 12.0,        # system resolution (FWHM, mm) removed from the profile width
+    "thicknessModel": "width", # surface fits and gate frames (THICKNESS_MODELS): "width" puts the endo- and epicardium
+                               # where the profile falls half way to the blood pool / the counts outside, "slab"
+                               # reads the width as a slab blurred at the resolution, leaning to a prior thickness
     "minThickness": 6.0,       # mm
     "maxThickness": 18.0,      # mm
     "valveOffset": 0.0,        # mm, + moves the valve plane toward the apex
@@ -260,16 +265,18 @@ def _fitOnGridSurface(grid, profiles):
     beyond = _beyondBase(grid, mid, plane)
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
-    half = max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
-    width = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)        # each side against its own floor
-    physical = slabThickness(width, p["resolution"], 1.6 * half)
-    clear = np.where(_clearWalls(weight, peak), weight, 0.0)
-    thickness = fitSurface(grid, physical, clear, p["fit"], p["fitPull"], mid)
-    thickness = _holdBeyondBase(np.clip(thickness, p["minThickness"], p["maxThickness"]), beyond)
-    endo, epi = _wallSurfaces(grid, mid, thickness, p)
+    reach = 1.6 * max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
+    inner, outer = _wallHalfWidths(profiles, grid.t, mid, peak, reach)       # each side against its own floor
+    pool = _poolLevel(profiles, grid.t, mid - inner)
+    inner, outer = _wallHalfWidths(profiles, grid.t, mid, peak, reach, pool)  # the cavity side against the pool
+    result = {"grid": grid, "mid": mid, "peak": peak, "gateWeight": weight, "valvePlane": plane,
+              "profileInner": inner, "profileOuter": outer, "profileReach": reach,
+              "fit": p["fit"], "fitPull": p["fitPull"]}
+    thickness, endo, epi = _wallFromWidths(result, p["resolution"])
     return {"grid": grid, "mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
             "baseZ": plane[0], "detectedBaseZ": plane[0], "valvePlane": plane, "basePoints": basePoints,
-            "rowCounts": np.median(peak[:grid.nCyl], axis=1), "cavityLevel": _cavityLevel(profiles, grid.t, mid)}
+            "rowCounts": np.median(peak[:grid.nCyl], axis=1), "cavityLevel": _cavityLevel(profiles, grid.t, mid),
+            "poolLevel": pool, "profileSum": _profileCounts(grid, profiles)}
 
 
 def _cavityLevel(profiles, t, peakT):
@@ -277,6 +284,49 @@ def _cavityLevel(profiles, t, peakT):
     between the axis and its peak."""
     inside = t[None, None, :] <= peakT[..., None]
     return float(np.median(np.min(np.where(inside, profiles, np.inf), axis=2)))
+
+
+def _poolLevel(profiles, t, endo, gap=None):
+    """Counts of the blood pool in the LV cavity for the inner edge of the wall: the median, over the rays,
+    of each ray's median counts from the axis up to gap mm (CAVITY_GAP_MM) short of the endocardium, so the
+    wall's blurred edge does not raise it. Where the cavity is too small for the gap (fewer than
+    POOL_MIN_RAYS of the rays with 3 mm of cavity in front of it) it is taken up to the endocardium, and
+    failing that it is the lowest counts inside (_cavityLevel)."""
+    gap = CAVITY_GAP_MM if gap is None else float(gap)
+    endo = np.asarray(endo, dtype=float)
+    for g in (gap, 0.0):
+        inside = t[None, None, :] <= (endo - g)[..., None]
+        rays = inside.sum(axis=2) >= 1 + int(round(3.0 / max(float(t[1] - t[0]), 1e-6)))
+        if rays.mean() >= POOL_MIN_RAYS:
+            values = np.where(inside, profiles, np.nan)[rays]
+            return float(np.median(np.nanmedian(values, axis=1)))
+    return _cavityLevel(profiles, t, endo)
+
+
+def _profileCounts(grid, profiles):
+    """Counts on a grid's rays weighted by the volume each sample stands for (rays fan out from the axis
+    and from the LV center), so a frame whose counts sit closer to the center does not count more."""
+    t = grid.t
+    cyl = (profiles[:grid.nCyl] * t).sum() * grid.dz
+    cap = (profiles[grid.nCyl:] * t ** 2).sum() * grid.dphi
+    return float(cyl + cap)
+
+
+def _gatePool(reference, profiles, peakValue=None):
+    """The static image's blood pool (_poolLevel, "poolLevel") in a frame's counts: the blood pool of a frame
+    changes with its cavity (at end-systole the walls' blur fills a small cavity), so the frames take the
+    static one, scaled by the frame's share of the static counts on the same rays (or of its wall counts).
+    None for a static fit without it (older scenes): the frame then measures its own."""
+    if "poolLevel" not in reference:
+        return None
+    if reference.get("profileSum", 0.0) > 0:
+        scale = _profileCounts(reference["grid"], profiles) / float(reference["profileSum"])
+    else:
+        seen = _staticReliability(reference) > 0.99
+        refPeak = np.asarray(reference["peak"], dtype=float)
+        peakValue = _interp(profiles, reference["grid"].t, reference["mid"]) if peakValue is None else peakValue
+        scale = float(np.median(peakValue[seen])) / max(float(np.median(refPeak[seen])), 1e-9) if np.any(seen) else 1.0
+    return float(reference["poolLevel"]) * scale
 
 
 def _wallVisibility(peakValue, cavity, seen=None):
@@ -366,6 +416,10 @@ MESH_LENGTH_MM = 4.0       # mesh fit: tension length, wall features shorter tha
 LEGACY_MAX_SLOPE = 0.6     # legacy fit: largest change between neighbouring rays, mm per mm of wall
 THICKNESS_PRIOR_MM = 10.0    # slabThickness: wall thickness a profile leans to where the blur hides its own ...
 THICKNESS_PRIOR_SIGMA = 3.0  # ... with this spread (mm)
+THICKNESS_MODELS = (("Half way to the blood pool and to the counts outside", "width"),
+                    ("Blurred slab at the system resolution, with a thickness prior", "slab"))
+CAVITY_GAP_MM = 5.0          # _poolLevel: the blood pool is sampled this far inside the endocardium ...
+POOL_MIN_RAYS = 0.5          # ... where at least this share of the rays has 3 mm of cavity there (else without the gap)
 WIDTH_SIGMA_MM = 0.75        # slabThickness: uncertainty of a measured profile width (mm)
 FIT_OUTLIER = 3.0          # rays further than this many robust misfits from the first fit lose their weight
 
@@ -454,11 +508,13 @@ def fitGate(sample, reference, params=None):
     beyond = _beyondBase(grid, mid, plane)
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
-    half = max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
-    width = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
+    reach = 1.6 * max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
+    pool = _gatePool(reference, profiles, peak)
+    inner, outer = _wallHalfWidths(profiles, grid.t, mid, peak, reach, pool)
     result = {"grid": grid, "mid": mid, "peak": peak, "baseZ": plane[0], "detectedBaseZ": plane[0],
               "valvePlane": plane, "basePoints": basePoints, "rowCounts": np.median(peak[:grid.nCyl], axis=1),
-              "gateWeight": weight, "profileFwhm": width, "profileReach": 1.6 * half,
+              "gateWeight": weight, "profileFwhm": inner + outer, "profileInner": inner, "profileOuter": outer,
+              "profileReach": reach, "poolLevel": pool,
               "segmentation": g["segmentation"], "fit": g["fit"], "fitPull": float(g["fitPull"])}
     return _withThickness(result, p["resolution"])
 
@@ -552,24 +608,49 @@ def _fittedWall(grid, profiles, fit, pull, shapePrior=False):
 
 
 def gateThickness(result, resolution):
-    """Wall thickness of a gate frame from its own count profiles (fitGate "profileFwhm"), for a system
-    resolution (FWHM mm): the slab width of every profile (slabThickness), fitted over the wall with the
-    frame's surface fit (fitSurface) on the walls clear of a defect (a profile cut short by a defect's edge
-    reads thin), which draws the others, limited like the static fit."""
+    """Wall thickness of a gate frame from its own count profiles (fitGate), for a system resolution (FWHM
+    mm), as _wallFromWidths."""
+    return _wallFromWidths(result, resolution)[0]
+
+
+def _wallFromWidths(result, resolution):
+    """(thickness, endo, epi) of a wall from its profiles' half widths (_wallHalfWidths: "profileInner",
+    "profileOuter"), fitted over the wall with the wall's surface fit (fitSurface) on the walls clear of a
+    defect (a profile cut short by a defect's edge reads thin), which draws the others, limited like the
+    static fit. thicknessModel "width": each half width is fitted on its own and the endo- and epicardium
+    are where the profile falls half way to the blood pool and to the counts outside. "slab": the width is
+    read as a blurred slab with a prior (slabThickness, at resolution) and the surfaces are the mid-wall
+    -/+ half of it."""
     grid, p = result["grid"], result["grid"].params
     weight = np.where(_clearWalls(result["gateWeight"], result["peak"]), result["gateWeight"], 0.0)
-    widths = slabThickness(result["profileFwhm"], resolution, result["profileReach"])
-    widths = fitSurface(grid, widths, weight, result.get("fit", GATE_DEFAULTS["fit"]),
-                        result.get("fitPull", GATE_DEFAULTS["fitPull"]), result["mid"])
-    widths = np.clip(widths, p["minThickness"], p["maxThickness"])
-    return _holdBeyondBase(widths, _beyondBase(grid, result["mid"], result["valvePlane"]))
+    fit = result.get("fit", GATE_DEFAULTS["fit"])
+    pull = result.get("fitPull", GATE_DEFAULTS["fitPull"])
+    mid = result["mid"]
+    beyond = _beyondBase(grid, mid, result["valvePlane"])
+    inner = result.get("profileInner")
+    outer = result.get("profileOuter")
+    if inner is None:   # older results: the whole width, split evenly
+        inner = outer = 0.5 * result["profileFwhm"]
+    if p.get("thicknessModel", "width") == "slab":
+        widths = slabThickness(inner + outer, resolution, result["profileReach"])
+        widths = fitSurface(grid, widths, weight, fit, pull, mid)
+        thickness = _holdBeyondBase(np.clip(widths, p["minThickness"], p["maxThickness"]), beyond)
+        endo, epi = _wallSurfaces(grid, mid, thickness, p)
+        return thickness, endo, epi
+    inner = np.maximum(fitSurface(grid, inner, weight, fit, pull, mid), 0.5)
+    outer = np.maximum(fitSurface(grid, outer, weight, fit, pull, mid), 0.5)
+    thickness = inner + outer
+    scale = np.clip(thickness, p["minThickness"], p["maxThickness"]) / thickness
+    inner = _holdBeyondBase(inner * scale, beyond)
+    outer = _holdBeyondBase(outer * scale, beyond)
+    endo = _limitBasalNarrowing(grid, np.maximum(mid - inner, 1.0), p["maxBaseNarrowing"])
+    epi = _limitBasalNarrowing(grid, mid + outer, p["maxBaseNarrowing"])
+    return inner + outer, endo, epi
 
 
 def _withThickness(result, resolution):
     """The result with the frame's own wall thickness at a resolution and its endo- and epicardium."""
-    grid = result["grid"]
-    thickness = gateThickness(result, resolution)
-    endo, epi = _wallSurfaces(grid, result["mid"], thickness, grid.params)
+    thickness, endo, epi = _wallFromWidths(result, resolution)
     return dict(result, thickness=thickness, endo=endo, epi=epi, resolutionMm=float(resolution))
 
 
@@ -1795,6 +1876,26 @@ def _profileWidth(profiles, t, position, peak, reach):
     return toInner + toOuter
 
 
+def _wallHalfWidths(profiles, t, position, peak, reach, pool=None):
+    """(toward the cavity, away from it): distances from the mid-wall to where the profile falls half way
+    from the peak to each side's floor (_profileWidth, within reach). With pool (the blood pool's counts,
+    _poolLevel) the cavity side is measured against it instead, searched up to the axis; a ray whose
+    profile does not fall that far (a cavity filled by the walls' blur) keeps its own floor."""
+    d = t[None, None, :] - position[..., None]
+    window = np.abs(d) <= reach
+
+    def floor(side):
+        level = np.where(window & side, profiles, np.inf).min(axis=2)
+        return np.where(np.isfinite(level), np.minimum(level, peak), 0.0)
+    toInner, toOuter = _halfWidths(profiles, t, position, peak, reach, floor(d < 0), floor(d > 0))
+    if pool is not None:
+        far = float(t[-1])
+        toPool, _ = _halfWidths(profiles, t, position, peak, far, np.minimum(pool, peak), peak, sides=(-1.0,))
+        found = (toPool < far - 1e-6) & (toPool <= position)
+        toInner = np.where(found, toPool, toInner)
+    return toInner, toOuter
+
+
 _SLAB_WIDTHS = {}
 SLAB_T = np.arange(0.0, 40.01, 0.5)   # slab widths of the slabThickness table (mm)
 
@@ -1844,13 +1945,16 @@ def _fwhm(profiles, t, position, peak, reach, base=None):
     return sum(_halfWidths(profiles, t, position, peak, reach, base, base))
 
 
-def _halfWidths(profiles, t, position, peak, reach, innerBase, outerBase):
+def _halfWidths(profiles, t, position, peak, reach, innerBase, outerBase, sides=(-1.0, 1.0)):
     """Distances from the mid-wall to where the profile falls half way from the peak to innerBase (toward
     the axis) and to outerBase (away from it), searched up to reach mm on each side."""
     step = 0.5 * (t[1] - t[0])
     offsets = np.arange(step, reach + 1e-6, step)
     widths = []
     for sign, base in ((-1.0, innerBase), (1.0, outerBase)):
+        if sign not in sides:
+            widths.append(None)
+            continue
         halfValue = base + 0.5 * (peak - base)
         previousValue, previousOffset = peak.copy(), 0.0
         found = np.full(position.shape, reach)
