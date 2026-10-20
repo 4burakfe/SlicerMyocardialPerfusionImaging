@@ -362,7 +362,7 @@ GATE_FITS = (("B-spline surface, bending penalty", "bspline"),
              ("Legacy: limited jump between neighbouring rays", "legacy"))
 WALL_FITS = GATE_FITS + (("Ellipsoid shape model, Gaussian smoothing (previous)", "ellipsoid"),)
 SPLINE_KNOT_MM = 8.0       # B-spline fit: knot spacing over the wall (mm)
-SPLINE_LENGTH_MM = 8.0     # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
+SPLINE_LENGTH_MM = 15.0    # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
 MESH_LENGTH_MM = 4.0       # mesh fit: tension length, wall features shorter than this are smoothed out (mm)
 LEGACY_MAX_SLOPE = 0.6     # legacy fit: largest change between neighbouring rays, mm per mm of wall
 FIT_OUTLIER = 3.0          # rays further than this many robust misfits from the first fit lose their weight

@@ -300,7 +300,7 @@ For the gated study of Study 1 or Study 2:
   window or far from their neighbours do not count either. *Fit* sets the surface that runs through the
   traced rays and draws the others (a defect):
   - **B-spline** (default): a cubic spline surface with a thin-plate bending penalty over the wall, so a
-    defect continues the curve of the walls around it. Knot spacing and bending length (8 mm each: wall
+    defect continues the curve of the walls around it. Knot spacing (8 mm) and bending length (15 mm: wall
     features shorter than that are smoothed out) are in Advanced parameters.
   - **Deformable mesh**: every ray tied to its neighbours around and along the axis (a membrane, tension
     length 4 mm), so a defect is bridged straighter.
