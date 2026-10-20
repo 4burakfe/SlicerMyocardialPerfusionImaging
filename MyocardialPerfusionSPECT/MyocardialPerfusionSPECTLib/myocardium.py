@@ -27,9 +27,10 @@ labelling:
    (FWHM) of the count profile with the system resolution removed in quadrature, and limited to a
    plausible range.
 
-Gate frames (fitGate, ownProfileGates): the mid-wall is refitted per frame and every frame's thickness
-comes from its own profiles (with a constant-volume model, constantVolumeGates, only the reference
-frame's), modelled as a slab of uniform
+Gate frames (fitGate, frameThicknessGates): every frame's wall is tracked from the static wall or detected
+from scratch on the same rays, and a surface fit (fitSurface: a B-spline, a deformable mesh or the legacy
+jump-limited path) runs through the rays whose wall the frame shows and draws the others. Every frame's
+thickness comes from its own profiles, fitted the same way, modelled as a slab of uniform
 uptake blurred by a Gaussian (rectGaussThickness), the blur estimated from the frames themselves
 (estimateResolution: FWHM and peak / area of a profile fix slab width and blur together), so the
 gated reconstruction filter is taken into account.
@@ -317,27 +318,23 @@ def _wallSurface(grid, profiles, peakT, weight, reference, p, sigma, tolerance, 
 # Gated frames
 # ---------------------------------------------------------------------------
 GATE_DEFAULTS = {
-    "maxWallShift": 25.0,      # mm, the mid-wall of a gate is searched this far from the static mid-wall
-    "maxValveShift": 25.0,     # mm, the valve plane of a gate stays this close to the static one (base descent ~1 cm)
-    "gateSmoothing": 2.0,      # Gaussian sigma of the gate surface smoothing (grid samples); the gates are noisier
-                               # than the static image, so smoothed more than its 1.25
-    "thicknessModel": "frame",   # "frame": every frame's thickness from its own profiles (no volume kept),
-                                 # "es": every frame keeps the myocardial volume of ES (thickness from
-                                 #       its own profiles),
-                                 # "volume": the same with ED as the reference (QGS-like),
-                                 # "ray": each ray keeps its wall volume of the static fit,
-                                 # "mid": only the mid-wall moves, every ray keeps its ED thickness
-    "maxThicknessChange": 0.5,   # "volume": a ray's thickness stays within ED / (1 + x) .. ED x (1 + x)
-    "segmentation": "static",    # "static": every frame's wall searched near the static wall (fitGate),
-                                 # "own": every frame detected from scratch as Myocardium does (_fitGateOwn)
+    "maxWallShift": 25.0,      # mm, "static": the mid-wall of a frame is searched this far from the static mid-wall
+    "maxValveShift": 25.0,     # mm, "static": the valve plane of a frame stays this close to the static one
+    "segmentation": "static",  # "static": every frame's wall tracked from the static wall (its displacement is fitted),
+                               # "own": every frame detected from scratch on the static rays (its wall is fitted)
+    "fit": "bspline",          # surface fit of the traced rays that also draws the untraced ones (GATE_FITS)
+    "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
 }
-GATE_SEGMENTATIONS = (("From the static wall", "static"),
-                      ("Each frame from scratch, like Myocardium", "own"))
-THICKNESS_MODELS = (("Each frame from its own profiles", "frame"),
-                    ("Constant myocardial volume (ES reference)", "es"),
-                    ("Constant myocardial volume (ED reference)", "volume"),
-                    ("Per ray, from the static wall", "ray"),
-                    ("Mid-wall only (ED wall thickness)", "mid"))
+GATE_SEGMENTATIONS = (("Track the static wall", "static"),
+                      ("Each frame from scratch", "own"))
+GATE_FITS = (("B-spline surface, bending penalty", "bspline"),
+             ("Deformable mesh, every ray tied to its neighbours", "mesh"),
+             ("Legacy: limited jump between neighbouring rays", "legacy"))
+SPLINE_KNOT_MM = 8.0       # B-spline fit: knot spacing over the wall (mm)
+SPLINE_LENGTH_MM = 8.0     # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
+MESH_LENGTH_MM = 4.0       # mesh fit: tension length, wall features shorter than this are smoothed out (mm)
+LEGACY_MAX_SLOPE = 0.6     # legacy fit: largest change between neighbouring rays, mm per mm of wall
+FIT_OUTLIER = 3.0          # rays further than this many robust misfits from the first fit lose their weight
 
 
 SHAPE_PRIOR_WEIGHT = 0.03  # weight of the shape model against the rays' own peaks (weights 0..1) in the wall fit
@@ -353,9 +350,6 @@ VISIBILITY_REFERENCE = 50.0  # percentile of the walls' counts above the cavity 
 SHAPE_DIM = 0.45          # walls dimmer than this share of the bright walls (counts) count as defect for the model ...
 SHAPE_BORDER_SIGMA = 2.0  # ... and the walls within about this many grid samples of them are left out of its fit
 SHAPE_FADE = 0.1           # how fast that misfit fades inside a defect (share of the typical local weight)
-MIN_DEFECT_SHIFT = 0.3      # share of maxWallShift searched on rays through a defect
-DEFECT_MOTION_SIGMA = 3.0   # x gateSmoothing: width of the motion field that rays through a defect follow
-DEFECT_PRIOR_WEIGHT = 0.03  # weight of that motion field against the rays' own peaks (weights 0..1)
 TRACE_RATIO_LOW = 1.25      # wall / blood pool counts (static image) up to which a ray's wall is untraceable (scar) ...
 TRACE_RATIO_HIGH = 1.75     # ... and from which it is traced as wall; in between it is partly trusted
 TRACE_POOL_FLOOR = 0.05     # share of the bright walls' counts below which the blood pool is not taken lower
@@ -394,8 +388,8 @@ def _traceability(peakValue, cavity):
 
 def _staticReliability(reference):
     """0..1 per ray: whether the wall can be traced in the static image (_traceability, the static image has
-    all the counts), 0 where it cannot (scar: held where the static wall is, akinetic), 1 where it can (the
-    frames' own wall is used). A static fit without the cavity level (older scenes) measures the peaks
+    all the counts), 0 where it cannot (scar), 1 where it can. Tracking the static wall, a frame's peaks
+    count in its fit only as far as this allows. A static fit without the cavity level (older scenes) measures the peaks
     against the bright walls."""
     peak = np.nan_to_num(np.asarray(reference["peak"], dtype=float))
     if "cavityLevel" in reference:
@@ -407,135 +401,147 @@ def _staticReliability(reference):
 
 
 def fitGate(sample, reference, params=None):
-    """LV wall of one gate of a gated study, with the static fit (reference, from fitWall) as prior.
+    """LV wall of one gate of a gated study, on the rays of the static fit (reference, from fitWall).
 
-    The rays are those of the static fit. Along every ray the mid-wall is the count peak within
-    maxWallShift of the static mid-wall (smoothed with count weights, so rays through a defect follow
-    their neighbours). The valve plane is fitted again as in fitWall, keeps the static tilt and moves
-    at most maxValveShift along the axis. Endo- and epicardium keep the myocardial volume of the static
-    fit locally (QGS-like): the wall thickness of a ray scales with (static mid / gate mid), squared on
-    the apical cap, less so through a defect (scar does not thicken). Returns a result dict like fitWall, so classify / labelGrid / wallStatistics apply."""
+    The count peak of every ray is taken where its wall can be traced (_gateWeights: above the frame's blood
+    pool, not at the edge of its search window, close to its neighbours), and the surface fit (fitSurface,
+    GATE_FITS) runs through those peaks and draws the rays that cannot be traced: nothing holds a defect
+    where the static wall is. With segmentation "static" the peaks are searched within maxWallShift of
+    the static mid-wall and the fit is of their displacement from it, the valve plane stays within
+    maxValveShift of the static one; with "own" every frame is detected from scratch as fitWall detects the
+    static image and the fit is of the wall itself. The wall thickness is the frame's own, from its count
+    profile widths (gateThickness, here at the static resolution; frameThicknessGates sets every frame at
+    the resolution estimated from all of them). Returns a result dict like fitWall, so classify /
+    labelGrid / wallStatistics apply."""
     grid = reference["grid"]
     p = grid.params
     g = dict(GATE_DEFAULTS, **(params or {}))
-    if g["segmentation"] == "own":
-        return _fitGateOwn(sample, reference)
     profiles = _rayProfiles(sample, grid)
     if profiles.max() <= 0:
         raise ValueError("No counts around the LV center in this gate.")
-
-    refMid = reference["mid"]
-    shift = float(g["maxWallShift"])
-    # Rays through a defect (dim in the static image, which has all the counts) are found unreliably in a
-    # gate: their peak is noise, or a neighbouring organ (liver, gut) inside the search window. They are
-    # searched only close to the static wall (infarcted walls move little) and give way to the motion
-    # of the walls around them.
-    reliability = _staticReliability(reference)
-    rayShift = shift * (MIN_DEFECT_SHIFT + (1.0 - MIN_DEFECT_SHIFT) * reliability)
-    lo = np.maximum(refMid - rayShift, 1.0)
-    hi = np.minimum(refMid + rayShift, grid.t[-1])
-    sigma = float(g["gateSmoothing"])
-    peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
-    # a wall the gate shows plainly above its blood pool is trusted as much as the brightest, so a
-    # hypoperfused wall that can be traced keeps its own motion instead of taking its neighbours'
-    weight = _traceability(peakValue, _cavityLevel(profiles, grid.t, peakT)) ** 2 * reliability ** 2
-    # rays far from their neighbours (noise, a neighbouring organ inside the window) do not count
-    reference2 = _circularMedian(peakT, _angleWindow(grid, 9))
-    nearPole = _nearPoleRows(grid, peakT)
-    reference2[nearPole] = np.median(peakT[nearPole], axis=1)[:, None]
-    weight[np.abs(peakT - reference2) > 0.5 * rayShift] = 0.0
-    ringTolerance = max(0.25 * float(np.median(refMid[:grid.nCyl])), 5.0)
-    reference2 = _ringReference(grid, peakT, weight, reference2, ringTolerance)
-    weight[np.abs(peakT - reference2) > np.minimum(0.5 * rayShift, ringTolerance)] = 0.0
-    # Where the gate does not show the wall well, it is taken where the static wall is, moved by the motion
-    # of the reliable walls around it (a broad, count-weighted shift field) only as far as the static
-    # image shows wall there: a deep defect is scar, which does not move (akinetic).
-    motion = _smoothMap(peakT - refMid, np.maximum(weight, 1e-9), DEFECT_MOTION_SIGMA * max(sigma, 1.0))
-    prior = refMid + reliability * np.where(np.isfinite(motion), motion, 0.0)
-    values = np.where(weight > 0, peakT, prior)
-    mid = _smoothSurface(values, np.maximum(weight, 1e-6), sigma)
-    density = _smoothMap(np.maximum(weight, 0.0), np.ones_like(weight), sigma)   # local mean weight
-    mid = (density * mid + DEFECT_PRIOR_WEIGHT * prior) / (density + DEFECT_PRIOR_WEIGHT)
-    mid = _poleSmooth(grid, mid, np.maximum(weight, 1e-6), sigma)
-    # a wall that cannot be traced (scar) stays where the static wall is: the smoothing above would carry
-    # the motion of the walls around it into it
-    mid = reliability * mid + (1.0 - reliability) * prior
-    mid = np.clip(mid, lo, hi)
-    peak = _interp(profiles, grid.t, mid)
-
-    a0, gw, gs = reference["valvePlane"]
-    plane, basePoints = _fitValvePlane(grid, mid, peak, p, _cavityFill(profiles, grid.t, mid, peak))
-    maxValve = float(g["maxValveShift"])
-    a = float(np.clip(plane[0], a0 - maxValve, a0 + maxValve))
-    plane = (a, gw, gs)
+    if g["segmentation"] == "own":
+        mid, weight, plane, basePoints = _ownGateWall(grid, profiles, g)
+    else:
+        mid, weight, plane, basePoints = _trackedGateWall(grid, profiles, reference, g)
     beyond = _beyondBase(grid, mid, plane)
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
-
-    ratio = np.clip(refMid / np.maximum(mid, 1.0), 0.5, 2.0)
-    ratio[grid.nCyl:] = ratio[grid.nCyl:] ** 2
-    # scar does not thicken: rays through a defect keep the static thickness
-    thickness = np.clip(reference["thickness"] * ratio ** (reliability ** 2), p["minThickness"], 1.5 * p["maxThickness"])
-    thickness = _holdBeyondBase(thickness, beyond)
-    endo, epi = _wallSurfaces(grid, mid, thickness, p)
-    # the frame's own wall thickness from its profile widths (the ED frame's is the reference of the
-    # constant-volume model: unlike the static image it is not blurred by the wall motion)
-    half = max(6.0, 0.35 * float(np.median(refMid)))
+    half = max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
     fwhm, base, area = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
-    return {"grid": grid, "mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
-            "baseZ": a, "detectedBaseZ": a, "valvePlane": plane, "basePoints": basePoints,
-            "rowCounts": np.median(peak[:grid.nCyl], axis=1), "gateWeight": weight,
-            "profileFwhm": fwhm, "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
-            "reliability": reliability, "staticThickness": _holdBeyondBase(reference["thickness"], beyond),
-            "thicknessModel": "ray"}
+    result = {"grid": grid, "mid": mid, "peak": peak, "baseZ": plane[0], "detectedBaseZ": plane[0],
+              "valvePlane": plane, "basePoints": basePoints, "rowCounts": np.median(peak[:grid.nCyl], axis=1),
+              "gateWeight": weight, "profileFwhm": fwhm,
+              "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
+              "segmentation": g["segmentation"], "fit": g["fit"], "fitPull": float(g["fitPull"])}
+    return _withThickness(result, p["resolution"])
 
 
-def _fitGateOwn(sample, reference):
-    """fitGate with segmentation "own": the frame's wall detected from scratch as fitWall does on the static
-    image, with no static wall as prior. Only the rays are those of the static fit, so the frames stay
-    comparable ray by ray. Nothing limits how far the wall or the valve plane moves (maxWallShift,
-    maxValveShift do not apply). A wall the static image cannot trace (scar, _staticReliability) is held
-    where the static wall is, as in fitGate: the frame's shape model would bridge it with the contraction
-    of the walls around it."""
-    grid = reference["grid"]
+def _gateWeights(grid, peakT, peakValue, lo, hi, cavity, tolerance):
+    """0..1 per ray: how far its peak in a gate is trusted as its wall. The wall's counts against the
+    frame's blood pool (_traceability, squared), 0 where the maximum lies on the edge of the search window
+    (no peak: the counts only rise toward the walls around a defect) and where the peak is further than
+    tolerance from its neighbours (noise, a neighbouring organ inside the window)."""
+    step = grid.t[1] - grid.t[0]
+    weight = _traceability(peakValue, cavity) ** 2
+    weight[(peakT - lo < step) | (hi - peakT < step)] = 0.0
+    neighbours = _circularMedian(peakT, _angleWindow(grid, 9))
+    nearPole = _nearPoleRows(grid, peakT)
+    neighbours[nearPole] = np.median(peakT[nearPole], axis=1)[:, None]   # rays there nearly coincide
+    weight[np.abs(peakT - neighbours) > tolerance] = 0.0
+    neighbours = _ringReference(grid, peakT, weight, neighbours, tolerance)
+    weight[np.abs(peakT - neighbours) > tolerance] = 0.0
+    return weight
+
+
+def _trackedGateWall(grid, profiles, reference, g):
+    """segmentation "static": (mid, weights, valve plane, base points) of a frame. The peaks are searched
+    within maxWallShift of the static mid-wall and trusted where both the frame and the static image (which
+    has all the counts) trace the wall; the fit is of their displacement from the static mid-wall, so the
+    frame keeps the static wall's shape where it does not show its own. Rays past the static valve plane
+    do not count."""
     p = grid.params
-    profiles = _rayProfiles(sample, grid)
-    if profiles.max() <= 0:
-        raise ValueError("No counts around the LV center in this gate.")
-    result = _fitOnGrid(sample, grid, profiles)
-    reliability = _staticReliability(reference)
-    mid = reliability * result["mid"] + (1.0 - reliability) * reference["mid"]
-    beyond = _beyondBase(grid, mid, result["valvePlane"])
-    mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
+    refMid = reference["mid"]
+    shift = float(g["maxWallShift"])
+    lo = np.maximum(refMid - shift, 1.0)
+    hi = np.minimum(refMid + shift, grid.t[-1])
+    peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
+    tolerance = min(0.5 * shift, max(0.25 * float(np.median(refMid[:grid.nCyl])), 5.0))
+    weight = _gateWeights(grid, peakT, peakValue, lo, hi, _cavityLevel(profiles, grid.t, peakT), tolerance)
+    weight = weight * _staticReliability(reference) ** 2
+    weight[_beyondBase(grid, refMid, reference["valvePlane"])] = 0.0
+    mid = refMid + fitSurface(grid, peakT - refMid, weight, g["fit"], g["fitPull"], refMid)
+    mid = np.clip(mid, lo, hi)
     peak = _interp(profiles, grid.t, mid)
-    staticThickness = _holdBeyondBase(reference["thickness"], beyond)
-    thickness = reliability ** 2 * result["thickness"] + (1.0 - reliability ** 2) * staticThickness
-    endo, epi = _wallSurfaces(grid, mid, thickness, p)
-    weight = _traceability(peak, result["cavityLevel"]) ** 2 * reliability ** 2
-    half = max(6.0, 0.35 * float(np.median(mid)))
-    fwhm, base, area = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
-    result.update({"mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
-                   "rowCounts": np.median(peak[:grid.nCyl], axis=1), "gateWeight": weight, "profileFwhm": fwhm,
-                   "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
-                   "reliability": reliability, "staticThickness": staticThickness, "thicknessModel": "ray"})
-    return result
+    a0, gw, gs = reference["valvePlane"]
+    plane, basePoints = _fitValvePlane(grid, mid, peak, p, _cavityFill(profiles, grid.t, mid, peak))
+    maxValve = float(g["maxValveShift"])
+    return mid, weight, (float(np.clip(plane[0], a0 - maxValve, a0 + maxValve)), gw, gs), basePoints
+
+
+def _ownGateWall(grid, profiles, g):
+    """segmentation "own": (mid, weights, valve plane, base points) of a frame detected from scratch, as
+    _fitOnGrid detects the static image but with the surface fit in place of its shape model: the search
+    window starts from the mean profile and narrows around the fitted wall, the valve plane is fitted on
+    the frame's own wall, the rays past it do not count in the last fit."""
+    p = grid.params
+    mean = profiles.mean(axis=(0, 1))
+    usable = grid.t >= 3.0
+    t0 = max(float(grid.t[usable][np.argmax(mean[usable])]), 8.0)
+    lo = np.full((grid.nRows, grid.nTheta), 0.45 * t0)
+    hi = np.full((grid.nRows, grid.nTheta), min(1.7 * t0, grid.t[-1]))
+    half = max(6.0, 0.35 * t0)
+    beyond = np.zeros((grid.nRows, grid.nTheta), dtype=bool)
+    for last in [False] * int(p["iterations"]) + [True]:
+        peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
+        weight = _gateWeights(grid, peakT, peakValue, lo, hi, _cavityLevel(profiles, grid.t, peakT), 0.3 * t0)
+        weight[beyond] = 0.0
+        mid = fitSurface(grid, peakT, weight, g["fit"], g["fitPull"], np.where(weight > 0, peakT, t0))
+        mid = np.clip(mid, 1.0, grid.t[-1])
+        peak = _interp(profiles, grid.t, mid)
+        plane, basePoints = _fitValvePlane(grid, mid, peak, p, _cavityFill(profiles, grid.t, mid, peak))
+        beyond = _beyondBase(grid, mid, plane)
+        lo = np.maximum(mid - half, 1.0)
+        hi = np.minimum(mid + half, grid.t[-1])
+    return mid, weight, plane, basePoints
 
 
 def gateThickness(result, resolution):
     """Wall thickness of a gate frame from its own count profiles (fitGate "profileFwhm"), for a system
-    resolution (FWHM mm), smoothed and limited like the static fit."""
+    resolution (FWHM mm): the slab width of every profile, fitted over the wall with the frame's surface
+    fit (fitSurface) on the walls clear of a defect (a profile cut short by a defect's edge reads thin),
+    which draws the others, limited like the static fit."""
     grid, p = result["grid"], result["grid"].params
-    weight = np.maximum(result["gateWeight"], 1e-6)
-    widths = _smoothMap(rectGaussThickness(result["profileFwhm"], resolution), weight, p["thicknessSmoothing"])
-    widths = np.clip(_poleSmooth(grid, widths, weight, p["thicknessSmoothing"], result["mid"]),
-                     p["minThickness"], p["maxThickness"])
+    weight = np.where(_clearWalls(result["gateWeight"], result["peak"]), result["gateWeight"], 0.0)
+    widths = rectGaussThickness(result["profileFwhm"], resolution)
+    widths = fitSurface(grid, widths, weight, result.get("fit", GATE_DEFAULTS["fit"]),
+                        result.get("fitPull", GATE_DEFAULTS["fitPull"]), result["mid"])
+    widths = np.clip(widths, p["minThickness"], p["maxThickness"])
     return _holdBeyondBase(widths, _beyondBase(grid, result["mid"], result["valvePlane"]))
+
+
+def _withThickness(result, resolution):
+    """The result with the frame's own wall thickness at a resolution and its endo- and epicardium."""
+    grid = result["grid"]
+    thickness = gateThickness(result, resolution)
+    endo, epi = _wallSurfaces(grid, result["mid"], thickness, grid.params)
+    return dict(result, thickness=thickness, endo=endo, epi=epi, resolutionMm=float(resolution))
 
 
 def gatedResolution(results, fallback):
     """System resolution of a gated study: the median of the estimates of its frames."""
     values = [r["resolutionEstimate"] for r in results if r is not None and r.get("resolutionEstimate")]
     return float(np.median(values)) if values else float(fallback)
+
+
+def frameThicknessGates(results):
+    """Every gate frame's wall thickness from its own count profiles at the resolution estimated over all
+    frames (gatedResolution). results: fitGate results (None for a frame that could not be segmented).
+    Returns new results."""
+    known = [r for r in results if r is not None and "profileFwhm" in r]
+    if not known:
+        return list(results)
+    resolution = gatedResolution(known, known[0]["grid"].params["resolution"])
+    return [None if r is None else _withThickness(r, resolution) if "profileFwhm" in r else r for r in results]
 
 
 def _wallSurfaces(grid, mid, thickness, p):
@@ -559,122 +565,229 @@ def _rayVolumes(result, inner, outer, power):
     return (float(ring[inside[:nCyl]].sum()) + float(shell.sum())) / 1000.0
 
 
-def wallVolumeMl(result, thickness=None):
-    """Myocardial volume (ml) of a fit, or of its mid-wall with another thickness map."""
-    if thickness is None:
-        return _rayVolumes(result, result["endo"], result["epi"], 1)
-    mid = result["mid"]
-    return _rayVolumes(result, np.maximum(mid - 0.5 * thickness, 1.0), mid + 0.5 * thickness, 1)
+# ---------------------------------------------------------------------------
+# Surface fits of the gate frames: a smooth surface through the traced rays that draws the others
+# ---------------------------------------------------------------------------
+class _FitGeometry:
+    """Spacing of the ray grid over the wall (mm) for a distance map: per row the spacing of its rays around
+    the axis (hTheta) and the wall area per ray (area), between neighbouring rows their spacing along the
+    wall (hRow), every row's arc position from the base (s), the distance of its rays from the axis (rho)
+    and the typical radius of the cylinder rows (radius). The last row is the apex: one point."""
+
+    def __init__(self, grid, distance):
+        d = np.nan_to_num(np.asarray(distance, dtype=float), nan=1.0)
+        radius = np.maximum(np.median(d, axis=1), 1.0)
+        self.rho = radius.copy()
+        self.rho[grid.nCyl:] = radius[grid.nCyl:] * np.sin(grid.phi)
+        self.hTheta = self.rho * (2.0 * math.pi / grid.nTheta)
+        self.hRow = np.empty(grid.nRows - 1)
+        self.hRow[:grid.nCyl - 1] = grid.dz
+        self.hRow[grid.nCyl - 1:] = 0.5 * (radius[grid.nCyl - 1:-1] + radius[grid.nCyl:]) * grid.dphi
+        self.s = np.concatenate([[0.0], np.cumsum(self.hRow)])
+        along = 0.5 * (np.concatenate([[0.0], self.hRow]) + np.concatenate([self.hRow, [0.0]]))
+        self.area = self.hTheta * along
+        self.area[-1] = math.pi * (0.5 * self.hRow[-1]) ** 2 / grid.nTheta     # the apex: a disc around the axis
+        self.radius = float(np.median(radius[:grid.nCyl]))
 
 
-def constantVolumeGates(results, params=None, referencePhase="ed"):
-    """QGS-like wall thickness of the gate frames: every frame keeps the myocardial volume of one
-    reference frame instead of each ray keeping its own. The reference is end-diastole ("ed", the frame
-    whose mid-wall encloses the most) or end-systole ("es", the least: the thickest, brightest wall,
-    best seen when the ED wall is dim). The reference has the thickness from its own profile widths
-    (at the resolution estimated over all frames); the other frames start from it, scaled by
-    (reference mid / frame mid) of each ray (limited to maxThicknessChange), and are then scaled together
-    so their myocardial volume equals that of the reference; no ray leaves reference / (1 + x) ..
-    reference x (1 + x). results: fitGate results (None for a frame that could not be segmented).
-    Returns new results."""
-    g = dict(GATE_DEFAULTS, **(params or {}))
-    known = [i for i, r in enumerate(results) if r is not None and "profileFwhm" in r]
-    if len(known) < 2:
-        return list(results)
-    enclosed = {i: _rayVolumes(results[i], None, results[i]["mid"], 0) for i in known}
-    ed = (min if referencePhase == "es" else max)(known, key=lambda i: enclosed[i])
-    edResult = results[ed]
-    p = edResult["grid"].params
-    change = 1.0 + max(float(g["maxThicknessChange"]), 0.0)
-    resolution = gatedResolution(results, p["resolution"])
-    reference = gateThickness(edResult, resolution)
-    # Rays through a defect: the gate profiles show no wall there (their thickness would be that of the
-    # walls around them, smoothed in) and scar neither thickens nor moves much. They keep the thickness of
-    # the static fit, whose profiles have all the counts; the volume is kept by the walls that are seen.
-    reliability = edResult.get("reliability")
-    fixed = edResult.get("staticThickness")
-    if reliability is None or fixed is None:
-        reliability, fixed = np.ones_like(reference), reference
-    reliability = reliability ** 2
-    reference = reliability * reference + (1.0 - reliability) * fixed
-    target = wallVolumeMl(edResult, reference)
-    out = list(results)
-    for i in known:
-        result = results[i]
-        grid, mid = result["grid"], result["mid"]
-        low = np.maximum(reference / change, p["minThickness"])
-        high = np.minimum(reference * change, 1.5 * p["maxThickness"])
-        shape = reference * np.clip(edResult["mid"] / np.maximum(mid, 1.0), 1.0 / change, change)
-
-        def thicknessAt(scale):
-            return reliability * np.clip(scale * shape, low, high) + (1.0 - reliability) * fixed
-        if i == ed:
-            thickness = reliability * np.clip(reference, low, high) + (1.0 - reliability) * fixed
-        else:
-            lo, hi = 0.2, 5.0
-            for _ in range(40):                       # the volume grows with the scale: bisection
-                scale = 0.5 * (lo + hi)
-                if wallVolumeMl(result, thicknessAt(scale)) < target:
-                    lo = scale
-                else:
-                    hi = scale
-            thickness = thicknessAt(0.5 * (lo + hi))
-        thickness = _holdBeyondBase(thickness, _beyondBase(grid, mid, result["valvePlane"]))
-        endo, epi = _wallSurfaces(grid, mid, thickness, p)
-        out[i] = dict(result, thickness=thickness, endo=endo, epi=epi, thicknessModel=referencePhase,
-                      edFrame=ed, referenceFrame=ed, resolutionMm=resolution)
-    return out
+def fitSurface(grid, values, weights, method="bspline", pull=1.0, distance=None):
+    """A [rows, angles] map (a wall distance, its displacement, a wall thickness) fitted over the wall:
+    the rays with weight (0..1, how far their value is trusted) set the fit, which draws the rays without
+    (a defect) from them. method (GATE_FITS): "bspline" (_splineFit, a bending-penalized spline surface: a
+    defect continues the curve of the walls around it), "mesh" (_meshFit, every ray tied to its neighbours:
+    a defect is bridged straighter) or "legacy" (_legacyFit, the change between neighbouring rays limited).
+    Rays that sit far off the first fit (FIT_OUTLIER robust misfits) lose their weight and the fit is made
+    again. pull (0..1) is how far a traced ray is moved from its own value to the fit (1: the fit,
+    0: its own value). distance: the wall's distance map that sets the spacing of the rays (values when
+    None). The apex rows are made to agree (_poleSmooth)."""
+    values = np.asarray(values, dtype=float)
+    weights = np.where(np.isfinite(values), np.clip(np.nan_to_num(np.asarray(weights, dtype=float)), 0.0, 1.0), 0.0)
+    values = np.nan_to_num(values)
+    distance = values if distance is None else np.asarray(distance, dtype=float)
+    if not np.any(weights > 1e-9):
+        return np.full(values.shape, float(np.median(values)))
+    geometry = _FitGeometry(grid, distance)
+    solve = {"mesh": _meshFit, "legacy": _legacyFit}.get(method, _splineFit)
+    fit = solve(grid, geometry, values, weights)
+    misfit = values - fit
+    seen = weights > 1e-9
+    scale = max(1.4826 * float(np.median(np.abs(misfit[seen]))), 1.0)
+    robust = weights * np.clip(1.0 - (misfit / (FIT_OUTLIER * scale)) ** 2, 0.0, 1.0) ** 2
+    if np.any(robust > 1e-9):
+        fit = solve(grid, geometry, values, robust)
+        weights = np.where(robust > 1e-9, weights, 0.0)          # an outlier takes the fit
+    pull = float(np.clip(pull, 0.0, 1.0))
+    out = fit + (1.0 - pull) * weights * (values - fit)
+    return _poleSmooth(grid, out, np.ones_like(out), 0.5, distance)
 
 
-def ownProfileGates(results, params=None):
-    """Wall thickness of every gate frame from its own count profiles, as the static fit does (gateThickness,
-    at the resolution estimated over all frames), with no volume kept between the frames (the default). The
-    constant-volume models carry the ES wall into end-diastole and thin it there, which inflates the EF; the
-    frames' own widths keep the diastolic wall as thick as its counts show. Rays through a defect keep
-    their static thickness. results: fitGate results (None for a frame that could not be segmented).
-    Returns new results."""
-    known = [i for i, r in enumerate(results) if r is not None and "profileFwhm" in r]
-    if not known:
-        return list(results)
-    resolution = gatedResolution(results, results[known[0]]["grid"].params["resolution"])
-    out = list(results)
-    for i in known:
-        result = results[i]
-        grid, mid, p = result["grid"], result["mid"], result["grid"].params
-        own = gateThickness(result, resolution)
-        reliability = result.get("reliability")
-        fixed = result.get("staticThickness")
-        if reliability is not None and fixed is not None:
-            own = reliability ** 2 * own + (1.0 - reliability ** 2) * fixed
-        thickness = _holdBeyondBase(own, _beyondBase(grid, mid, result["valvePlane"]))
-        endo, epi = _wallSurfaces(grid, mid, thickness, p)
-        out[i] = dict(result, thickness=thickness, endo=endo, epi=epi, thicknessModel="frame",
-                      resolutionMm=resolution)
-    return out
+def _cubicBSpline(x):
+    """Uniform cubic B-spline (support -2..2)."""
+    x = np.abs(x)
+    return np.where(x < 1.0, 2.0 / 3.0 - x ** 2 + 0.5 * x ** 3, np.where(x < 2.0, (2.0 - x) ** 3 / 6.0, 0.0))
 
 
-def midWallGates(results, params=None):
-    """Mid-wall-only wall of the gate frames: only the mid-wall (the count peak, the surface a gate shows
-    best) is taken from each frame; every ray keeps one wall thickness in all frames, so the endocardium
-    follows the mid-wall at a fixed distance and no thickening model enters the volumes. That thickness is
-    the end-diastolic wall of the constant-volume model (ES reference, constantVolumeGates): the ED frame,
-    the one whose mid-wall encloses the most, is where the wall is at rest; the summed static image
-    is blurred by the motion and shows it thicker. Rays through a defect keep their static thickness.
-    results: fitGate results (None for a frame that could not be segmented). Returns new results."""
-    known = [i for i, r in enumerate(results) if r is not None and "staticThickness" in r]
-    if not known:
-        return list(results)
-    walls = constantVolumeGates(results, params, "es")
-    ed = max(known, key=lambda i: _rayVolumes(results[i], None, results[i]["mid"], 0))
-    reference = walls[ed]["thickness"] if len(known) >= 2 else results[ed]["staticThickness"]
-    out = list(results)
-    for i in known:
-        result = results[i]
-        grid, mid = result["grid"], result["mid"]
-        thickness = _holdBeyondBase(reference, _beyondBase(grid, mid, result["valvePlane"]))
-        endo, epi = _wallSurfaces(grid, mid, thickness, grid.params)
-        out[i] = dict(result, thickness=thickness, endo=endo, epi=epi, thicknessModel="mid", edFrame=ed)
-    return out
+def _splineFit(grid, geometry, values, weights):
+    """Cubic B-spline surface over the wall (periodic around the axis, knots SPLINE_KNOT_MM apart along and
+    around it) minimizing sum(area w (f - value)^2) + L^4 * integral(f_ss^2 + 2 f_st^2 + f_tt^2) dA (thin
+    plate bending over the wall, s along it, t around the axis, both in mm; L = SPLINE_LENGTH_MM): wall
+    features shorter than L are smoothed out, and where no ray is traced the surface keeps bending as the
+    walls around it do. Near the apex the rays around the axis converge, so the same bending in mm ties
+    them together. The penalty acts on the spline coefficients (Eilers and Marx's P-splines)."""
+    knot = max(float(SPLINE_KNOT_MM), 1.0)
+    span = float(geometry.s[-1])
+    nr = max(int(math.ceil(span / knot)), 1)
+    hr = span / nr
+    centers = (np.arange(nr + 3) - 1.0) * hr                             # coefficient rows along the wall
+    br = _cubicBSpline((geometry.s[:, None] - centers[None]) / hr)       # [rows, Kr]
+    kt = max(6, int(round(2.0 * math.pi * geometry.radius / knot)))
+    u = np.arange(grid.nTheta) * (kt / grid.nTheta)
+    bt = _cubicBSpline(np.mod(u[:, None] - np.arange(kt)[None] + 0.5 * kt, kt) - 0.5 * kt)   # [angles, Kt]
+    kr = len(centers)
+    data = weights * geometry.area[:, None]
+    normal = np.einsum("ik,il,imn->kmln", br, br, np.einsum("ij,jm,jn->imn", data, bt, bt)).reshape(kr * kt, kr * kt)
+    rhs = (br.T @ (data * values) @ bt).ravel()
+    # bending energy of the coefficients on the wall as a surface of revolution (rho: distance from the
+    # axis, s along the wall, t = rho theta around it): f_ss, f_tt = f_thetatheta / rho^2 + rho' f_s / rho and
+    # the twist f_st = f_stheta / rho - rho' f_theta / rho^2, in mm, each over its share of the wall area.
+    # The rho' terms keep a wall that only moves off the axis free of bending at the apex too.
+    dTheta = 2.0 * math.pi / kt
+    rho = np.maximum(np.interp(centers, geometry.s, geometry.rho), 0.05 * geometry.radius)
+    slope = np.interp(centers, geometry.s, np.gradient(geometry.rho, geometry.s))
+    eye, rows = np.eye(kt), np.eye(kr)
+    d1t = (np.roll(eye, -1, axis=1) - eye) / dTheta
+    d2t = (np.roll(eye, -1, axis=1) - 2.0 * eye + np.roll(eye, 1, axis=1)) / dTheta ** 2
+    d1r = np.diff(rows, axis=0) / hr
+    d2r = np.diff(rows, n=2, axis=0) / hr ** 2
+    dcr = np.gradient(rows, axis=0) / hr                                 # central difference along s
+    mean = 0.5 * (rows[:-1] + rows[1:])
+    rhoMid, slopeMid = mean @ rho, mean @ slope
+    area = rho * dTheta * hr
+    ss = np.kron(d2r, eye)
+    tt = np.kron(np.diag(1.0 / rho ** 2), d2t) + np.kron(np.diag(slope / rho) @ dcr, eye)
+    st = np.kron(np.diag(1.0 / rhoMid) @ d1r, d1t) - np.kron(np.diag(slopeMid / rhoMid ** 2) @ mean, d1t)
+    penalty = (ss.T @ np.kron(np.diag(area[1:-1]), eye) @ ss + tt.T @ np.kron(np.diag(area), eye) @ tt
+               + 2.0 * st.T @ np.kron(np.diag(mean @ area), eye) @ st)
+    system = normal + float(SPLINE_LENGTH_MM) ** 4 * penalty
+    system += 1e-9 * max(float(np.trace(normal)) / len(rhs), 1e-12) * np.eye(len(rhs))
+    coefficients = np.linalg.solve(system, rhs).reshape(kr, kt)
+    return br @ coefficients @ bt.T
+
+
+def _meshFit(grid, geometry, values, weights, iterations=3000):
+    """Deformable mesh over the rays: minimizes sum(area w (f - value)^2) + L^2 * integral(|grad f|^2) dA
+    (a membrane, L = MESH_LENGTH_MM; every ray is tied to its neighbours around the axis and along it,
+    base to apex, with the weights of their spacing in mm), solved by conjugate gradients. Wall features
+    shorter than L are smoothed out; where no ray is traced the surface runs straight between the walls
+    around it (a membrane does not keep their curve). The apex row is one node tied to the row before it."""
+    n = grid.nRows - 1
+    alpha = float(MESH_LENGTH_MM) ** 2
+    ht = np.maximum(geometry.hTheta[:n], 1e-3)
+    tieTheta = geometry.area[:n] / ht ** 2                               # [n]: ray to its neighbour around the axis
+    tieRow = 0.5 * (geometry.hTheta[:-1] + geometry.hTheta[1:]) / geometry.hRow   # [n]: row i to row i + 1 (last: apex)
+    data = weights * geometry.area[:, None]
+    ridge = 1e-9 * float(np.mean(geometry.area))
+    dataRays, dataApex = data[:n] + ridge, float(data[n].sum()) + ridge
+    b = np.concatenate([(data[:n] * values[:n]).ravel(), [float((data[n] * values[n]).sum())]])
+
+    def apply(x):
+        f, apex = x[:-1].reshape(n, grid.nTheta), x[-1]
+        out = dataRays * f + alpha * tieTheta[:, None] * (2.0 * f - np.roll(f, 1, axis=1) - np.roll(f, -1, axis=1))
+        step = tieRow[:n - 1, None] * (f[1:] - f[:-1])
+        out[:-1] -= alpha * step
+        out[1:] += alpha * step
+        edge = tieRow[n - 1] * (f[-1] - apex)
+        out[-1] += alpha * edge
+        return np.concatenate([out.ravel(), [dataApex * apex - alpha * float(edge.sum())]])
+
+    diagonal = dataRays + alpha * (2.0 * tieTheta[:, None] + np.concatenate([[0.0], tieRow[:n - 1]])[:, None]
+                                   + tieRow[:n, None])
+    diagonal = np.concatenate([diagonal.ravel(), [dataApex + alpha * tieRow[n - 1] * grid.nTheta]])
+    x = np.full(len(b), float((data * values).sum() / max(float(data.sum()), 1e-12)))
+    r = b - apply(x)
+    z = r / diagonal
+    d = z.copy()
+    rz = float(r @ z)
+    tolerance = 1e-10 * max(float(b @ b), 1e-12)
+    for _ in range(iterations):                                          # preconditioned conjugate gradients
+        if float(r @ r) <= tolerance:
+            break
+        q = apply(d)
+        step = rz / max(float(d @ q), 1e-300)
+        x += step * d
+        r -= step * q
+        z = r / diagonal
+        rzNew = float(r @ z)
+        d = z + (rzNew / max(rz, 1e-300)) * d
+        rz = rzNew
+    return np.concatenate([x[:-1].reshape(n, grid.nTheta), np.full((1, grid.nTheta), x[-1])], axis=0)
+
+
+def _legacyFit(grid, geometry, values, weights):
+    """Brigger et al. (J Nucl Cardiol 1999;6:286) on the 3D ray grid: the change between neighbouring rays
+    is limited to LEGACY_MAX_SLOPE mm per mm of wall, and within that limit the path closest to the traced
+    rays' values is found by dynamic programming (_jumpLimitedPaths), ring by ring around the axis, then
+    column by column along it from the base to the apex, then ring by ring again, so both limits hold.
+    Where no ray is traced the path runs nearly straight. The apex row takes the mean of the row before it."""
+    n = grid.nRows - 1
+    slope = max(float(LEGACY_MAX_SLOPE), 1e-3)
+    seen = weights > 1e-9
+    lo, hi = np.percentile(values[seen], [1.0, 99.0])
+    lo, hi = float(lo) - 2.0, float(hi) + 2.0
+    step = max(0.25, (hi - lo) / 160.0)
+    bins = lo + step * np.arange(int(math.ceil((hi - lo) / step)) + 1)
+    aroundLimit = slope * geometry.hTheta[:n]
+    rings = _jumpLimitedPaths(np.clip(values[:n], lo, hi), weights[:n], bins, aroundLimit, True)
+    known = np.repeat(seen[:n].any(axis=1)[None].astype(float), grid.nTheta, axis=0)
+    columns = _jumpLimitedPaths(rings.T, known, bins, slope * geometry.hRow[:n - 1], False).T
+    out = _jumpLimitedPaths(columns, np.ones_like(columns), bins, aroundLimit, True)
+    return np.concatenate([out, np.full((1, grid.nTheta), float(out[-1].mean()))], axis=0)
+
+
+def _jumpLimitedPaths(values, weights, bins, limit, periodic, smooth=1e-2):
+    """Dynamic programming over paths [paths, steps]: at every step a value from bins, at most limit apart
+    from the step before (periodic: limit per path, the path closes on itself; else: limit per step),
+    minimizing sum(w (value - x)^2) + smooth * sum(dx^2) (the small second term draws a straight path where
+    w is 0). A closed path is found on three copies of it, the middle one kept."""
+    paths, length = values.shape
+    if periodic:
+        values, weights = np.tile(values, (1, 3)), np.tile(weights, (1, 3))
+    steps = values.shape[1]
+    if periodic:
+        limits = np.repeat(np.asarray(limit, dtype=float)[:, None], steps - 1, axis=1)
+    else:
+        limits = np.repeat(np.asarray(limit, dtype=float)[None, :], paths, axis=0)
+    m = len(bins)
+    binStep = float(bins[1] - bins[0]) if m > 1 else 1.0
+    reach = int(min(np.floor(float(limits.max()) / binStep + 1e-9), m - 1)) if limits.size else 0
+    unary = weights[..., None] * (bins[None, None, :] - values[..., None]) ** 2
+    cost = unary[:, 0].copy()
+    back = np.zeros((paths, steps, m), dtype=np.int16)
+    for j in range(1, steps):
+        best = np.full((paths, m), np.inf)
+        arg = np.zeros((paths, m), dtype=np.int16)
+        for shift in range(-reach, reach + 1):
+            moved = np.full((paths, m), np.inf)
+            if shift >= 0:
+                moved[:, shift:] = cost[:, :m - shift]
+            else:
+                moved[:, :m + shift] = cost[:, -shift:]
+            moved += smooth * (shift * binStep) ** 2
+            moved[abs(shift) * binStep > limits[:, j - 1] + 1e-9] = np.inf
+            better = moved < best
+            best = np.where(better, moved, best)
+            arg = np.where(better, shift, arg)
+        back[:, j] = arg
+        cost = best + unary[:, j]
+    index = np.argmin(cost, axis=1)
+    path = np.empty((paths, steps), dtype=int)
+    path[:, -1] = index
+    rows = np.arange(paths)
+    for j in range(steps - 1, 0, -1):
+        index = index - back[rows, j, index]
+        path[:, j - 1] = index
+    out = bins[path]
+    return out[:, length:2 * length] if periodic else out
 
 
 def endSystoleDiastole(volumes):
@@ -712,10 +825,9 @@ def thickeningMap(gatePolars, ed, es, smoothing=None, countSmoothing=None):
 def geometricThickeningMap(gateResults, ed, es, smoothing=None):
     """Geometric wall thickening polar map, as QGS measures it: % = (ES thickness / ED thickness - 1) x 100,
     the thickness between the endo- and epicardium of every frame's wall on the polar map rays (polarRays),
-    fitted with the first harmonic over the cycle as in thickeningMap. It follows the frames' thickness model
-    (Gated QC, Wall thickness): from the frames' own profile widths it reads low, since a wall thinner than
-    the resolution keeps about the same profile width over the cycle; with a constant myocardial volume it
-    follows the mid-wall's inward motion. Rays that keep their static thickness (a defect) read 0. The %
+    fitted with the first harmonic over the cycle as in thickeningMap. The frames' thickness comes from their
+    own profile widths (Gated QC), so it reads low: a wall thinner than the resolution keeps about the same
+    profile width over the cycle. A defect reads the thickening the fit draws from the walls around it. The %
     map is smoothed (smoothing, map cells, THICKENING_SMOOTHING by default) without count weights.
     gateResults: the wall of every frame. Returns a polar map dict like thickeningMap."""
     smoothing = THICKENING_SMOOTHING if smoothing is None else smoothing
@@ -733,7 +845,7 @@ def geometricThickeningMap(gateResults, ed, es, smoothing=None):
 def hybridThickeningMap(countMap, geometricMap, coherence=None):
     """Weighted mean of the count-based (thickeningMap) and geometric (geometricThickeningMap) thickening
     maps, %: the counts read a wall's thickening low where its counts sit on a large background, the geometry
-    reads it after the thickness model; their errors differ, so the mean is steadier than either. Without
+    reads it low where the wall is thinner than the resolution; their errors differ, so the mean is steadier than either. Without
     coherence half and half; with a phase coherence map (phaseCoherenceMap, %) the counts weigh as much as
     their phases agree (0 where they are random, all where they all agree) and the geometry the rest."""
     counts, geometry = np.asarray(countMap["values"]), np.asarray(geometricMap["values"])

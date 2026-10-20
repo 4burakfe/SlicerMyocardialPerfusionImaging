@@ -564,10 +564,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "(partial volume), % = ES / ED counts - 1; the background under the wall dilutes it (it reads low "
             "against MRI) and a change of that background can read as thickening where the wall is dim. "
             "Geometric (as QGS): the distance between the endo- and epicardium of every frame, % = ES / ED "
-            "thickness - 1; it follows the thickness model of Gated QC (a wall thinner than the resolution keeps "
-            "about the same profile width, so the frames' own widths read low, a constant myocardial volume "
-            "turns the mid-wall's inward motion into thickening), and a defect held at its static thickness reads "
-            "0. Hybrid (default): the mean of the two, whose errors differ")
+            "thickness - 1, from the frames' own profile widths of Gated QC (a wall thinner than the resolution "
+            "keeps about the same profile width, so it reads low; a defect reads what the fit draws from the walls "
+            "around it). Hybrid (default): the mean of the two, whose errors differ")
         polarForm.addRow("Thickening method:", self.thickeningMethodCombo)
         self.hybridWeightCombo = qt.QComboBox()
         for text, value in wallLib.HYBRID_WEIGHTS:

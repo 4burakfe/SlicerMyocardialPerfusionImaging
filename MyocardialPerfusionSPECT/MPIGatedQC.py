@@ -3,13 +3,11 @@ Myocardial Perfusion SPECT - 5. Gated QC
 
 Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before the gated review:
 
-  - the myocardium is segmented in every gate frame, starting from the static wall detected in
-    Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: mid-wall refitted per ray near the
-    static one, valve plane refitted within a limit; by default ownProfileGates: every frame's thickness
-    from its own profile widths at the blur estimated from the frames, rays through a defect at their
-    static thickness; selectable: constantVolumeGates, every frame keeps the myocardial volume of the ES
-    (or ED) frame, every ray at its wall volume of the static fit, or midWallGates, every ray at its
-    end-diastolic wall thickness, so only the mid-wall moves);
+  - the myocardium is segmented in every gate frame on the rays of the static wall detected in
+    Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: tracked from the static wall, or every
+    frame from scratch; a surface fit, B-spline, deformable mesh or the legacy jump-limited path, runs
+    through the rays whose wall the frame shows and draws the others; frameThicknessGates: every frame's
+    thickness from its own profile widths at the blur estimated from the frames, fitted the same way);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
     frame's endo- and epicardium;
@@ -249,16 +247,8 @@ class GatedStudy:
             for name in ORIENTATIONS:
                 self.slices[name].append(resliceLike(array, matrix, outputs[name], mask, center))
             self.peaks.append(self._peakNear(self.slices["SA"][-1], outputs["SA"], center, reach))
-        model = dict(wallLib.GATE_DEFAULTS, **(params or {}))["thicknessModel"]
-        if model in ("volume", "es"):
-            # the wall thickness of all frames together: each keeps the myocardial volume of ED (or ES)
-            self.results = wallLib.constantVolumeGates(self.results, params, "es" if model == "es" else "ed")
-        elif model == "mid":
-            # only the mid-wall moves: every ray keeps its end-diastolic wall thickness in all frames
-            self.results = wallLib.midWallGates(self.results, params)
-        elif model == "frame":
-            # every frame's thickness from its own profile widths, as in the static fit
-            self.results = wallLib.ownProfileGates(self.results, params)
+        # every frame's thickness from its own profile widths, at the blur estimated from all frames
+        self.results = wallLib.frameThicknessGates(self.results)
         for index, (label, node, matrix, voxel) in enumerate(frames):
             array = slicer.util.arrayFromVolume(node).astype(np.float32)   # again, one frame at a time
             stats = {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
@@ -368,11 +358,11 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.segmentationCombo.setCurrentIndex(
             max(0, self.segmentationCombo.findData(wallLib.GATE_DEFAULTS["segmentation"])))
         self.segmentationCombo.toolTip = (
-            "How the wall of every frame is found. From the static wall (default): the mid-wall of a frame is "
-            "searched near the static wall of Myocardium; rays through a defect stay close to it and follow the "
-            "motion of the walls around them. Each frame from scratch: every frame is detected on its own as "
-            "Myocardium detects the static image (same rays), with no static wall as prior; a defect is bridged "
-            "by the frame's own shape model, and the motion and valve plane limits do not apply")
+            "How the wall of every frame is found. Track the static wall (default): the mid-wall of a frame is "
+            "searched near the static wall of Myocardium and the fit is of its displacement from it, so the frame "
+            "keeps the static wall's shape where it does not show its own. Each frame from scratch: every frame "
+            "is detected on its own on the same rays and the fit is of its wall itself; the motion and valve "
+            "plane limits do not apply")
         self.segmentationCombo.connect("currentIndexChanged(int)", lambda _: self.updateSegmentationControls())
         advancedForm.addRow("Frames:", self.segmentationCombo)
         self.wallShiftSpin = qt.QDoubleSpinBox()
@@ -387,33 +377,26 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.valveShiftSpin.setSuffix(" mm")
         self.valveShiftSpin.toolTip = "How far the valve plane of a frame may move from the static one (base descent)"
         advancedForm.addRow("Valve plane limit:", self.valveShiftSpin)
-        self.gateSmoothingSlider = ctk.ctkSliderWidget()
-        self.gateSmoothingSlider.minimum, self.gateSmoothingSlider.maximum = 0.0, 4.0
-        self.gateSmoothingSlider.singleStep = 0.25
-        self.gateSmoothingSlider.decimals = 2
-        self.gateSmoothingSlider.value = wallLib.GATE_DEFAULTS["gateSmoothing"]
-        self.gateSmoothingSlider.toolTip = ("Smoothing of the wall surface of every frame (rays), 2 by default. Higher "
-                                            "values bridge defects and noise more, lower values follow the counts")
-        advancedForm.addRow("Surface smoothing:", self.gateSmoothingSlider)
-        self.thicknessModelCombo = qt.QComboBox()
-        for text, value in wallLib.THICKNESS_MODELS:
-            self.thicknessModelCombo.addItem(text, value)
-        self.thicknessModelCombo.setCurrentIndex(
-            max(0, self.thicknessModelCombo.findData(wallLib.GATE_DEFAULTS["thicknessModel"])))
-        self.thicknessModelCombo.toolTip = (
-            "Wall thickness of the frames. Each frame from its own profiles (default): the thickness of every "
-            "frame from its own count profile widths, as Myocardium does on the static image (the blur estimated "
-            "from the frames). Constant myocardial volume, ES reference: every frame "
-            "keeps the myocardial volume of end-systole, the thickest and brightest wall, whose thickness comes "
-            "from its own count profiles; it thins the diastolic wall and so reads a higher EF. ED reference: "
-            "the same from "
-            "end-diastole. Per ray: each ray keeps its wall volume of the static fit (the summed image blurs the "
-            "wall over the cycle, so the walls come out thicker and the EF higher, most in small hearts). "
-            "Mid-wall only: only the mid-wall (the count peak, the surface the gates show best) is taken from "
-            "each frame and every ray keeps its end-diastolic wall thickness, so no thickening model enters the "
-            "volumes; it reads lower than the others in hearts that thicken well and does not overestimate when "
-            "the gates are too blurred to show the thickening")
-        advancedForm.addRow("Wall thickness:", self.thicknessModelCombo)
+        self.fitCombo = qt.QComboBox()
+        for text, value in wallLib.GATE_FITS:
+            self.fitCombo.addItem(text, value)
+        self.fitCombo.setCurrentIndex(max(0, self.fitCombo.findData(wallLib.GATE_DEFAULTS["fit"])))
+        self.fitCombo.toolTip = (
+            "Surface fit through the rays whose wall a frame shows (above its blood pool), which draws the rays "
+            "it does not show (a defect) and smooths the others; the wall thickness is fitted the same way. "
+            "B-spline (default): a smooth spline surface with a bending penalty, a defect continues the curve of "
+            "the walls around it. Deformable mesh: every ray tied to its neighbours around and along the axis, a "
+            "defect is bridged straighter. Legacy: the change between neighbouring rays is limited (Brigger "
+            "1999), ring by ring and along the axis. Their stiffness is in Advanced parameters")
+        advancedForm.addRow("Fit:", self.fitCombo)
+        self.fitPullSlider = ctk.ctkSliderWidget()
+        self.fitPullSlider.minimum, self.fitPullSlider.maximum = 0.0, 1.0
+        self.fitPullSlider.singleStep = 0.05
+        self.fitPullSlider.decimals = 2
+        self.fitPullSlider.value = wallLib.GATE_DEFAULTS["fitPull"]
+        self.fitPullSlider.toolTip = ("How far a traced ray is pulled from its own count peak to the fit: 1 the fit, "
+                                      "0 its own peak (the rays without a wall always take the fit)")
+        advancedForm.addRow("Smoothing (pull to the fit):", self.fitPullSlider)
         self.segmentButton = styleButton(qt.QPushButton("Segment frames again"), "create")
         advancedForm.addRow(self.segmentButton)
 
@@ -433,15 +416,15 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.layout.addWidget(self.nextButton)
         self.parameterPanel = parametersLib.ParameterPanel(
             "gatedqc", self.layout, onChanged=self.onParameterChanged,
-            hint=("Frame segmentation and defect parameters apply when the frames are segmented again (Segment frames again)."))
+            hint=("Frame segmentation and fit parameters apply when the frames are segmented again (Segment frames again)."))
         self.parameterPanel.bind("colormap", self.colormapCombo)
         self.parameterPanel.bind("window", self.windowRange)
         self.parameterPanel.bind("scale", self.normalizationCombo)
         self.parameterPanel.bind("contours", self.contoursButton)
         self.parameterPanel.bind("wallShift", self.wallShiftSpin)
         self.parameterPanel.bind("valveShift", self.valveShiftSpin)
-        self.parameterPanel.bind("gateSmoothing", self.gateSmoothingSlider)
-        self.parameterPanel.bind("thicknessModel", self.thicknessModelCombo)
+        self.parameterPanel.bind("gateFit", self.fitCombo)
+        self.parameterPanel.bind("gateFitPull", self.fitPullSlider)
         self.parameterPanel.bind("gateSegmentation", self.segmentationCombo)
         self.updateSegmentationControls()
         self.layout.addStretch(1)
@@ -587,17 +570,15 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 or wallLib.GATE_DEFAULTS["segmentation"])
 
     def updateSegmentationControls(self):
-        """The motion and valve limits and the smoothing belong to the search near the static wall."""
+        """The motion and valve limits belong to the tracking of the static wall."""
         static = self.segmentation() == "static"
-        for widget in (self.wallShiftSpin, self.valveShiftSpin, self.gateSmoothingSlider):
+        for widget in (self.wallShiftSpin, self.valveShiftSpin):
             widget.enabled = static
 
     def params(self):
         return {"maxWallShift": float(self.wallShiftSpin.value), "maxValveShift": float(self.valveShiftSpin.value),
-                "gateSmoothing": float(self.gateSmoothingSlider.value),
-                "thicknessModel": (self.thicknessModelCombo.itemData(self.thicknessModelCombo.currentIndex)
-                                   or wallLib.GATE_DEFAULTS["thicknessModel"]),
-                "segmentation": self.segmentation()}
+                "fit": self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.GATE_DEFAULTS["fit"],
+                "fitPull": float(self.fitPullSlider.value), "segmentation": self.segmentation()}
 
     def gatedStudy(self, slot, rebuild=False):
         """GatedStudy of a slot, built once per study, gated sequence, static wall and settings."""
@@ -848,6 +829,8 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.setUp()
         self.test_GatingText()
         self.test_GateFit()
+        self.test_ScarFitted()
+        self.test_FitSurface()
         self.test_MaskedSampler()
 
     def test_GatingText(self):
@@ -898,33 +881,30 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         def sampleOf(array):
             return lambda pts: sampleTrilinear(array, np.asarray(pts) / spacing)
         static = wallLib.fitWall(sampleOf(ventricle(25.0)), center, u, w, 55.0)
-        gate = wallLib.fitGate(sampleOf(ventricle(21.0)), static)
         middle = static["grid"].nCyl - 4
-        self.assertLess(float(np.median(gate["mid"][middle])), float(np.median(static["mid"][middle])) - 2.0)
-        # constant volume: the smaller frame gets a thicker wall, with the myocardial volume of ED
-        ed = wallLib.fitGate(sampleOf(ventricle(25.0)), static)
-        walls = wallLib.constantVolumeGates([ed, gate])
-        self.assertEqual(walls[1]["edFrame"], 0)
-        self.assertAlmostEqual(wallLib.wallVolumeMl(walls[1]), wallLib.wallVolumeMl(walls[0]),
-                               delta=0.03 * wallLib.wallVolumeMl(walls[0]))
-        self.assertGreater(float(np.median(walls[1]["thickness"][middle])), float(np.median(walls[0]["thickness"][middle])))
-        # each frame from its own profiles: both walls are 10 mm slabs, so both read about the same
-        own = wallLib.ownProfileGates([ed, gate])
-        self.assertEqual(own[1]["thicknessModel"], "frame")
-        self.assertAlmostEqual(float(np.median(own[1]["thickness"][middle])), float(np.median(own[0]["thickness"][middle])),
-                               delta=2.0)
-        # each frame from scratch: no static prior, so the smaller frame is found as well, outside the motion limit too
+        for mode in ("static", "own"):
+            for fit in ("bspline", "mesh", "legacy"):
+                params = {"segmentation": mode, "fit": fit}
+                ed = wallLib.fitGate(sampleOf(ventricle(25.0)), static, params)
+                gate = wallLib.fitGate(sampleOf(ventricle(21.0)), static, params)
+                self.assertEqual(gate["grid"], static["grid"])
+                self.assertAlmostEqual(float(np.median(ed["mid"][middle])), 25.0, delta=1.5, msg=params)
+                self.assertAlmostEqual(float(np.median(gate["mid"][middle])), 21.0, delta=1.5, msg=params)
+                # each frame from its own profiles: both walls are 10 mm slabs, so both read about the same
+                walls = wallLib.frameThicknessGates([ed, None, gate])
+                self.assertIsNone(walls[1])
+                self.assertAlmostEqual(float(np.median(walls[2]["thickness"][middle])),
+                                       float(np.median(walls[0]["thickness"][middle])), delta=2.0, msg=params)
+                self.assertLess(float(np.median(walls[2]["endo"][middle])), float(np.median(walls[0]["endo"][middle])) - 2.0)
+        # from scratch the motion limit does not apply
         scratch = wallLib.fitGate(sampleOf(ventricle(21.0)), static, {"segmentation": "own", "maxWallShift": 2.0})
-        self.assertEqual(scratch["grid"], static["grid"])
-        self.assertAlmostEqual(float(np.median(scratch["mid"][middle])), float(np.median(gate["mid"][middle])), delta=1.5)
-        self.assertTrue(np.all(scratch["reliability"][middle] == 1.0))   # the wall is traced: the frame's own
-        own = wallLib.ownProfileGates([wallLib.fitGate(sampleOf(ventricle(25.0)), static, {"segmentation": "own"}), scratch])
-        self.assertLess(float(np.median(own[1]["endo"][middle])), float(np.median(own[0]["endo"][middle])) - 2.0)
+        self.assertAlmostEqual(float(np.median(scratch["mid"][middle])), 21.0, delta=1.5)
         self.delayDisplay("Gate fit test passed")
 
-    def test_ScarHeld(self):
-        """A wall that does not stand out of the blood pool (scar) stays where the static wall is while the
-        walls around it contract, in both segmentation modes; a dim wall that can be traced moves."""
+    def test_ScarFitted(self):
+        """A wall that does not stand out of the blood pool (scar) is drawn by the fit from the walls around it
+        in every segmentation mode and fit: it moves with them, with no step at its edge, and a dim wall that
+        can be traced moves on its own."""
         n, spacing = 64, 3.0
         center = np.array([n * spacing / 2.0] * 3)
         u, w = unit([-0.6, 0.6, -0.4]), unit([0.0, 0.5, 0.75])
@@ -955,12 +935,47 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.assertLess(float(np.median(reliability[rows][:, scarCols])), 0.1)
         self.assertGreater(float(np.median(reliability[rows][:, dimCols])), 0.9)
         for mode in ("static", "own"):
-            gate = wallLib.fitGate(sampleOf(ventricle(21.0)), static, {"segmentation": mode})
-            moved = static["mid"][rows] - gate["mid"][rows]
-            self.assertLess(abs(float(np.median(moved[:, scarCols]))), 1.0, mode)
-            self.assertGreater(float(np.median(moved[:, normalCols])), 2.5, mode)
-            self.assertGreater(float(np.median(moved[:, dimCols])), 2.5, mode)
-        self.delayDisplay("Scar held test passed")
+            for fit in ("bspline", "mesh", "legacy"):
+                params = {"segmentation": mode, "fit": fit}
+                gate = wallLib.fitGate(sampleOf(ventricle(21.0)), static, params)
+                self.assertLess(float(np.median(gate["gateWeight"][rows][:, scarCols])), 0.01, params)
+                moved = static["mid"][rows] - gate["mid"][rows]
+                self.assertGreater(float(np.median(moved[:, normalCols])), 2.5, params)
+                self.assertGreater(float(np.median(moved[:, dimCols])), 2.5, params)
+                self.assertGreater(float(np.median(moved[:, scarCols])), 2.5, params)
+                mid = gate["mid"][rows]
+                step = np.abs(mid - np.roll(mid, 1, axis=1)).max()            # between neighbouring rays
+                self.assertLess(float(step), 2.5, params)
+        self.delayDisplay("Scar fitted test passed")
+
+    def test_FitSurface(self):
+        """The fits keep what the traced rays show and bridge a gap of untraced rays without a step: the
+        B-spline continues the curve of the walls around it, the mesh runs straighter, the legacy path keeps
+        the jump between neighbouring rays within its limit; pull 0 keeps the traced rays' own values."""
+        grid = wallLib.WallGrid(np.zeros(3), [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], 50.0, length=30.0)
+        theta = grid.theta[None, :].repeat(grid.nRows, axis=0)
+        amplitude = np.concatenate([np.ones(grid.nCyl), np.sin(grid.phi)])[:, None]
+        values = 20.0 + 3.0 * amplitude * np.cos(theta)           # an LV 3 mm off the axis
+        weights = np.ones_like(values)
+        gap = np.abs(np.angle(np.exp(1j * theta))) < math.radians(35)      # untraced around 0 deg (the 23 mm side)
+        weights[gap] = 0.0
+        distance = values
+        geometry = wallLib._FitGeometry(grid, distance)
+        middle = grid.nCyl // 2
+        for fit in ("bspline", "mesh", "legacy"):
+            out = wallLib.fitSurface(grid, np.where(gap, 0.0, values), weights, fit, 1.0, distance)
+            self.assertLess(float(np.abs(out - values)[~gap].max()), 0.6, fit)
+            jump = np.abs(out[:grid.nRows - 1] - np.roll(out[:grid.nRows - 1], 1, axis=1)).max(axis=1)
+            self.assertTrue(np.all(jump <= wallLib.LEGACY_MAX_SLOPE * geometry.hTheta[:grid.nRows - 1] + 0.6), fit)
+            self.assertTrue(np.allclose(out[-1], out[-1].mean()), fit)        # the apex is one point
+            if fit == "bspline":
+                self.assertGreater(float(out[middle][gap[middle]].max()), 22.0)   # the curve goes on into the gap
+            if fit == "mesh":
+                self.assertLess(float(out[middle][gap[middle]].max()), 22.6)
+        raw = np.where(gap, 0.0, values + np.where(np.arange(grid.nTheta) % 2, 0.5, -0.5)[None])
+        own = wallLib.fitSurface(grid, raw, weights, "bspline", 0.0, distance)
+        self.assertTrue(np.allclose(own[middle][~gap[middle]], raw[middle][~gap[middle]], atol=1e-6))
+        self.delayDisplay("Fit surface test passed")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
 parametersLib.applySaved()
