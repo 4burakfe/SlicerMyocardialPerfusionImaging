@@ -361,6 +361,9 @@ RELIABILITY_HIGH = 0.60     # ... and from which it counts as normal wall
 THICKENING_SMOOTHING = 2.5        # thickeningMap: smoothing of the % map (map cells)
 THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES count maps
 MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
+THICKENING_METHODS = (("Hybrid: mean of the count-based and geometric maps", "hybrid"),
+                      ("Count-based: ES / ED wall counts", "counts"),
+                      ("Geometric: ES / ED wall thickness (endo- to epicardium, as QGS)", "geometry"))
 MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
                      ("Floating: each frame's LV center and epicardial apex", "floating"),
                      ("Floating: each frame's myocardium mass center", "mass"),
@@ -675,6 +678,35 @@ def thickeningMap(gatePolars, ed, es, smoothing=None, countSmoothing=None):
     values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -100.0, 200.0)
     reference = gatePolars[ed]
     return {"values": values, "rho": np.asarray(reference["rho"]).copy(), "theta": np.asarray(reference["theta"]).copy()}
+
+
+def geometricThickeningMap(gateResults, ed, es, smoothing=None):
+    """Geometric wall thickening polar map, as QGS measures it: % = (ES thickness / ED thickness - 1) x 100,
+    the thickness between the endo- and epicardium of every frame's wall on the polar map rays (polarRays),
+    fitted with the first harmonic over the cycle as in thickeningMap. It follows the frames' thickness model
+    (Gated QC, Wall thickness): from the frames' own profile widths it reads low, since a wall thinner than
+    the resolution keeps about the same profile width over the cycle; with a constant myocardial volume it
+    follows the mid-wall's inward motion. Rays that keep their static thickness (a defect) read 0. The %
+    map is smoothed (smoothing, map cells, THICKENING_SMOOTHING by default) without count weights.
+    gateResults: the wall of every frame. Returns a polar map dict like thickeningMap."""
+    smoothing = THICKENING_SMOOTHING if smoothing is None else smoothing
+    stack = []
+    for result in gateResults:
+        _, _, endo, epi, _ = polarRays(result)
+        stack.append(np.maximum(epi - endo, 1e-3))
+    _, edThickness, esThickness = _firstHarmonic(np.array(stack), ed, es)
+    values = 100.0 * (esThickness / np.maximum(edThickness, 1e-3) - 1.0)
+    values = np.clip(_smoothMap(np.nan_to_num(values), np.ones_like(values), smoothing), -100.0, 200.0)
+    rho = polarRays(gateResults[ed])[4]
+    return {"values": values, "rho": rho, "theta": gateResults[ed]["grid"].theta.copy()}
+
+
+def hybridThickeningMap(countMap, geometricMap):
+    """Mean of the count-based (thickeningMap) and geometric (geometricThickeningMap) thickening maps, %:
+    the counts read a wall's thickening low where its counts sit on a large background, the geometry
+    reads it after the thickness model; their errors differ, so the mean is steadier than either."""
+    return {"values": 0.5 * (np.asarray(countMap["values"]) + np.asarray(geometricMap["values"])),
+            "rho": np.asarray(countMap["rho"]).copy(), "theta": np.asarray(countMap["theta"]).copy()}
 
 
 def _firstHarmonic(stack, ed, es):

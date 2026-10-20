@@ -103,6 +103,7 @@ REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points"
 THICKENING_VIEWS = (("5 walls (apex and an X: anterior, septal, inferior, lateral)", "walls"),
                    ("17 segments", "segments"), ("Per pixel", "pixels"))   # wallLib.REGION_VIEWS
 DEFAULT_THICKENING_VIEW = "pixels"
+DEFAULT_THICKENING_METHOD = "hybrid"   # wallLib.THICKENING_METHODS value
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
 READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with the perfusion and the patient's "
                 "data. With the fixed motion reference (default) motion is measured from one LV center and axis: "
@@ -269,7 +270,9 @@ class GatedReviewData:
         self.staticPolar = staticPolar     # perfusion polar map of the static study
         self.volumes = gated.cavityMl()
         self.phases = ejectionFraction(self.volumes)
-        self.thickening = None
+        self.thickening = None             # thickening polar map (%) of thickeningMethod
+        self.thickeningMaps = {}           # wallLib.THICKENING_METHODS value -> thickening polar map (%)
+        self.thickeningMethod = DEFAULT_THICKENING_METHOD
         self.motion = None                 # wall motion polar map (mm), made with the thickening
         self.motionReference = "fixed"     # wallLib.MOTION_REFERENCES value the motion map was made with
         self._motionInputs = None
@@ -288,6 +291,11 @@ class GatedReviewData:
         result = self.gated.results[index]
         return result if result is not None else self.staticResult
 
+    def selectThickening(self, method):
+        """Show the thickening map of one of wallLib.THICKENING_METHODS (all are made by buildThickening)."""
+        self.thickeningMethod = method
+        self.thickening = self.thickeningMaps.get(method)
+
     def buildThickening(self):
         import MPIGatedQC
         if self.phases is None:
@@ -304,7 +312,11 @@ class GatedReviewData:
             sample = MPIGatedQC.sampler(array, MPIGatedQC.worldToIjk(node, self.gated.study), mask, center)
             polars.append(wallLib.polarMap(self.result(index), sample))
         _, _, _, ed, es = self.phases
-        self.thickening = wallLib.thickeningMap(polars, ed, es)
+        counts = wallLib.thickeningMap(polars, ed, es)
+        geometry = wallLib.geometricThickeningMap([self.result(i) for i in range(len(gates))], ed, es)
+        self.thickeningMaps = {"counts": counts, "geometry": geometry,
+                               "hybrid": wallLib.hybridThickeningMap(counts, geometry)}
+        self.selectThickening(self.thickeningMethod)
         meanCounts = np.mean([p["values"] for p in polars], axis=0)
         self._motionInputs = ([self.result(i) for i in range(len(gates))], ed, es, meanCounts)
         self.buildMotion()
@@ -505,7 +517,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "Color window of the perfusion polar maps and the 3D walls, % of the polar map maximum")
         polarForm.addRow("", self.polarWindowRange)
         self.thickeningRange = self._windowWidget(
-            "Color window of the wall thickening maps, % thickening (ES / ED wall counts)", *THICKENING_WINDOW)
+            "Color window of the wall thickening maps, % thickening from ED to ES", *THICKENING_WINDOW)
         polarForm.addRow("Thickening window:", self.thickeningRange)
         self.thickeningViewCombo = qt.QComboBox()
         for text, value in THICKENING_VIEWS:
@@ -517,6 +529,21 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "shows these walls and their scores), the mean of each of the 17 segments (default), or every pixel "
             "(a count ratio per pixel is noisy)")
         polarForm.addRow("Thickening map:", self.thickeningViewCombo)
+        self.thickeningMethodCombo = qt.QComboBox()
+        for text, value in wallLib.THICKENING_METHODS:
+            self.thickeningMethodCombo.addItem(text, value)
+        self.thickeningMethodCombo.setCurrentIndex(
+            max(0, self.thickeningMethodCombo.findData(DEFAULT_THICKENING_METHOD)))
+        self.thickeningMethodCombo.toolTip = (
+            "How the wall thickening is measured. Count-based: the wall counts of every ray grow with its thickness "
+            "(partial volume), % = ES / ED counts - 1; the background under the wall dilutes it (it reads low "
+            "against MRI) and a change of that background can read as thickening where the wall is dim. "
+            "Geometric (as QGS): the distance between the endo- and epicardium of every frame, % = ES / ED "
+            "thickness - 1; it follows the thickness model of Gated QC (a wall thinner than the resolution keeps "
+            "about the same profile width, so the frames' own widths read low, a constant myocardial volume "
+            "turns the mid-wall's inward motion into thickening), and a defect held at its static thickness reads "
+            "0. Hybrid (default): the mean of the two, whose errors differ")
+        polarForm.addRow("Thickening method:", self.thickeningMethodCombo)
         self.motionRange = self._windowWidget(
             "Color window of the inward wall motion, mm of endocardial motion from ED to ES (outward motion: "
             "black at 0 to full color at -4 mm). " + READING_NOTE, *MOTION_WINDOW,
@@ -691,6 +718,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("polarWindow", self.polarWindowRange)
         self.parameterPanel.bind("thickeningWindow", self.thickeningRange)
         self.parameterPanel.bind("thickeningView", self.thickeningViewCombo)
+        self.parameterPanel.bind("thickeningMethod", self.thickeningMethodCombo)
         self.parameterPanel.bind("motionWindow", self.motionRange)
         self.parameterPanel.bind("motionReference", self.motionReferenceCombo)
         self.parameterPanel.bind("regionalEFWindow", self.efRange)
@@ -737,6 +765,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarWindowRange.connect("valuesChanged(double,double)", lambda a, b: self.refresh(rebuild3D=False))
         self.thickeningRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
         self.thickeningViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
+        self.thickeningMethodCombo.connect("currentIndexChanged(int)", lambda _: self.onThickeningMethodChanged())
         self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.onMotionWindowChanged())
         self.motionReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onMotionReferenceChanged())
         self.efRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
@@ -1070,6 +1099,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         data.motionReference = self.motionReference()
         data.efReference = self.efReference()
         data.efCut = self.efCut()
+        data.thickeningMethod = self.thickeningMethod()
         data.buildThickening()
         self.data[slot] = (key, data)
         self.tiles = {k: v for k, v in self.tiles.items() if k[0] != slot}
@@ -1618,7 +1648,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         size = panel.polarSize()
         if size:
             view = {"thickening": self.thickeningView(), "ef": self.thickeningView(self.efViewCombo)}.get(kind, "pixels")
-            key = (id(data), int(size), self.colormapCombo.currentText, low, top, view)
+            key = (id(data), id(polar), int(size), self.colormapCombo.currentText, low, top, view)
             cached = self.polarImages.get((slot, tag))
             if cached is None or cached[0] != key:
                 image = wallLib.regionBullseye(polar, size, view)   # a count ratio per pixel is noisy
@@ -1641,7 +1671,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                        else "wedges from the long axis, cones from the LV center at the apex")
                 note = f"% of the cavity under each patch of endocardium emptied, {frames} ({cut})" + where
             else:
-                note = f"% thickening from the wall counts, {frames} (first harmonic over the cycle)" + where
+                source = {"counts": "the wall counts", "geometry": "the wall thickness (endo- to epicardium)"}.get(
+                    data.thickeningMethod, "the mean of the wall counts and the wall thickness")
+                note = f"% thickening from {source}, {frames} (first harmonic over the cycle)" + where
             panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
 
     def refreshVolumeCurves(self):
@@ -1937,6 +1969,15 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def efCut(self):
         return self.efCutCombo.itemData(self.efCutCombo.currentIndex) or DEFAULT_EF_CUT
 
+    def thickeningMethod(self):
+        return self.thickeningMethodCombo.itemData(self.thickeningMethodCombo.currentIndex) or DEFAULT_THICKENING_METHOD
+
+    def onThickeningMethodChanged(self):
+        """The studies loaded show the thickening map of the new method (all three are made with the data)."""
+        for _, data in self.data.values():
+            data.selectThickening(self.thickeningMethod())
+        self.refreshPolars()
+
     def onEFReferenceChanged(self):
         """The regional EF maps of the studies loaded, made again against the new reference or cut."""
         for slot, (_, data) in self.data.items():
@@ -2079,6 +2120,23 @@ class MPIGatedTest(ScriptedLoadableModuleTest):
                   for v in volumes]
         thickening = wallLib.thickeningMap(polars, 0, 4)
         self.assertGreater(float(np.median(thickening["values"])), 25.0)
+        # geometric: a wall 10 mm thick at ED and 14 mm at ES (mid-wall in place) reads about 40 %, and a wall
+        # that keeps its thickness reads 0; the hybrid map is their mean
+        grid = wallLib.WallGrid(np.zeros(3), np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0]), 55.0)
+        shape = (grid.nRows, grid.nTheta)
+        scar = grid.theta > np.pi                                       # half the wall keeps 10 mm
+
+        def wall(thickness):
+            t = np.where(scar[None, :], 10.0, np.full(shape, thickness))
+            return {"grid": grid, "mid": np.full(shape, 25.0), "endo": 25.0 - t / 2, "epi": 25.0 + t / 2,
+                    "valvePlane": (-30.0, 0.0, 0.0)}
+        walls = [wall(10.0 + 4.0 * (100 - v) / 50.0) for v in volumes]
+        geometry = wallLib.geometricThickeningMap(walls, 0, 4, smoothing=0.0)
+        self.assertAlmostEqual(float(np.median(geometry["values"][:, ~scar])), 40.0, delta=4.0)
+        self.assertAlmostEqual(float(np.median(geometry["values"][:, scar])), 0.0, delta=0.5)
+        counts = {"values": np.full(geometry["values"].shape, 20.0), "rho": geometry["rho"], "theta": geometry["theta"]}
+        hybrid = wallLib.hybridThickeningMap(counts, geometry)
+        self.assertAlmostEqual(float(np.median(hybrid["values"][:, scar])), 10.0, delta=0.5)
         self.delayDisplay("Thickening test passed")
 
     def test_WallRegions(self):
