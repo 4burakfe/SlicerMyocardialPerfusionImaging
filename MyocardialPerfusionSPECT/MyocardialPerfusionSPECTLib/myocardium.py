@@ -49,9 +49,13 @@ DEFAULTS = {
     "capRows": 12,             # rows of the apical cap (90 deg / capRows apart)
     "step": 1.0,               # mm between samples along a ray
     "iterations": 3,
-    "smoothing": 1.25,         # Gaussian sigma of the surface smoothing, in grid samples (0 = none)
-    "thicknessSmoothing": 3.0, # Gaussian sigma of the wall thickness map, in grid samples
-    "shapeModel": True,        # rays without a wall peak (defects) follow an ellipsoid model of the whole LV
+    "fit": "bspline",          # surface fit through the traced rays that also draws the untraced ones (WALL_FITS):
+                               # "bspline", "mesh", "legacy" as the gate frames, or "ellipsoid": the shape model
+                               # and Gaussian smoothing (the settings below marked "ellipsoid")
+    "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
+    "smoothing": 1.25,         # "ellipsoid": Gaussian sigma of the surface smoothing, in grid samples (0 = none)
+    "thicknessSmoothing": 3.0, # "ellipsoid": Gaussian sigma of the wall thickness map, in grid samples
+    "shapeModel": True,        # "ellipsoid": rays without a wall peak (defects) follow an ellipsoid model of the whole LV
     "baseFraction": 0.55,      # wall ends where its counts fall below this fraction of its column's wall counts
     "maxValveTilt": 40.0,      # deg, largest tilt of the valve plane against the short-axis plane
     "maxBaseNarrowing": 35.0,  # deg, steepest the wall may turn toward the axis on its way to the base
@@ -190,6 +194,8 @@ def _fitOnGrid(sample, grid, profiles=None):
     profiles = _rayProfiles(sample, grid) if profiles is None else profiles
     if profiles.max() <= 0:
         raise ValueError("No counts around the LV center.")
+    if p.get("fit", "ellipsoid") != "ellipsoid":
+        return _fitOnGridSurface(grid, profiles)
 
     # 1. initial radius from the mean profile (the ring of the wall dominates any single organ)
     mean = profiles.mean(axis=(0, 1))
@@ -241,6 +247,30 @@ def _fitOnGrid(sample, grid, profiles=None):
     return {"grid": grid, "mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
             "baseZ": baseZ, "detectedBaseZ": baseZ, "valvePlane": plane, "basePoints": basePoints,
             "rowCounts": rowCounts, "cavityLevel": cavity}
+
+
+def _fitOnGridSurface(grid, profiles):
+    """_fitOnGrid with a surface fit (fit "bspline", "mesh" or "legacy", as the gate frames detected from
+    scratch, _fittedWall): the rays whose wall stands out of the blood pool set the fit, which draws the
+    others; with shapeModel (the default) the fit is of their deviation from the ellipsoid shape model, so a
+    defect keeps the model's curve, without it the fit alone bridges it (flatter). The thickness is the
+    profile width with the resolution removed in quadrature, fitted the same way on the walls clear of a
+    defect."""
+    p = grid.params
+    mid, weight, plane, basePoints = _fittedWall(grid, profiles, p["fit"], p["fitPull"], p.get("shapeModel", True))
+    beyond = _beyondBase(grid, mid, plane)
+    mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
+    peak = _interp(profiles, grid.t, mid)
+    half = max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
+    fwhm = _fwhm(profiles, grid.t, mid, peak, 1.6 * half)
+    physical = np.sqrt(np.maximum(fwhm ** 2 - float(p["resolution"]) ** 2, 0.0))
+    clear = np.where(_clearWalls(weight, peak), weight, 0.0)
+    thickness = fitSurface(grid, physical, clear, p["fit"], p["fitPull"], mid)
+    thickness = _holdBeyondBase(np.clip(thickness, p["minThickness"], p["maxThickness"]), beyond)
+    endo, epi = _wallSurfaces(grid, mid, thickness, p)
+    return {"grid": grid, "mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
+            "baseZ": plane[0], "detectedBaseZ": plane[0], "valvePlane": plane, "basePoints": basePoints,
+            "rowCounts": np.median(peak[:grid.nCyl], axis=1), "cavityLevel": _cavityLevel(profiles, grid.t, mid)}
 
 
 def _cavityLevel(profiles, t, peakT):
@@ -330,6 +360,7 @@ GATE_SEGMENTATIONS = (("Track the static wall", "static"),
 GATE_FITS = (("B-spline surface, bending penalty", "bspline"),
              ("Deformable mesh, every ray tied to its neighbours", "mesh"),
              ("Legacy: limited jump between neighbouring rays", "legacy"))
+WALL_FITS = GATE_FITS + (("Ellipsoid shape model, Gaussian smoothing (previous)", "ellipsoid"),)
 SPLINE_KNOT_MM = 8.0       # B-spline fit: knot spacing over the wall (mm)
 SPLINE_LENGTH_MM = 8.0     # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
 MESH_LENGTH_MM = 4.0       # mesh fit: tension length, wall features shorter than this are smoothed out (mm)
@@ -409,7 +440,8 @@ def fitGate(sample, reference, params=None):
     where the static wall is. With segmentation "static" the peaks are searched within maxWallShift of
     the static mid-wall and the fit is of their displacement from it, the valve plane stays within
     maxValveShift of the static one; with "own" every frame is detected from scratch as fitWall detects the
-    static image and the fit is of the wall itself. The wall thickness is the frame's own, from its count
+    static image and the fit is of the wall itself (of its deviation from the ellipsoid shape model with the
+    static fit's shapeModel, as there). The wall thickness is the frame's own, from its count
     profile widths (gateThickness, here at the static resolution; frameThicknessGates sets every frame at
     the resolution estimated from all of them). Returns a result dict like fitWall, so classify /
     labelGrid / wallStatistics apply."""
@@ -420,7 +452,7 @@ def fitGate(sample, reference, params=None):
     if profiles.max() <= 0:
         raise ValueError("No counts around the LV center in this gate.")
     if g["segmentation"] == "own":
-        mid, weight, plane, basePoints = _ownGateWall(grid, profiles, g)
+        mid, weight, plane, basePoints = _fittedWall(grid, profiles, g["fit"], g["fitPull"], p.get("shapeModel", True))
     else:
         mid, weight, plane, basePoints = _trackedGateWall(grid, profiles, reference, g)
     beyond = _beyondBase(grid, mid, plane)
@@ -478,11 +510,14 @@ def _trackedGateWall(grid, profiles, reference, g):
     return mid, weight, (float(np.clip(plane[0], a0 - maxValve, a0 + maxValve)), gw, gs), basePoints
 
 
-def _ownGateWall(grid, profiles, g):
-    """segmentation "own": (mid, weights, valve plane, base points) of a frame detected from scratch, as
-    _fitOnGrid detects the static image but with the surface fit in place of its shape model: the search
-    window starts from the mean profile and narrows around the fitted wall, the valve plane is fitted on
-    the frame's own wall, the rays past it do not count in the last fit."""
+def _fittedWall(grid, profiles, fit, pull, shapePrior=False):
+    """(mid, weights, valve plane, base points) of a wall detected from scratch with a surface fit
+    (fitSurface): the static image (_fitOnGridSurface) and the gate frames with segmentation "own". The
+    search window starts from the mean profile and narrows around the fitted wall, the valve plane is
+    fitted on the wall, the rays past it do not count in the next fit. With shapePrior the fit is of the
+    peaks' deviation from the ellipsoid shape model (_shapeModel) fitted to the traced walls, so a defect
+    keeps the model's curve, the deviations of the walls around it fading into it (a prolate apex behind an
+    apical defect, which a fit alone bridges flatter)."""
     p = grid.params
     mean = profiles.mean(axis=(0, 1))
     usable = grid.t >= 3.0
@@ -491,11 +526,27 @@ def _ownGateWall(grid, profiles, g):
     hi = np.full((grid.nRows, grid.nTheta), min(1.7 * t0, grid.t[-1]))
     half = max(6.0, 0.35 * t0)
     beyond = np.zeros((grid.nRows, grid.nTheta), dtype=bool)
-    for last in [False] * int(p["iterations"]) + [True]:
+    plane = None
+    for _ in range(int(p["iterations"]) + 1):
         peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
         weight = _gateWeights(grid, peakT, peakValue, lo, hi, _cavityLevel(profiles, grid.t, peakT), 0.3 * t0)
         weight[beyond] = 0.0
-        mid = fitSurface(grid, peakT, weight, g["fit"], g["fitPull"], np.where(weight > 0, peakT, t0))
+        model = None
+        if shapePrior:
+            if plane is None:
+                rough = np.where(weight > 0, peakT, np.median(peakT[weight > 0]) if np.any(weight > 0) else t0)
+                roughPeak = _interp(profiles, grid.t, rough)
+                first, _ = _fitValvePlane(grid, rough, roughPeak, p, _cavityFill(profiles, grid.t, rough, roughPeak))
+                inside = ~_beyondBase(grid, rough, first)
+                baseZ = first[0]
+            else:
+                inside, baseZ = ~beyond, plane[0]
+            model, off = _shapeModel(grid, peakT, weight, inside, 0.3 * t0, baseZ, peakValue)
+        if model is not None:
+            weight = np.where(off, 0.0, weight)
+            mid = model + fitSurface(grid, peakT - model, weight, fit, pull, model)
+        else:
+            mid = fitSurface(grid, peakT, weight, fit, pull, np.where(weight > 0, peakT, t0))
         mid = np.clip(mid, 1.0, grid.t[-1])
         peak = _interp(profiles, grid.t, mid)
         plane, basePoints = _fitValvePlane(grid, mid, peak, p, _cavityFill(profiles, grid.t, mid, peak))

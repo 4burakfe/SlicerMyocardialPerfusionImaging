@@ -226,7 +226,18 @@ How it works:
   moved along the axis between the valve plane and the apex (toward the apex when a steep valve plane
   needs room) and the wall is fitted again, so the result does not depend on where the LV center was
   placed.
-- Surface smoothing is 1.25 by default; higher values bridge defects more.
+- *Fit* sets the surface through the peaks, as in Gated QC (see there): **B-spline** (default), **deformable
+  mesh** or **legacy**. A ray's peak counts by its wall counts against the cavity's blood pool (up to
+  1.25 x it does not count, from 1.75 x fully), and the fit draws the rays that do not count. With *Shape
+  model through defects* (on by default) the fit is of the peaks' deviation from the ellipsoid above, so
+  a defect keeps the ellipsoid's curve; without it the fit alone bridges a defect, flatter (an apical
+  defect over a prolate apex: 31 mm instead of 40 in the test phantom, against 40.6 with the model).
+  *Smoothing (pull to the fit)* (0.8) is how far a traced ray is moved from its own peak to the fit.
+  The wall thickness goes through the same fit. The stiffness of the fits is set in the Gated QC
+  Advanced parameters (Frame fit), shared by both steps.
+- *Fit: Ellipsoid (previous)* is the earlier method described above: the ellipsoid with the peaks'
+  smoothed deviations and *Surface smoothing* (1.25 by default; higher values bridge defects more). A
+  scene saved before the surface fits opens with it, so its wall stays the same.
 
 ### 4. Perfusion
 
