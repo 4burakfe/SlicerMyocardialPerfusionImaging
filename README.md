@@ -341,7 +341,14 @@ STRESS GATED shows the stress gated study:
     distance between the endo- and epicardium; it follows the thickness model of Gated QC (with the
     frames' own profile widths it reads low, with a constant myocardial volume it turns the mid-wall's
     inward motion into thickening), and a defect held at its static thickness reads 0. **Hybrid**
-    (default): the mean of the two. *Thickening map* paints it as the mean
+    (default): the mean of the two, half and half, or with *Hybrid weight: Phase coherence* the counts
+    weigh as much as their phases agree and the geometry the rest. *Phase coherence* (off by default)
+    hatches the thickening maps where the count change is noise (after Cooke et al., J Nucl Med 1994): the
+    first-harmonic phase of the wall counts of every ray is positive when its peak lies within a quarter
+    cycle of ES, the share f of positive rays is pooled around each ray, and the coherence |2 f - 1| is 0
+    for random phases and 100 % where they all agree (thickening or thinning); below 50 % is hatched. A
+    background that changes the same way every cycle (the walls around a scar brightening in systole) is
+    coherent too. *Thickening map* paints it as the mean
     of each of the five walls, the mean of each of the 17 AHA segments (default), or per pixel. The five
     walls are drawn on the bullseye itself, not grouped from the segments: the apex is the central disk
     (the size of segment 17) and the rest is cut by an X into anterior, septal, inferior and lateral

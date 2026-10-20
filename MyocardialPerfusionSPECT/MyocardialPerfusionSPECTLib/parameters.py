@@ -261,6 +261,13 @@ STEP_PARAMETERS = {
           " cells", "Smoothing of the % thickening map", "Polar maps"),
         P("thickeningCountSmoothing", "Thickening count smoothing", 3.0, f"{MYO}:THICKENING_COUNT_SMOOTHING", 0.0, 8.0,
           0.25, 2, " cells", "Smoothing of the ED and ES count maps before their ratio", "Polar maps"),
+        P("phaseCoherenceSmoothing", "Phase coherence neighbourhood", 3.0, f"{MYO}:PHASE_COHERENCE_SMOOTHING", 0.5,
+          8.0, 0.25, 2, " cells", "Neighbourhood (Gaussian sigma) over which the first-harmonic phases of the wall "
+          "counts are pooled for the phase coherence (overlay and coherence-weighted hybrid thickening)",
+          "Polar maps"),
+        P("phaseCoherenceLow", "Phase coherence hatched below", 50.0, f"{MYO}:PHASE_COHERENCE_LOW", 0.0, 100.0, 5.0,
+          0, " %", "The phase coherence overlay hatches the thickening map where the coherence is below this "
+          "(0: random phases, 100: all agree)", "Polar maps"),
         P("motionSmoothing", "Wall motion map smoothing", 1.5, f"{MYO}:MOTION_SMOOTHING", 0.0, 8.0, 0.25, 2, " cells",
           group="Polar maps"),
         P("outwardMotion", "Outward motion at full color", 4.0, f"{DISPLAY}:OUTWARD_MOTION_MM", 0.5, 20.0, 0.5, 1,

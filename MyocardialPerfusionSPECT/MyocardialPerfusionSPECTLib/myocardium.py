@@ -365,6 +365,10 @@ MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
 THICKENING_METHODS = (("Hybrid: mean of the count-based and geometric maps", "hybrid"),
                       ("Count-based: ES / ED wall counts", "counts"),
                       ("Geometric: ES / ED wall thickness (endo- to epicardium, as QGS)", "geometry"))
+HYBRID_WEIGHTS = (("Fixed: half counts, half geometry", "fixed"),
+                  ("Phase coherence: counts where their phases agree", "coherence"))
+PHASE_COHERENCE_SMOOTHING = 3.0   # phaseCoherenceMap: neighbourhood (Gaussian sigma, map cells) the phases are pooled over
+PHASE_COHERENCE_LOW = 50.0        # %: coherence below which the overlay hatches the thickening map
 MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
                      ("Floating: each frame's LV center and epicardial apex", "floating"),
                      ("Floating: each frame's myocardium mass center", "mass"),
@@ -726,12 +730,40 @@ def geometricThickeningMap(gateResults, ed, es, smoothing=None):
     return {"values": values, "rho": rho, "theta": gateResults[ed]["grid"].theta.copy()}
 
 
-def hybridThickeningMap(countMap, geometricMap):
-    """Mean of the count-based (thickeningMap) and geometric (geometricThickeningMap) thickening maps, %:
-    the counts read a wall's thickening low where its counts sit on a large background, the geometry
-    reads it after the thickness model; their errors differ, so the mean is steadier than either."""
-    return {"values": 0.5 * (np.asarray(countMap["values"]) + np.asarray(geometricMap["values"])),
+def hybridThickeningMap(countMap, geometricMap, coherence=None):
+    """Weighted mean of the count-based (thickeningMap) and geometric (geometricThickeningMap) thickening
+    maps, %: the counts read a wall's thickening low where its counts sit on a large background, the geometry
+    reads it after the thickness model; their errors differ, so the mean is steadier than either. Without
+    coherence half and half; with a phase coherence map (phaseCoherenceMap, %) the counts weigh as much as
+    their phases agree (0 where they are random, all where they all agree) and the geometry the rest."""
+    counts, geometry = np.asarray(countMap["values"]), np.asarray(geometricMap["values"])
+    weight = 0.5 if coherence is None else np.clip(np.asarray(coherence["values"]) / 100.0, 0.0, 1.0)
+    return {"values": weight * counts + (1.0 - weight) * geometry,
             "rho": np.asarray(countMap["rho"]).copy(), "theta": np.asarray(countMap["theta"]).copy()}
+
+
+def phaseCoherenceMap(gatePolars, ed, es, smoothing=None):
+    """How consistently the wall counts around every ray change over the cycle, in % (after Cooke et al.,
+    J Nucl Med 1994: the first-harmonic phase of a pixel whose wall thickens falls in systole; in noise it is
+    random). A ray is positive when the peak of its counts' first harmonic lies within a quarter cycle of
+    ES. The share f of positive rays is pooled over a neighbourhood (Gaussian, smoothing map cells,
+    PHASE_COHERENCE_SMOOTHING by default) and the coherence is |2 f - 1|: 0 where the phases are random
+    (f about 50 %), 100 % where they all agree, thickening (f near 100 %) or thinning (f near 0). It shows
+    where the count-based thickening is more than noise; a background that changes the same way in every
+    cycle (the walls around a scar brightening in systole) is coherent too.
+    Returns a polar map dict like thickeningMap with "values" in % and "positive" (f, %)."""
+    smoothing = PHASE_COHERENCE_SMOOTHING if smoothing is None else smoothing
+    stack = np.array([np.asarray(p["values"], dtype=float) for p in gatePolars])     # [frames, rows, angles]
+    n = stack.shape[0]
+    phase = 2.0 * np.pi * np.arange(n) / n
+    cosine = np.tensordot(np.cos(phase), stack, axes=1)
+    sine = np.tensordot(np.sin(phase), stack, axes=1)
+    peak = np.arctan2(sine, cosine)                       # phase of the first harmonic's maximum
+    positive = (np.cos(peak - phase[es]) > 0.0).astype(float)
+    share = _smoothMap(positive, np.ones_like(positive), smoothing)
+    reference = gatePolars[ed]
+    return {"values": 100.0 * np.abs(2.0 * share - 1.0), "positive": 100.0 * share,
+            "rho": np.asarray(reference["rho"]).copy(), "theta": np.asarray(reference["theta"]).copy()}
 
 
 def _firstHarmonic(stack, ed, es):
