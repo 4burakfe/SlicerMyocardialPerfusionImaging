@@ -233,9 +233,13 @@ How it works:
   a defect keeps the ellipsoid's curve; without it the fit alone bridges a defect, flatter (an apical
   defect over a prolate apex: 31 mm instead of 40 in the test phantom, against 40.6 with the model).
   *Smoothing (pull to the fit)* (0.8) is how far a traced ray is moved from its own peak to the fit.
-  The wall thickness goes through the same fit, each side of a profile measured against its own floor
-  (the blood pool inside, the counts outside) and read as a blurred slab with a prior (see Gated QC);
-  the ellipsoid fit removes the resolution in quadrature, as before. The stiffness of the fits is set in the Gated QC
+  The wall borders go through the same fit: the endocardium is where the profile falls half way from
+  the wall peak to the cavity's blood pool, the epicardium half way to the counts outside, with no model
+  of the system resolution (*Wall borders*, Advanced parameters, Wall fit; *Blurred slab with a prior*
+  reads the width as a slab blurred at the resolution instead, see Gated QC). The blood pool level is
+  the median counts of the cavity sampled 5 mm inside the endocardium (*Blood pool gap from the
+  endocardium*), so the wall's blurred edge does not raise it; a cavity too small for the gap is
+  sampled up to the endocardium. The ellipsoid fit removes the resolution in quadrature, as before. The stiffness of the fits is set in the Gated QC
   Advanced parameters (Frame fit), shared by both steps.
 - *Fit: Ellipsoid (previous)* is the earlier method described above: the ellipsoid with the peaks'
   smoothed deviations and *Surface smoothing* (1.25 by default; higher values bridge defects more). A
@@ -313,23 +317,24 @@ For the gated study of Study 1 or Study 2:
   *Smoothing (pull to the fit)* (0.8 by default) is how far a traced ray is moved from its own peak to
   the fit: 1 takes the fit, 0 keeps the peak. Nothing holds a defect in place: the fit draws it from the
   walls around it, motion included. The frames are noisier than the static image, so check their contours.
-- **Wall thickness** of every frame comes from its own count profile widths, as Myocardium does on the
-  static image (at the static study's system resolution), on the walls clear of a defect, and goes through
-  the same fit, which draws the thickness of the others. No volume is kept between the frames. Each side
-  of a profile is measured against its own floor: the edge toward the cavity half way between the wall
-  peak and the blood pool, the outer edge half way to the counts outside. With one floor for both sides
-  (the lower, outer one) the inner edge sat out in the blood pool, the more so the dimmer the wall against
-  it, so a dim end-diastolic wall read thicker than the end-systolic one (negative thickening, a low EF):
-  in a phantom with the pool at 40 % of the wall, 8.9 mm at ED and 6.0 at ES before, 11.7 and 11.1 now
-  (truth 10 and 13). A width is turned into a thickness as a slab of uniform uptake blurred at the
-  system resolution, its width measured the same way (within the same reach of the peak, which reads
-  narrower than the full width at half maximum, by up to 2 mm at 15 mm blur). A wall thinner than the
-  blur keeps about the blur's width (at 12 mm a 10 mm wall reads 14.1 mm, a 6 mm wall 12.8 mm), so a
-  small error of the width would move its thickness a lot: the thickness leans to a prior of 10 +- 3 mm
-  as far as the width cannot tell, and a wall thicker than the blur is read from its width (Advanced
-  parameters, Wall fit). In blurred phantoms (12 and 15 mm, with and without a blood pool) a 10 mm wall
-  reads 9.5-9.9 mm in the static image and the frames (6.0-8.3 and 9-14 before), a 6 mm wall 8-9 mm and
-  a 14 mm wall 10-12.7 mm. The thickening map is count-based and does not use these widths.
+- **Wall borders** of every frame come from its own count profiles, as Myocardium does on the static
+  image, on the walls clear of a defect, and go through the same fit, which draws the others. No volume
+  is kept between the frames. The endocardium is where the profile falls half way from the wall peak to
+  the blood pool, the epicardium half way to the lowest counts outside (within reach of the peak); the
+  two half widths are fitted on their own, and the thickness is their sum. The blood pool level is the
+  static image's (sampled 5 mm inside its endocardium), scaled to the frame's counts: a frame's own
+  cavity changes with the heart cycle, and at end-systole a small cavity is filled by the walls' blur,
+  so measured against its own floor the inner edge came close to the peak and the end-systolic wall read
+  narrower than the end-diastolic one. A ray whose profile does not fall half way to the static pool
+  keeps its own floor. There is no model of the system resolution by default: at 12 mm the half-way
+  borders of any wall thinner than the blur are about the blur's width apart, so thickening reads much
+  smaller than it is. In a gated phantom (12 mm blur, pool at 10 % of the wall, the same counts in every
+  frame, ED 10 mm wall around a 25 mm cavity, ES 15 mm around 11 mm) the frames read 13.1 mm at ED and
+  14.2 at ES (14.1 and 11.8 before). *Wall borders: Blurred slab with a prior* (Advanced parameters, Wall
+  fit) reads the width as a slab of uniform uptake blurred at the system resolution, its width measured
+  the same way, leaning to a prior of 10 +- 3 mm where the blur hides it, and puts the endo- and
+  epicardium half a thickness either side of the mid-wall: 8.4 and 15.8 mm in the same phantom (10.0 and
+  10.7 before, with each frame's own blood pool). The thickening map is count-based and does not use these widths.
 - **Frames on screen.** Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in
   three rows, one tile per frame, all at the same slice (the mouse wheel over a row scrolls), with its
   contours and one color scale for all frames (or each frame on its own).
