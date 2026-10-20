@@ -24,16 +24,15 @@ labelling:
    end points (robust least squares, tilt limited), so the valve plane may be oblique to the long
    axis. It can be moved along the axis and tilted afterwards (valve offset and tilt).
 4. Endo- and epicardium. Mid-wall -/+ half the wall thickness, the thickness taken from the width
-   (FWHM) of the count profile with the system resolution removed in quadrature, and limited to a
-   plausible range.
+   of the count profile (each side against its own floor), limited to a plausible range. With the
+   surface fits the width is that of a slab of uniform uptake blurred at the system resolution, leaning
+   to a prior thickness where the blur hides it (slabThickness); the ellipsoid fit removes the
+   resolution from the width in quadrature.
 
-Gate frames (fitGate, frameThicknessGates): every frame's wall is tracked from the static wall or detected
-from scratch on the same rays, and a surface fit (fitSurface: a B-spline, a deformable mesh or the legacy
-jump-limited path) runs through the rays whose wall the frame shows and draws the others. Every frame's
-thickness comes from its own profiles, fitted the same way, modelled as a slab of uniform
-uptake blurred by a Gaussian (rectGaussThickness), the blur estimated from the frames themselves
-(estimateResolution: FWHM and peak / area of a profile fix slab width and blur together), so the
-gated reconstruction filter is taken into account.
+Gate frames (fitGate): every frame's wall is tracked from the static wall or detected from scratch on
+the same rays, and a surface fit (fitSurface: a B-spline, a deformable mesh or the legacy jump-limited
+path) runs through the rays whose wall the frame shows and draws the others. Every frame's thickness
+comes from its own profiles (slabThickness at the static study's resolution), fitted the same way.
 
 Coordinates: center c, u base -> apex, w anterior, s = u x w septum (as in MPIProcessing). The angle
 around the axis is measured from w toward s.
@@ -254,16 +253,16 @@ def _fitOnGridSurface(grid, profiles):
     scratch, _fittedWall): the rays whose wall stands out of the blood pool set the fit, which draws the
     others; with shapeModel (the default) the fit is of their deviation from the ellipsoid shape model, so a
     defect keeps the model's curve, without it the fit alone bridges it (flatter). The thickness is the
-    profile width with the resolution removed in quadrature, fitted the same way on the walls clear of a
-    defect."""
+    slab whose blurred profile has the profile's width, leaning to a prior where the blur hides it
+    (slabThickness, as the gate frames), fitted the same way on the walls clear of a defect."""
     p = grid.params
     mid, weight, plane, basePoints = _fittedWall(grid, profiles, p["fit"], p["fitPull"], p.get("shapeModel", True))
     beyond = _beyondBase(grid, mid, plane)
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
     half = max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
-    width = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)[0]     # each side against its own floor
-    physical = np.sqrt(np.maximum(width ** 2 - float(p["resolution"]) ** 2, 0.0))
+    width = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)        # each side against its own floor
+    physical = slabThickness(width, p["resolution"], 1.6 * half)
     clear = np.where(_clearWalls(weight, peak), weight, 0.0)
     thickness = fitSurface(grid, physical, clear, p["fit"], p["fitPull"], mid)
     thickness = _holdBeyondBase(np.clip(thickness, p["minThickness"], p["maxThickness"]), beyond)
@@ -365,6 +364,9 @@ SPLINE_KNOT_MM = 8.0       # B-spline fit: knot spacing over the wall (mm)
 SPLINE_LENGTH_MM = 15.0    # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
 MESH_LENGTH_MM = 4.0       # mesh fit: tension length, wall features shorter than this are smoothed out (mm)
 LEGACY_MAX_SLOPE = 0.6     # legacy fit: largest change between neighbouring rays, mm per mm of wall
+THICKNESS_PRIOR_MM = 10.0    # slabThickness: wall thickness a profile leans to where the blur hides its own ...
+THICKNESS_PRIOR_SIGMA = 3.0  # ... with this spread (mm)
+WIDTH_SIGMA_MM = 0.75        # slabThickness: uncertainty of a measured profile width (mm)
 FIT_OUTLIER = 3.0          # rays further than this many robust misfits from the first fit lose their weight
 
 
@@ -437,9 +439,8 @@ def fitGate(sample, reference, params=None):
     maxValveShift of the static one; with "own" every frame is detected from scratch as fitWall detects the
     static image and the fit is of the wall itself (of its deviation from the ellipsoid shape model with the
     static fit's shapeModel, as there). The wall thickness is the frame's own, from its count
-    profile widths (gateThickness, here at the static resolution; frameThicknessGates sets every frame at
-    the resolution estimated from all of them). Returns a result dict like fitWall, so classify /
-    labelGrid / wallStatistics apply."""
+    profile widths (gateThickness, at the static study's resolution). Returns a result dict like fitWall,
+    so classify / labelGrid / wallStatistics apply."""
     grid = reference["grid"]
     p = grid.params
     g = dict(GATE_DEFAULTS, **(params or {}))
@@ -454,11 +455,10 @@ def fitGate(sample, reference, params=None):
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
     half = max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
-    width, fwhm, height, area = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
+    width = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
     result = {"grid": grid, "mid": mid, "peak": peak, "baseZ": plane[0], "detectedBaseZ": plane[0],
               "valvePlane": plane, "basePoints": basePoints, "rowCounts": np.median(peak[:grid.nCyl], axis=1),
-              "gateWeight": weight, "profileFwhm": width,
-              "resolutionEstimate": estimateResolution(fwhm, height, area, weight),
+              "gateWeight": weight, "profileFwhm": width, "profileReach": 1.6 * half,
               "segmentation": g["segmentation"], "fit": g["fit"], "fitPull": float(g["fitPull"])}
     return _withThickness(result, p["resolution"])
 
@@ -553,12 +553,12 @@ def _fittedWall(grid, profiles, fit, pull, shapePrior=False):
 
 def gateThickness(result, resolution):
     """Wall thickness of a gate frame from its own count profiles (fitGate "profileFwhm"), for a system
-    resolution (FWHM mm): the slab width of every profile, fitted over the wall with the frame's surface
-    fit (fitSurface) on the walls clear of a defect (a profile cut short by a defect's edge reads thin),
-    which draws the others, limited like the static fit."""
+    resolution (FWHM mm): the slab width of every profile (slabThickness), fitted over the wall with the
+    frame's surface fit (fitSurface) on the walls clear of a defect (a profile cut short by a defect's edge
+    reads thin), which draws the others, limited like the static fit."""
     grid, p = result["grid"], result["grid"].params
     weight = np.where(_clearWalls(result["gateWeight"], result["peak"]), result["gateWeight"], 0.0)
-    widths = rectGaussThickness(result["profileFwhm"], resolution)
+    widths = slabThickness(result["profileFwhm"], resolution, result["profileReach"])
     widths = fitSurface(grid, widths, weight, result.get("fit", GATE_DEFAULTS["fit"]),
                         result.get("fitPull", GATE_DEFAULTS["fitPull"]), result["mid"])
     widths = np.clip(widths, p["minThickness"], p["maxThickness"])
@@ -571,23 +571,6 @@ def _withThickness(result, resolution):
     thickness = gateThickness(result, resolution)
     endo, epi = _wallSurfaces(grid, result["mid"], thickness, grid.params)
     return dict(result, thickness=thickness, endo=endo, epi=epi, resolutionMm=float(resolution))
-
-
-def gatedResolution(results, fallback):
-    """System resolution of a gated study: the median of the estimates of its frames."""
-    values = [r["resolutionEstimate"] for r in results if r is not None and r.get("resolutionEstimate")]
-    return float(np.median(values)) if values else float(fallback)
-
-
-def frameThicknessGates(results):
-    """Every gate frame's wall thickness from its own count profiles at the resolution estimated over all
-    frames (gatedResolution). results: fitGate results (None for a frame that could not be segmented).
-    Returns new results."""
-    known = [r for r in results if r is not None and "profileFwhm" in r]
-    if not known:
-        return list(results)
-    resolution = gatedResolution(known, known[0]["grid"].params["resolution"])
-    return [None if r is None else _withThickness(r, resolution) if "profileFwhm" in r else r for r in results]
 
 
 def _wallSurfaces(grid, mid, thickness, p):
@@ -1800,8 +1783,7 @@ def _profileWidth(profiles, t, position, peak, reach):
     profile is half way between the peak and that side's floor, where a blurred step between the wall
     and the level beyond it sits; one floor for both sides (the outer, lower one) would put the inner edge
     out in the blood pool, the more so the dimmer the wall against it, and thicken a dim end-diastolic wall
-    more than the brighter end-systolic one. Returns (width, and for estimateResolution the outer half
-    mirrored as a whole profile: its FWHM, height and area above the outer floor, within 1.5 FWHM)."""
+    more than the brighter end-systolic one. slabThickness turns the width into a wall thickness."""
     d = t[None, None, :] - position[..., None]
     window = np.abs(d) <= reach
 
@@ -1810,63 +1792,49 @@ def _profileWidth(profiles, t, position, peak, reach):
         return np.where(np.isfinite(level), np.minimum(level, peak), 0.0)
     inner, outer = floor(d < 0), floor(d > 0)
     toInner, toOuter = _halfWidths(profiles, t, position, peak, reach, inner, outer)
-    mirrored = 2.0 * toOuter
-    outside = (d >= 0) & (d <= 1.5 * mirrored[..., None])
-    area = 2.0 * (np.clip(profiles - outer[..., None], 0.0, None) * outside).sum(axis=2) * float(t[1] - t[0])
-    return toInner + toOuter, mirrored, peak - outer, area
+    return toInner + toOuter
 
 
-_RECT_GAUSS = {}
+_SLAB_WIDTHS = {}
+SLAB_T = np.arange(0.0, 40.01, 0.5)   # slab widths of the slabThickness table (mm)
 
 
-def _rectGaussTable():
-    """FWHM and peak (unit uptake) of a slab of width T blurred by a Gaussian of FWHM R, on a grid of
-    T (0-40 mm) and R (3-30 mm): (T, R, fwhm [T, R], peak [T, R])."""
-    if not _RECT_GAUSS:
+def _slabWidths(resolution, reach):
+    """Profile width (mm) of a slab of every width in SLAB_T, of uniform uptake, blurred by a Gaussian of
+    FWHM resolution, measured as _profileWidth measures a wall: each half against the profile's floor within
+    reach of the peak (the blur's tails beyond reach raise it, so the width reads narrower than the full
+    width at half maximum, by up to 2 mm at 15 mm blur). Cached by resolution and reach, rounded to 0.5 mm."""
+    resolution = max(round(2.0 * float(resolution)) / 2.0, 1.0)
+    reach = max(round(2.0 * float(reach)) / 2.0, 1.0)
+    key = (resolution, reach)
+    if key not in _SLAB_WIDTHS:
         from math import erf
         erfv = np.vectorize(erf)
-        T = np.arange(0.0, 40.01, 0.5)
-        R = np.arange(3.0, 30.01, 0.5)
-        x = np.arange(0.0, 60.0, 0.05)
-        fwhm = np.zeros((len(T), len(R)))
-        peak = np.zeros((len(T), len(R)))
-        for j, r in enumerate(R):
-            s = math.sqrt(2.0) * r / 2.3548
-            y = 0.5 * (erfv((x[None, :] + T[:, None] / 2.0) / s) - erfv((x[None, :] - T[:, None] / 2.0) / s))
-            peak[:, j] = y[:, 0]
-            below = y < 0.5 * y[:, :1]
-            first = np.argmax(below, axis=1)
-            fwhm[:, j] = 2.0 * x[np.maximum(first, 1)]
-        _RECT_GAUSS.update(T=T, R=R, fwhm=fwhm, peak=peak)
-    t = _RECT_GAUSS
-    return t["T"], t["R"], t["fwhm"], t["peak"]
+        s = math.sqrt(2.0) * resolution / 2.3548
+        x = np.arange(0.0, reach + 1e-6, 0.02)
+        y = 0.5 * (erfv((x[None, :] + SLAB_T[:, None] / 2.0) / s) - erfv((x[None, :] - SLAB_T[:, None] / 2.0) / s))
+        level = 0.5 * (y[:, 0] + y[:, -1])
+        below = y <= level[:, None]
+        first = np.where(below.any(axis=1), np.argmax(below, axis=1), len(x) - 1)
+        _SLAB_WIDTHS[key] = 2.0 * x[np.maximum(first, 1)]
+    return _SLAB_WIDTHS[key]
 
 
-def rectGaussThickness(fwhm, resolution):
-    """Slab width (mm) whose profile, blurred by a Gaussian of FWHM resolution, has this FWHM."""
-    T, R, table, _ = _rectGaussTable()
-    j = int(np.clip(np.round((float(resolution) - R[0]) / (R[1] - R[0])), 0, len(R) - 1))
-    return np.interp(np.asarray(fwhm, dtype=float), table[:, j], T)
-
-
-def estimateResolution(fwhm, height, area, weight, rays=800):
-    """System resolution (FWHM, mm) from wall profiles: for a slab of width T blurred by a Gaussian,
-    the profile's FWHM and its peak / area ratio fix T and the blur together. Each of the brightest
-    rays (weight above its 60th percentile) is matched to the table; the median blur is returned, or
-    None when there are too few usable rays."""
-    T, R, table, peak = _rectGaussTable()
-    good = (weight >= np.percentile(weight, 60)) & (area > 0) & (height > 0) & np.isfinite(fwhm)
-    if np.count_nonzero(good) < 20:
-        return None
-    f, q = fwhm[good], (height / np.maximum(area, 1e-9))[good]
-    if len(f) > rays:
-        pick = np.linspace(0, len(f) - 1, rays).astype(int)
-        f, q = f[pick], q[pick]
-    ratio = peak[1:] / T[1:, None]                                         # peak / area, T > 0
-    err = ((table[1:][None] - f[:, None, None]) / f[:, None, None]) ** 2 + \
-          ((ratio[None] - q[:, None, None]) / q[:, None, None]) ** 2
-    best = err.reshape(len(f), -1).argmin(axis=1) % len(R)
-    return float(np.clip(np.median(R[best]), 5.0, 25.0))
+def slabThickness(width, resolution, reach):
+    """Wall thickness (mm) from profile widths (_profileWidth, measured within reach mm of the peak) at a
+    system resolution (FWHM, mm): the slab whose blurred profile has this width (_slabWidths), weighed
+    against a prior wall of THICKNESS_PRIOR_MM +- THICKNESS_PRIOR_SIGMA by how well the width tells slabs
+    apart at this blur (each width known to WIDTH_SIGMA_MM). A slab thinner than the blur keeps about the
+    blur's width (at 12 mm a 10 mm slab reads 14.1 mm, a 6 mm one 12.8 mm), so there a small error of the
+    width would move the thickness a lot and it leans to the prior; a wall thicker than the blur is read
+    from its width. The mean over SLAB_T; a width that is not finite gives the prior."""
+    table = _slabWidths(resolution, reach)
+    width = np.asarray(width, dtype=float)
+    known = np.isfinite(width)[..., None]
+    misfit = np.where(known, (table - np.nan_to_num(width)[..., None]) / WIDTH_SIGMA_MM, 0.0)
+    log = -0.5 * misfit ** 2 - 0.5 * ((SLAB_T - THICKNESS_PRIOR_MM) / THICKNESS_PRIOR_SIGMA) ** 2
+    weight = np.exp(log - log.max(axis=-1, keepdims=True))
+    return (weight * SLAB_T).sum(axis=-1) / weight.sum(axis=-1)
 
 
 def _fwhm(profiles, t, position, peak, reach, base=None):
