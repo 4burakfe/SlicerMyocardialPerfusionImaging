@@ -356,8 +356,9 @@ SHAPE_FADE = 0.1           # how fast that misfit fades inside a defect (share o
 MIN_DEFECT_SHIFT = 0.3      # share of maxWallShift searched on rays through a defect
 DEFECT_MOTION_SIGMA = 3.0   # x gateSmoothing: width of the motion field that rays through a defect follow
 DEFECT_PRIOR_WEIGHT = 0.03  # weight of that motion field against the rays' own peaks (weights 0..1)
-RELIABILITY_LOW = 0.15      # static visibility (_wallVisibility) below which a ray counts as deep defect (scar)
-RELIABILITY_HIGH = 0.60     # ... and from which it counts as normal wall
+TRACE_RATIO_LOW = 1.25      # wall / blood pool counts (static image) up to which a ray's wall is untraceable (scar) ...
+TRACE_RATIO_HIGH = 1.75     # ... and from which it is traced as wall; in between it is partly trusted
+TRACE_POOL_FLOOR = 0.05     # share of the bright walls' counts below which the blood pool is not taken lower
 THICKENING_SMOOTHING = 2.5        # thickeningMap: smoothing of the % map (map cells)
 THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES count maps
 MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
@@ -371,21 +372,31 @@ REGIONAL_EF_CUTS = (("Wedges from the long axis, cones from the LV center at the
                     ("Cones from each frame's base center", "base"))   # regionalEFMap: how the cavity is cut
 
 
+def _traceability(peakValue, cavity):
+    """0..1 per ray: whether its wall can be traced, from the wall's counts against the cavity's blood pool
+    (ratio): 0 up to TRACE_RATIO_LOW (the wall does not stand out of the blood pool: a transmural defect),
+    1 from TRACE_RATIO_HIGH. Unlike _wallVisibility it does not compare the wall with the other walls, so
+    a hypoperfused wall that is still plainly above the blood pool counts as traceable."""
+    peak = np.nan_to_num(np.asarray(peakValue, dtype=float))
+    # a blood pool below TRACE_POOL_FLOOR of the bright walls (a phantom, no counts in the cavity) is taken
+    # at that level, so rays without counts still count as untraceable
+    pool = max(float(cavity or 0.0), TRACE_POOL_FLOOR * float(np.percentile(peak, 90)), 1e-9)
+    low, high = float(TRACE_RATIO_LOW), float(TRACE_RATIO_HIGH)
+    return np.clip((peak / pool - low) / max(high - low, 1e-3), 0.0, 1.0)
+
+
 def _staticReliability(reference):
-    """0..1 per ray: how well the wall is seen in the static image (its visibility above the cavity's
-    blood pool, _wallVisibility), 0 in a deep defect (below RELIABILITY_LOW), 1 from RELIABILITY_HIGH.
-    A static fit without the cavity level (older scenes) measures the peaks against the bright walls."""
+    """0..1 per ray: whether the wall can be traced in the static image (_traceability, the static image has
+    all the counts), 0 where it cannot (scar: held where the static wall is, akinetic), 1 where it can (the
+    frames' own wall is used). A static fit without the cavity level (older scenes) measures the peaks
+    against the bright walls."""
     peak = np.nan_to_num(np.asarray(reference["peak"], dtype=float))
     if "cavityLevel" in reference:
-        visibility = _wallVisibility(peak, reference["cavityLevel"])
-        low, high = float(RELIABILITY_LOW), float(RELIABILITY_HIGH)
-    else:
-        top = float(np.percentile(peak, 90))
-        if top <= 0:
-            return np.ones_like(peak)
-        visibility = peak / top
-        low, high = 0.25, 0.60
-    return np.clip((visibility - low) / max(high - low, 1e-3), 0.0, 1.0)
+        return _traceability(peak, reference["cavityLevel"])
+    top = float(np.percentile(peak, 90))
+    if top <= 0:
+        return np.ones_like(peak)
+    return np.clip((peak / top - 0.25) / 0.35, 0.0, 1.0)
 
 
 def fitGate(sample, reference, params=None):
@@ -418,7 +429,9 @@ def fitGate(sample, reference, params=None):
     hi = np.minimum(refMid + rayShift, grid.t[-1])
     sigma = float(g["gateSmoothing"])
     peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
-    weight = _wallVisibility(peakValue, _cavityLevel(profiles, grid.t, peakT)) ** 2 * reliability ** 2
+    # a wall the gate shows plainly above its blood pool is trusted as much as the brightest, so a
+    # hypoperfused wall that can be traced keeps its own motion instead of taking its neighbours'
+    weight = _traceability(peakValue, _cavityLevel(profiles, grid.t, peakT)) ** 2 * reliability ** 2
     # rays far from their neighbours (noise, a neighbouring organ inside the window) do not count
     reference2 = _circularMedian(peakT, _angleWindow(grid, 9))
     nearPole = _nearPoleRows(grid, peakT)
@@ -437,6 +450,9 @@ def fitGate(sample, reference, params=None):
     density = _smoothMap(np.maximum(weight, 0.0), np.ones_like(weight), sigma)   # local mean weight
     mid = (density * mid + DEFECT_PRIOR_WEIGHT * prior) / (density + DEFECT_PRIOR_WEIGHT)
     mid = _poleSmooth(grid, mid, np.maximum(weight, 1e-6), sigma)
+    # a wall that cannot be traced (scar) stays where the static wall is: the smoothing above would carry
+    # the motion of the walls around it into it
+    mid = reliability * mid + (1.0 - reliability) * prior
     mid = np.clip(mid, lo, hi)
     peak = _interp(profiles, grid.t, mid)
 
@@ -470,22 +486,31 @@ def fitGate(sample, reference, params=None):
 def _fitGateOwn(sample, reference):
     """fitGate with segmentation "own": the frame's wall detected from scratch as fitWall does on the static
     image, with no static wall as prior. Only the rays are those of the static fit, so the frames stay
-    comparable ray by ray. A defect is bridged by the frame's own shape model, and nothing limits how far
-    the wall or the valve plane moves (maxWallShift, maxValveShift do not apply). Every ray counts as
-    seen (reliability 1), so the thickness models take the frame's own profiles everywhere."""
+    comparable ray by ray. Nothing limits how far the wall or the valve plane moves (maxWallShift,
+    maxValveShift do not apply). A wall the static image cannot trace (scar, _staticReliability) is held
+    where the static wall is, as in fitGate: the frame's shape model would bridge it with the contraction
+    of the walls around it."""
     grid = reference["grid"]
+    p = grid.params
     profiles = _rayProfiles(sample, grid)
     if profiles.max() <= 0:
         raise ValueError("No counts around the LV center in this gate.")
     result = _fitOnGrid(sample, grid, profiles)
-    mid, peak = result["mid"], result["peak"]
-    weight = _wallVisibility(peak, result["cavityLevel"]) ** 2
+    reliability = _staticReliability(reference)
+    mid = reliability * result["mid"] + (1.0 - reliability) * reference["mid"]
+    beyond = _beyondBase(grid, mid, result["valvePlane"])
+    mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
+    peak = _interp(profiles, grid.t, mid)
+    staticThickness = _holdBeyondBase(reference["thickness"], beyond)
+    thickness = reliability ** 2 * result["thickness"] + (1.0 - reliability ** 2) * staticThickness
+    endo, epi = _wallSurfaces(grid, mid, thickness, p)
+    weight = _traceability(peak, result["cavityLevel"]) ** 2 * reliability ** 2
     half = max(6.0, 0.35 * float(np.median(mid)))
     fwhm, base, area = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
-    result.update({"gateWeight": weight, "profileFwhm": fwhm,
+    result.update({"mid": mid, "endo": endo, "epi": epi, "thickness": thickness, "peak": peak,
+                   "rowCounts": np.median(peak[:grid.nCyl], axis=1), "gateWeight": weight, "profileFwhm": fwhm,
                    "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
-                   "reliability": np.ones_like(mid), "staticThickness": result["thickness"],
-                   "thicknessModel": "ray"})
+                   "reliability": reliability, "staticThickness": staticThickness, "thicknessModel": "ray"})
     return result
 
 

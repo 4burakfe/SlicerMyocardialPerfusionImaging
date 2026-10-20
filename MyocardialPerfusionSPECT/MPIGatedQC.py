@@ -892,7 +892,8 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
             p = np.stack(np.meshgrid(ii, ii, ii, indexing="ij"), -1) - center
             z = p @ u
             rho = np.linalg.norm(p - z[..., None] * u, axis=-1)
-            return (100.0 * ((np.abs(rho - radius) < 5) & (z > -30) & (z < 0))).astype(np.float32)
+            r = np.where(z > 0, np.linalg.norm(p, axis=-1), rho)                # cylinder, then an apical cap
+            return (100.0 * ((np.abs(r - radius) < 5) & (z > -30))).astype(np.float32)
 
         def sampleOf(array):
             return lambda pts: sampleTrilinear(array, np.asarray(pts) / spacing)
@@ -916,10 +917,50 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         scratch = wallLib.fitGate(sampleOf(ventricle(21.0)), static, {"segmentation": "own", "maxWallShift": 2.0})
         self.assertEqual(scratch["grid"], static["grid"])
         self.assertAlmostEqual(float(np.median(scratch["mid"][middle])), float(np.median(gate["mid"][middle])), delta=1.5)
-        self.assertTrue(np.all(scratch["reliability"] == 1.0))
+        self.assertTrue(np.all(scratch["reliability"][middle] == 1.0))   # the wall is traced: the frame's own
         own = wallLib.ownProfileGates([wallLib.fitGate(sampleOf(ventricle(25.0)), static, {"segmentation": "own"}), scratch])
         self.assertLess(float(np.median(own[1]["endo"][middle])), float(np.median(own[0]["endo"][middle])) - 2.0)
         self.delayDisplay("Gate fit test passed")
+
+    def test_ScarHeld(self):
+        """A wall that does not stand out of the blood pool (scar) stays where the static wall is while the
+        walls around it contract, in both segmentation modes; a dim wall that can be traced moves."""
+        n, spacing = 64, 3.0
+        center = np.array([n * spacing / 2.0] * 3)
+        u, w = unit([-0.6, 0.6, -0.4]), unit([0.0, 0.5, 0.75])
+        s = np.cross(u, w)
+
+        def ventricle(radius, scar=22.0, dim=45.0):
+            ii = np.arange(n) * spacing
+            p = np.stack(np.meshgrid(ii, ii, ii, indexing="ij"), -1)[..., ::-1] - center   # array [k, j, i]
+            z = p @ u
+            rho = np.linalg.norm(p - z[..., None] * u, axis=-1)
+            r = np.where(z > 0, np.linalg.norm(p, axis=-1), rho)                # cylinder, then an apical cap
+            theta = np.degrees(np.arctan2(p @ s, p @ w))
+            inside = z > -30
+            wall = np.where(np.abs(theta) < 40, scar, np.where(np.abs(np.abs(theta) - 180) < 40, dim, 100.0))
+            image = np.where(inside & (np.abs(r - radius) < 5), wall, 0.0)
+            image = np.where(inside & (r < radius - 5), 20.0, image)            # blood pool
+            return image.astype(np.float32)
+
+        def sampleOf(array):
+            return lambda pts: sampleTrilinear(array, np.asarray(pts) / spacing)
+        static = wallLib.fitWall(sampleOf(ventricle(25.0)), center, u, w, 55.0)
+        grid = static["grid"]
+        theta = np.degrees(np.angle(np.exp(1j * grid.theta)))
+        scarCols, dimCols = np.abs(theta) < 25, np.abs(np.abs(theta) - 180) < 25
+        normalCols = (np.abs(np.abs(theta) - 90) < 25)
+        rows = slice(grid.nCyl - 6, grid.nCyl - 2)
+        reliability = wallLib._staticReliability(static)
+        self.assertLess(float(np.median(reliability[rows][:, scarCols])), 0.1)
+        self.assertGreater(float(np.median(reliability[rows][:, dimCols])), 0.9)
+        for mode in ("static", "own"):
+            gate = wallLib.fitGate(sampleOf(ventricle(21.0)), static, {"segmentation": mode})
+            moved = static["mid"][rows] - gate["mid"][rows]
+            self.assertLess(abs(float(np.median(moved[:, scarCols]))), 1.0, mode)
+            self.assertGreater(float(np.median(moved[:, normalCols])), 2.5, mode)
+            self.assertGreater(float(np.median(moved[:, dimCols])), 2.5, mode)
+        self.delayDisplay("Scar held test passed")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
 parametersLib.applySaved()

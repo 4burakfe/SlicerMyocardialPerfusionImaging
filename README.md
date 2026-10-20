@@ -273,15 +273,15 @@ Navigation:
 For the gated study of Study 1 or Study 2:
 
 - **Frame segmentation.** The myocardium is segmented in every frame, starting from the static wall of
-  Myocardium. The mid-wall of each ray is searched near the static one; rays through a defect (dim in the
-  static image) are searched only within a third of that distance and follow the motion of the walls
-  around them, so noise or a neighbouring organ in an infarct does not pull the wall. The valve plane is
+  Myocardium. The mid-wall of each ray is searched near the static one. A wall that cannot be traced
+  (scar, see below) is searched only within a third of that distance and stays where the static wall is
+  in every frame, so neither noise nor the contraction of the walls around it moves it; a dim wall that
+  can still be traced keeps its own motion. The valve plane is
   fitted again with the static tilt, at most 25 mm away (the base descends about 1 cm in systole).
   With *Frames: Each frame from scratch, like Myocardium* (advanced section) every frame is instead
   detected on its own as Myocardium detects the static image, on the same rays and with no static wall
-  as prior: a defect is bridged by the frame's own shape model, the walls around it do not carry it, and
-  the motion and valve plane limits do not apply. The frames are noisier than the static image, so check
-  their contours.
+  as prior, and the motion and valve plane limits do not apply. A wall that cannot be traced stays where
+  the static wall is here too. The frames are noisier than the static image, so check their contours.
 - **Frames on screen.** Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in
   three rows, one tile per frame, all at the same slice (the mouse wheel over a row scrolls), with its
   contours and one color scale for all frames (or each frame on its own).
@@ -313,10 +313,11 @@ Wall thickness of the frames (*Wall thickness* in the advanced section):
   show the thickening (gate profiles wider than about 20 mm keep the same width over the whole cycle, as
   with a Butterworth 0.30 cycles/cm gated filter).
 
-In every model, rays through a defect keep the wall thickness of the static fit in every
-frame: scar does not thicken, and its gate profiles show no wall to measure. A ray counts as defect by
-its visibility in the static image (counts above the cavity's blood pool against the typical wall's):
-no wall below 0.15, full wall from 0.60 (*Defect: no wall below* / *full wall from*). Surface smoothing of the
+In every model, rays whose wall cannot be traced keep the wall position and thickness of the static fit
+in every frame: scar neither moves on its own nor thickens, and its gate profiles show no wall to measure.
+Whether a wall can be traced is its counts in the static image against the cavity's blood pool: up to
+1.25 x the blood pool it cannot (held), from 1.75 x it is traced like normal wall however dim, partly held
+in between (*Defect: untraceable up to* / *traced from*, Advanced parameters). Surface smoothing of the
 frames is 2 by default (the static fit uses 1.25): the gates are noisier.
 
 ### 6. Gated Review
