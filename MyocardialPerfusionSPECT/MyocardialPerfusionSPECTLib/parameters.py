@@ -203,12 +203,13 @@ STEP_PARAMETERS = {
         P("maxThicknessChange", "Thickness change limit", 0.5, f"{MYO}:GATE_DEFAULTS.maxThicknessChange", 0.0, 3.0,
           0.05, 2, tooltip="Constant-volume models: a ray's thickness stays within reference / (1 + x) .. "
                            "reference x (1 + x)", group="Frame segmentation"),
-        P("visibilityLow", "Defect: no wall below", 0.15, f"{MYO}:RELIABILITY_LOW", 0.0, 1.0, 0.01, 2,
-          " x typical", "Rays whose counts above the cavity's blood pool in the static image are below this share "
-                        "of the typical wall's count as deep defect (scar)", "Defects"),
-        P("visibilityHigh", "Defect: full wall from", 0.60, f"{MYO}:RELIABILITY_HIGH", 0.0, 1.0, 0.01, 2,
-          " x typical", "Rays at least this visible count as normal wall; in between they are partly trusted",
-          "Defects"),
+        P("traceLow", "Defect: untraceable up to", 1.25, f"{MYO}:TRACE_RATIO_LOW", 1.0, 5.0, 0.05, 2,
+          " x blood pool", "Rays whose wall counts in the static image are at most this multiple of the cavity's "
+                           "blood pool cannot be traced (scar): their wall stays where the static wall is in "
+                           "every frame (akinetic, no thickening)", "Defects"),
+        P("traceHigh", "Defect: traced from", 1.75, f"{MYO}:TRACE_RATIO_HIGH", 1.0, 5.0, 0.05, 2,
+          " x blood pool", "Rays whose wall reaches this multiple of the blood pool are traced in every frame "
+                           "like normal wall, however dim; in between they are partly held", "Defects"),
         P("minDefectShift", "Defect search window", 0.3, f"{MYO}:MIN_DEFECT_SHIFT", 0.0, 1.0, 0.05, 2,
           " x limit", "Share of the wall motion limit searched on rays through a deep defect", "Defects"),
         P("defectMotionSigma", "Defect motion field width", 3.0, f"{MYO}:DEFECT_MOTION_SIGMA", 0.5, 10.0, 0.25, 2,
