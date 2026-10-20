@@ -277,6 +277,11 @@ For the gated study of Study 1 or Study 2:
   static image) are searched only within a third of that distance and follow the motion of the walls
   around them, so noise or a neighbouring organ in an infarct does not pull the wall. The valve plane is
   fitted again with the static tilt, at most 25 mm away (the base descends about 1 cm in systole).
+  With *Frames: Each frame from scratch, like Myocardium* (advanced section) every frame is instead
+  detected on its own as Myocardium detects the static image, on the same rays and with no static wall
+  as prior: a defect is bridged by the frame's own shape model, the walls around it do not carry it, and
+  the motion and valve plane limits do not apply. The frames are noisier than the static image, so check
+  their contours.
 - **Frames on screen.** Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in
   three rows, one tile per frame, all at the same slice (the mouse wheel over a row scrolls), with its
   contours and one color scale for all frames (or each frame on its own).

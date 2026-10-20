@@ -175,13 +175,18 @@ def fitWall(sample, center, u, w, radius, params=None):
     return result
 
 
-def _fitOnGrid(sample, grid):
-    """fitWall on one grid (fixed center)."""
-    p = grid.params
+def _rayProfiles(sample, grid):
+    """Counts along every ray of a grid [rows, angles, t]."""
     origins, directions = grid.rays()
     points = origins[:, :, None, :] + grid.t[None, None, :, None] * directions[:, :, None, :]
     profiles = np.asarray(sample(points.reshape(-1, 3)), dtype=float).reshape(grid.nRows, grid.nTheta, len(grid.t))
-    profiles = np.nan_to_num(profiles)
+    return np.nan_to_num(profiles)
+
+
+def _fitOnGrid(sample, grid, profiles=None):
+    """fitWall on one grid (fixed center). profiles: the grid's ray profiles when already sampled."""
+    p = grid.params
+    profiles = _rayProfiles(sample, grid) if profiles is None else profiles
     if profiles.max() <= 0:
         raise ValueError("No counts around the LV center.")
 
@@ -323,7 +328,11 @@ GATE_DEFAULTS = {
                                  # "ray": each ray keeps its wall volume of the static fit,
                                  # "mid": only the mid-wall moves, every ray keeps its ED thickness
     "maxThicknessChange": 0.5,   # "volume": a ray's thickness stays within ED / (1 + x) .. ED x (1 + x)
+    "segmentation": "static",    # "static": every frame's wall searched near the static wall (fitGate),
+                                 # "own": every frame detected from scratch as Myocardium does (_fitGateOwn)
 }
+GATE_SEGMENTATIONS = (("From the static wall", "static"),
+                      ("Each frame from scratch, like Myocardium", "own"))
 THICKNESS_MODELS = (("Each frame from its own profiles", "frame"),
                     ("Constant myocardial volume (ES reference)", "es"),
                     ("Constant myocardial volume (ED reference)", "volume"),
@@ -391,10 +400,9 @@ def fitGate(sample, reference, params=None):
     grid = reference["grid"]
     p = grid.params
     g = dict(GATE_DEFAULTS, **(params or {}))
-    origins, directions = grid.rays()
-    points = origins[:, :, None, :] + grid.t[None, None, :, None] * directions[:, :, None, :]
-    profiles = np.asarray(sample(points.reshape(-1, 3)), dtype=float).reshape(grid.nRows, grid.nTheta, len(grid.t))
-    profiles = np.nan_to_num(profiles)
+    if g["segmentation"] == "own":
+        return _fitGateOwn(sample, reference)
+    profiles = _rayProfiles(sample, grid)
     if profiles.max() <= 0:
         raise ValueError("No counts around the LV center in this gate.")
 
@@ -457,6 +465,28 @@ def fitGate(sample, reference, params=None):
             "profileFwhm": fwhm, "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
             "reliability": reliability, "staticThickness": _holdBeyondBase(reference["thickness"], beyond),
             "thicknessModel": "ray"}
+
+
+def _fitGateOwn(sample, reference):
+    """fitGate with segmentation "own": the frame's wall detected from scratch as fitWall does on the static
+    image, with no static wall as prior. Only the rays are those of the static fit, so the frames stay
+    comparable ray by ray. A defect is bridged by the frame's own shape model, and nothing limits how far
+    the wall or the valve plane moves (maxWallShift, maxValveShift do not apply). Every ray counts as
+    seen (reliability 1), so the thickness models take the frame's own profiles everywhere."""
+    grid = reference["grid"]
+    profiles = _rayProfiles(sample, grid)
+    if profiles.max() <= 0:
+        raise ValueError("No counts around the LV center in this gate.")
+    result = _fitOnGrid(sample, grid, profiles)
+    mid, peak = result["mid"], result["peak"]
+    weight = _wallVisibility(peak, result["cavityLevel"]) ** 2
+    half = max(6.0, 0.35 * float(np.median(mid)))
+    fwhm, base, area = _profileWidth(profiles, grid.t, mid, peak, 1.6 * half)
+    result.update({"gateWeight": weight, "profileFwhm": fwhm,
+                   "resolutionEstimate": estimateResolution(fwhm, peak - base, area, weight),
+                   "reliability": np.ones_like(mid), "staticThickness": result["thickness"],
+                   "thicknessModel": "ray"})
+    return result
 
 
 def gateThickness(result, resolution):
