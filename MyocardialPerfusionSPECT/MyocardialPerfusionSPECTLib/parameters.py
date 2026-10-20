@@ -135,6 +135,14 @@ STEP_PARAMETERS = {
         P("thicknessSmoothing", "Thickness map smoothing", 3.0, f"{MYO}:DEFAULTS.thicknessSmoothing", 0.0, 8.0, 0.25,
           2, " samples", "Fit: Ellipsoid only. Gaussian sigma of the wall thickness map (the surface fits fit the "
                          "thickness as the wall, with the Gated QC fit parameters)", "Wall fit"),
+        P("thicknessPrior", "Wall thickness prior", 10.0, f"{MYO}:THICKNESS_PRIOR_MM", 4.0, 20.0, 0.5, 1, " mm",
+          "Surface fits and Gated QC: the thickness a wall leans to where the blur hides its own (a wall thinner "
+          "than the resolution keeps about the same profile width)", "Wall fit"),
+        P("thicknessPriorSigma", "Wall thickness prior spread", 3.0, f"{MYO}:THICKNESS_PRIOR_SIGMA", 0.5, 20.0, 0.5,
+          1, " mm", "Spread of the thickness prior: larger lets the profile widths move the thickness further",
+          "Wall fit"),
+        P("widthSigma", "Profile width uncertainty", 0.75, f"{MYO}:WIDTH_SIGMA_MM", 0.1, 5.0, 0.05, 2, " mm",
+          "How well a profile width is known: larger leans the thickness more to the prior", "Wall fit"),
         P("poleSpacing", "Smoothing width at the axis", 3.0, f"{MYO}:POLE_SPACING_MM", 0.5, 10.0, 0.25, 2, " mm",
           "Smoothing near the long axis (apex) per unit of surface smoothing", "Wall fit"),
         P("shapeModel", "Shape model through defects", True, f"{MYO}:DEFAULTS.shapeModel",

@@ -6,8 +6,8 @@ Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before 
   - the myocardium is segmented in every gate frame on the rays of the static wall detected in
     Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: tracked from the static wall, or every
     frame from scratch; a surface fit, B-spline, deformable mesh or the legacy jump-limited path, runs
-    through the rays whose wall the frame shows and draws the others; frameThicknessGates: every frame's
-    thickness from its own profile widths at the blur estimated from the frames, fitted the same way);
+    through the rays whose wall the frame shows and draws the others; every frame's thickness from its
+    own profile widths, a blurred slab leaning to a prior where the blur hides it, fitted the same way);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
     frame's endo- and epicardium;
@@ -247,8 +247,6 @@ class GatedStudy:
             for name in ORIENTATIONS:
                 self.slices[name].append(resliceLike(array, matrix, outputs[name], mask, center))
             self.peaks.append(self._peakNear(self.slices["SA"][-1], outputs["SA"], center, reach))
-        # every frame's thickness from its own profile widths, at the blur estimated from all frames
-        self.results = wallLib.frameThicknessGates(self.results)
         for index, (label, node, matrix, voxel) in enumerate(frames):
             array = slicer.util.arrayFromVolume(node).astype(np.float32)   # again, one frame at a time
             stats = {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
@@ -832,6 +830,7 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.test_ScarFitted()
         self.test_FitSurface()
         self.test_PoolFloor()
+        self.test_SlabThickness()
         self.test_MaskedSampler()
 
     def test_GatingText(self):
@@ -892,8 +891,7 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
                 self.assertAlmostEqual(float(np.median(ed["mid"][middle])), 25.0, delta=1.5, msg=params)
                 self.assertAlmostEqual(float(np.median(gate["mid"][middle])), 21.0, delta=1.5, msg=params)
                 # each frame from its own profiles: both walls are 10 mm slabs, so both read about the same
-                walls = wallLib.frameThicknessGates([ed, None, gate])
-                self.assertIsNone(walls[1])
+                walls = [ed, None, gate]
                 self.assertAlmostEqual(float(np.median(walls[2]["thickness"][middle])),
                                        float(np.median(walls[0]["thickness"][middle])), delta=2.0, msg=params)
                 self.assertLess(float(np.median(walls[2]["endo"][middle])), float(np.median(walls[0]["endo"][middle])) - 2.0)
@@ -964,13 +962,34 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
             profiles = profile[None, None, :]
             peak = np.array([[profile.max()]])
             position = np.array([[float(t[np.argmax(profile)])]])
-            widths[pool] = float(wallLib._profileWidth(profiles, t, position, peak, 14.0)[0][0, 0])
+            widths[pool] = float(wallLib._profileWidth(profiles, t, position, peak, 14.0)[0, 0])
             single = float(wallLib._fwhm(profiles, t, position, peak, 14.0, np.array([[profile[-1]]]))[0, 0])
             if pool >= 40.0:
                 self.assertGreater(single, widths[0.0] + 2.0)     # one floor: the pool widens the wall
         for pool, width in widths.items():
             self.assertAlmostEqual(width, widths[0.0], delta=1.0, msg=pool)
         self.delayDisplay("Pool floor test passed")
+
+    def test_SlabThickness(self):
+        """A wall's thickness from its profile width, measured as the walls are (_profileWidth, within reach of
+        the peak), at 12 mm blur: a 10 mm wall (the prior) reads 10, a wall thicker than the blur is read
+        from its width, a thin one leans to the prior (its width hardly differs from a 10 mm wall's), and a
+        width that is not finite gives the prior."""
+        t = np.arange(0.0, 60.0, 0.5)
+        sigma = 12.0 / 2.3548
+        edge = lambda x: 0.5 * (1.0 + np.vectorize(math.erf)(x / (sigma * math.sqrt(2.0))))
+        read = {}
+        for thickness in (6.0, 10.0, 20.0):
+            profile = 100.0 * (edge(t - 27.0 + thickness / 2.0) - edge(t - 27.0 - thickness / 2.0))
+            width = wallLib._profileWidth(profile[None, None, :], t, np.array([[27.0]]),
+                                          np.array([[profile.max()]]), 15.0)
+            read[thickness] = float(wallLib.slabThickness(width, 12.0, 15.0)[0, 0])
+        self.assertAlmostEqual(read[10.0], 10.0, delta=0.5)
+        self.assertGreater(read[20.0], 17.0)
+        self.assertTrue(6.0 < read[6.0] < read[10.0] - 0.5, read)
+        self.assertAlmostEqual(float(wallLib.slabThickness(np.array([np.nan]), 12.0, 15.0)[0]),
+                               wallLib.THICKNESS_PRIOR_MM, delta=0.01)
+        self.delayDisplay("Slab thickness test passed")
 
     def test_FitSurface(self):
         """The fits keep what the traced rays show and bridge a gap of untraced rays without a step: the
