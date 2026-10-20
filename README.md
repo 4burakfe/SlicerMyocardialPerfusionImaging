@@ -47,8 +47,9 @@ Author: Burak Demir, MD, FEBNM · License: [MIT](LICENSE)
   myocardial volume and mass, as models and a segmentation.
 - **Perfusion review.** Stress and rest slices side by side or interleaved, polar maps with coronary
   territories or the 17 AHA segments, rest - stress difference maps, 3D uptake views, and the TID ratio.
-- **Gated review.** Per-frame segmentation and QC, a cine of every slice, count-based thickening and
-  wall motion polar maps, LV volume curve with EDV, ESV and EF, and a beating 3D wall.
+- **Gated review.** Per-frame segmentation and QC, a cine of every slice, thickening (count-based,
+  geometric or both) and wall motion polar maps, LV volume curve with EDV, ESV and EF, and a beating
+  3D wall.
 - **Dual monitor layouts** put the slices on the main screen and the plots on a second one.
 - **Nuclear medicine color maps**: PET-DICOM, Hel, PET-HotMetalBlue, PET-HotIron, Jotun, Vanaheim,
   Valhalla and Trugold.
@@ -333,8 +334,14 @@ STRESS GATED shows the stress gated study:
 - **Right, a 2 x 3 grid** (the slices and the plots share the width 4 : 5): three polar maps side by
   side on top, each with its own window:
   - perfusion,
-  - **wall thickening**, count-based (ES / ED wall counts of every ray, first harmonic over the cycle),
-    smoothed more than the others since a count ratio is noisy. *Thickening map* paints it as the mean
+  - **wall thickening**, ED to ES with the first harmonic over the cycle, by one of three methods
+    (*Thickening method*). **Count-based**: ES / ED wall counts of every ray (partial volume), smoothed
+    more than the others since a count ratio is noisy; the background under the wall dilutes it, and a
+    change of that background can read as thickening in a dim wall. **Geometric** (as QGS): ES / ED
+    distance between the endo- and epicardium; it follows the thickness model of Gated QC (with the
+    frames' own profile widths it reads low, with a constant myocardial volume it turns the mid-wall's
+    inward motion into thickening), and a defect held at its static thickness reads 0. **Hybrid**
+    (default): the mean of the two. *Thickening map* paints it as the mean
     of each of the five walls, the mean of each of the 17 AHA segments (default), or per pixel. The five
     walls are drawn on the bullseye itself, not grouped from the segments: the apex is the central disk
     (the size of segment 17) and the rest is cut by an X into anterior, septal, inferior and lateral
