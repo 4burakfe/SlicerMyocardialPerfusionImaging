@@ -1150,6 +1150,8 @@ class MPIMyocardiumTest(ScriptedLoadableModuleTest):
             result = wallLib.fitWall(sample, center, u, w, 55.0, {"resolution": 8.0, "fit": fit})
             apexMid = result["centerShift"] + float(np.median(result["mid"][-1]))
             self.assertAlmostEqual(apexMid, z0 + c, delta=4.0, msg=fit)
+            for surface in ("endo", "mid", "epi"):       # the last row's rays coincide on the axis: one point
+                self.assertLess(float(np.ptp(result[surface][-1])), 1e-6, msg=(fit, surface))
         bridged = wallLib.fitWall(sample, center, u, w, 55.0, {"resolution": 8.0, "shapeModel": False})
         self.assertLess(bridged["centerShift"] + float(np.median(bridged["mid"][-1])), z0 + c - 8.0)
         self.delayDisplay(f"Apical defect OK: apex mid-wall {apexMid:.1f} mm (truth {z0 + c:.0f}), "
