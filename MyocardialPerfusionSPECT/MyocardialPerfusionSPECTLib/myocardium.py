@@ -18,9 +18,12 @@ labelling:
    defect), so a defect takes the curve of the walls around it; at the apex the neighbours alone bridge
    it flat.
 3. Base. Along every column of rays (one angle around the axis), going from the LV center toward
-   the base, the wall ends where its counts fall below a fraction of that column's own wall counts
-   (so the dim atria and great vessels behind the valves are not taken as wall, and a perfusion
-   defect does not end its column early relative to the others). A plane is fitted through these
+   the base, the wall ends where its counts fall below a threshold (so the dim atria and great vessels
+   behind the valves are not taken as wall). By default (baseMethod "adaptive") a preliminary segment at
+   a fraction of the column's own wall counts gives the cavity's blood pool and each column's basal wall
+   counts, and the wall ends half way between the two, so a defect at the base (inferobasal) does not
+   end its column early; "fraction" keeps the fixed share of the column's wall counts (which already
+   copes with a defect along the whole column, not with one at the base only). A plane is fitted through these
    end points (robust least squares, tilt limited), so the valve plane may be oblique to the long
    axis. It can be moved along the axis and tilted afterwards (valve offset and tilt).
 4. Endo- and epicardium. With the surface fits (thicknessModel "width") where the count profile falls
@@ -57,7 +60,11 @@ DEFAULTS = {
     "smoothing": 1.25,         # "ellipsoid": Gaussian sigma of the surface smoothing, in grid samples (0 = none)
     "thicknessSmoothing": 3.0, # "ellipsoid": Gaussian sigma of the wall thickness map, in grid samples
     "shapeModel": True,        # "ellipsoid": rays without a wall peak (defects) follow an ellipsoid model of the whole LV
-    "baseFraction": 0.55,      # wall ends where its counts fall below this fraction of its column's wall counts
+    "baseMethod": "adaptive",  # BASE_METHODS: "adaptive" ends the wall half way between its basal counts and the
+                               # blood pool, "fraction" at baseFraction of its column's wall counts (_fitValvePlane)
+    "baseFraction": 0.55,      # "fraction": wall ends where its counts fall below this fraction of its column's wall counts
+    "basePrelimFraction": 0.50,  # "adaptive": the same for the preliminary segment the blood pool and basal wall come from
+    "baseEdgeFraction": 0.50,  # "adaptive": the wall ends this far from its basal counts down to the blood pool
     "maxValveTilt": 40.0,      # deg, largest tilt of the valve plane against the short-axis plane
     "maxBaseNarrowing": 35.0,  # deg, steepest the wall may turn toward the axis on its way to the base
     "resolution": 12.0,        # system resolution (FWHM, mm) removed from the profile width
@@ -421,6 +428,11 @@ THICKNESS_MODELS = (("Half way to the blood pool and to the counts outside", "wi
 CAVITY_GAP_MM = 5.0          # _poolLevel: the blood pool is sampled this far inside the endocardium ...
 POOL_MIN_RAYS = 0.5          # ... where at least this share of the rays has 3 mm of cavity there (else without the gap)
 WIDTH_SIGMA_MM = 0.75        # slabThickness: uncertainty of a measured profile width (mm)
+BASE_METHODS = (("Adaptive: half way from the basal wall to the blood pool", "adaptive"),
+                ("Fixed share of each angle's wall counts", "fraction"))
+BASE_BAND_MM = 12.0        # "adaptive" base: the basal wall counts are taken this far apical of the preliminary plane
+BASE_SEARCH_MM = 16.0      # "adaptive" base: each column is searched toward the base from this far apical of it
+BASE_MIN_CONTRAST = 0.25   # "adaptive" base: basal wall counts taken at least this share of the way from blood pool to wall
 FIT_OUTLIER = 3.0          # rays further than this many robust misfits from the first fit lose their weight
 
 
@@ -1157,35 +1169,90 @@ def _cavityFill(profiles, t, mid, peak):
 def _fitValvePlane(grid, mid, peak, p, fill=None):
     """Valve plane z = a + gw * x + gs * y in the cardiac frame (x along w, y along s), fitted
     through the end of the wall in every column. Along a column the wall ends where its counts fall
-    below baseFraction of the column's wall counts, or where the cavity fills up (the rays leave the
-    LV for the atria, whose counts can pass the count threshold in small hearts). Columns with little
-    uptake (an infarct) have unreliable ends and count less in the fit.
+    below a threshold, or where the cavity fills up (the rays leave the LV for the atria, whose counts
+    can pass the count threshold in small hearts).
+
+    baseMethod "fraction": the threshold is baseFraction of the column's wall counts; columns with little
+    uptake (an infarct) have unreliable ends and count less in the fit. A defect at the base only (an
+    inferobasal one) leaves the column's wall counts high, so its wall ends early, at the defect.
+    baseMethod "adaptive" (default): that is only the preliminary segment (basePrelimFraction). From it
+    the blood pool (the cavity's lowest counts at the mid-ventricle) and every column's basal wall counts
+    (the wall within BASE_BAND_MM of the preliminary plane) are taken, and the wall ends where its counts
+    fall baseEdgeFraction of the way from those basal wall counts down to the blood pool: the half way
+    point of the step at the valve plane, whatever the wall's uptake, so a basal defect is followed to the
+    base. Each column is searched from BASE_SEARCH_MM apical of the preliminary plane toward the base
+    (a defect at the mid-ventricle does not end it), and counts in the fit by the contrast of its basal
+    wall against the blood pool (a scar as dim as the blood pool has no edge to find).
     Returns ((a, gw, gs), end points [K, 3] frame)."""
     nCyl = grid.nCyl
-    reference = np.percentile(peak, 85, axis=0)                  # each column's wall counts
-    reference = _circularMedian(reference[None, :], _angleWindow(grid, 5))[0]
-    lateral = np.percentile(peak[:nCyl], 85, axis=0)             # the same on the side wall only
-    lateral = _circularMedian(lateral[None, :], _angleWindow(grid, 5))[0]
-    columnWeight = np.clip(lateral / max(float(np.percentile(lateral, 90)), 1e-9), 0.0, 1.0) ** 2
-    reference = np.maximum(reference, 0.4 * float(np.percentile(peak, 85)))
-    threshold = p["baseFraction"] * reference
     cyl = peak[:nCyl]
     if fill is not None:
         # the column's own cavity contrast at the mid-ventricle, and how far it may fill before the wall ends
         midRows = (grid.z >= -12.0) & (grid.z <= -2.0)
-        midFill = np.median(fill[:nCyl][midRows], axis=0) if np.any(midRows) else np.median(fill[:nCyl], axis=0)
+        if not np.any(midRows):
+            midRows = np.ones(nCyl, dtype=bool)
+        midFill = np.median(fill[:nCyl][midRows], axis=0)
         fillLimit = midFill + 0.5 * (1.0 - midFill)
         filled = fill[:nCyl] > fillLimit[None, :]
     else:
         filled = np.zeros(cyl.shape, dtype=bool)
+    adaptive = p.get("baseMethod", "adaptive") == "adaptive"
+
+    reference = np.percentile(peak, 85, axis=0)                  # each column's wall counts
+    reference = _circularMedian(reference[None, :], _angleWindow(grid, 5))[0]
+    lateral = np.percentile(cyl, 85, axis=0)                     # the same on the side wall only
+    lateral = _circularMedian(lateral[None, :], _angleWindow(grid, 5))[0]
+    columnWeight = np.clip(lateral / max(float(np.percentile(lateral, 90)), 1e-9), 0.0, 1.0) ** 2
+    reference = np.maximum(reference, 0.4 * float(np.percentile(peak, 85)))
+    fraction = p.get("basePrelimFraction", 0.5) if adaptive else p["baseFraction"]
+    ends, endWeights = _wallEnds(grid, mid, cyl, fraction * reference, filled, columnWeight)
+    plane = _planeThroughEnds(grid, ends, endWeights, p)
+    if not adaptive or len(ends) < max(6, grid.nTheta // 4):
+        return plane, ends
+
+    # blood pool: the lowest counts in the cavity at the mid-ventricle (fill is relative to the wall peak)
+    pool = 0.0
+    if fill is not None:
+        pool = float(np.median((fill[:nCyl] * cyl)[midRows]))
+    inside = ~_beyondBase(grid, mid, plane)
+    wall = float(np.mean(peak[inside]))                           # mean counts of the preliminary segment
+    pool = min(pool, 0.5 * wall)
+    contrast = max(wall - pool, 1e-9)
+    # every column's basal wall: within BASE_BAND_MM of the preliminary plane, on the LV side
+    a, gw, gs = plane
+    slope = gw * np.cos(grid.theta) + gs * np.sin(grid.theta)
+    above = grid.z[:, None] - (a + slope[None, :] * mid[:nCyl])    # mm on the apical side of the plane
+    band = (above >= 0.0) & (above <= BASE_BAND_MM)
+    basal = np.array([np.median(cyl[band[:, c], c]) if np.any(band[:, c]) else reference[c]
+                      for c in range(grid.nTheta)])
+    basal = _circularMedian(basal[None, :], _angleWindow(grid, 3))[0]
+    basal = np.clip(basal, pool + BASE_MIN_CONTRAST * contrast, None)
+    threshold = pool + p.get("baseEdgeFraction", 0.5) * (basal - pool)
+    weight = np.clip((basal - pool) / (0.5 * contrast), 0.0, 1.0) ** 2
+    start = np.array([np.searchsorted(grid.z, a + slope[c] * np.interp(a, grid.z, mid[:nCyl, c]) + BASE_SEARCH_MM)
+                      for c in range(grid.nTheta)])
+    ends, endWeights = _wallEnds(grid, mid, cyl, threshold, filled, weight, start)
+    if len(ends) < max(6, grid.nTheta // 4):
+        return plane, ends
+    return _planeThroughEnds(grid, ends, endWeights, p), ends
+
+
+def _wallEnds(grid, mid, cyl, threshold, filled, columnWeight, start=None):
+    """End of the wall in every column of the cylinder: going from the start row (default the LV center)
+    toward the base, the first of two consecutive rows below the column's threshold or with the cavity
+    filled, after a row on the wall. Returns (end points [K, 3] frame, their weights [K])."""
+    nCyl = grid.nCyl
     ends = []
     endWeights = []
     for col in range(grid.nTheta):
         values = cyl[:, col]
         below = (values < threshold[col]) | filled[:, col]
-        # from the center row toward the base: first of two consecutive rows off the wall
-        for row in range(nCyl - 2, 0, -1):
-            if below[row] and below[row - 1]:
+        first = nCyl - 2 if start is None else int(np.clip(start[col], 1, nCyl - 2))
+        onWall = start is None
+        for row in range(first, 0, -1):
+            if not below[row]:
+                onWall = True
+            elif onWall and below[row - 1]:
                 v0, v1 = values[row], values[row + 1]
                 f = np.clip((threshold[col] - v0) / (v1 - v0), 0.0, 1.0) if v1 > v0 and not filled[row, col] else 0.5
                 z = grid.z[row] + f * grid.dz
@@ -1193,13 +1260,16 @@ def _fitValvePlane(grid, mid, peak, p, fill=None):
                 ends.append((r * math.cos(grid.theta[col]), r * math.sin(grid.theta[col]), z))
                 endWeights.append(columnWeight[col])
                 break
-    ends = np.array(ends).reshape(-1, 3)
-    endWeights = np.maximum(np.array(endWeights), 1e-3)
+    return np.array(ends).reshape(-1, 3), np.maximum(np.array(endWeights), 1e-3)
+
+
+def _planeThroughEnds(grid, ends, endWeights, p):
+    """Valve plane (a, gw, gs) through the wall's end points: robust least squares (outlier columns out),
+    tilt limited to maxValveTilt; too few ends: the wall runs to the edge of the sampled region."""
     zMin, zMax = float(grid.z[0]), -2.0 * grid.dz
     if len(ends) < max(6, grid.nTheta // 4):
-        # the counts never fall: the wall runs to the edge of the sampled region
         a = zMin if len(ends) == 0 else float(np.median(ends[:, 2]))
-        return (float(np.clip(a, zMin, zMax)), 0.0, 0.0), ends
+        return (float(np.clip(a, zMin, zMax)), 0.0, 0.0)
     design = np.column_stack([np.ones(len(ends)), ends[:, 0], ends[:, 1]])
     weights = endWeights.copy()
     for _ in range(5):                                           # iteratively reweighted (outlier columns out)
@@ -1214,7 +1284,7 @@ def _fitValvePlane(grid, mid, peak, p, fill=None):
     if slope > maxSlope:
         gw, gs = gw * maxSlope / slope, gs * maxSlope / slope
         a = float(np.average(ends[:, 2] - gw * ends[:, 0] - gs * ends[:, 1], weights=weights + 1e-9))
-    return (float(np.clip(a, zMin, zMax)), gw, gs), ends
+    return (float(np.clip(a, zMin, zMax)), gw, gs)
 
 
 def _beyondBase(grid, mid, plane):

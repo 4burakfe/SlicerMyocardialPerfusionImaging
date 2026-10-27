@@ -180,6 +180,19 @@ STEP_PARAMETERS = {
           "How far the ellipsoid's long axis may turn away from the LV axis", "Defects"),
         P("shapeTiltSigma", "Shape model tilt spread", 15.0, f"{MYO}:SHAPE_TILT_SIGMA", 1.0, 90.0, 1.0, 0, " deg",
           "How far the ellipsoid's axis may tilt before the prior pulls it back", "Defects"),
+        P("basePrelimFraction", "Adaptive base: preliminary threshold", 0.50, f"{MYO}:DEFAULTS.basePrelimFraction",
+          0.2, 0.8, 0.05, 2, " x wall", "Base detection Adaptive: share of each angle's wall counts at which the "
+          "preliminary segment ends; the blood pool and each angle's basal wall counts are taken from it",
+          "Valve plane"),
+        P("baseEdgeFraction", "Adaptive base: edge level", 0.50, f"{MYO}:DEFAULTS.baseEdgeFraction", 0.2, 0.8, 0.05,
+          2, "", "Base detection Adaptive: the wall ends where its counts fall this far from its basal wall counts "
+          "down to the blood pool (0.5: half way; higher ends the wall earlier, toward the apex)", "Valve plane"),
+        P("baseBand", "Adaptive base: basal wall band", 12.0, f"{MYO}:BASE_BAND_MM", 4.0, 30.0, 1.0, 0, " mm",
+          "Base detection Adaptive: each angle's basal wall counts are taken this far apical of the preliminary "
+          "valve plane", "Valve plane"),
+        P("baseSearch", "Adaptive base: search start", 16.0, f"{MYO}:BASE_SEARCH_MM", 4.0, 40.0, 1.0, 0, " mm",
+          "Base detection Adaptive: each angle is searched toward the base from this far apical of the preliminary "
+          "valve plane (a defect further toward the apex does not end the wall)", "Valve plane"),
         P("maxValveTilt", "Largest valve plane tilt", 40.0, f"{MYO}:DEFAULTS.maxValveTilt", 0.0, 80.0, 1.0, 0, " deg",
           "Largest tilt of the valve plane against the short-axis plane", "Valve plane"),
         P("maxBaseNarrowing", "Steepest basal narrowing", 35.0, f"{MYO}:DEFAULTS.maxBaseNarrowing", 0.0, 80.0, 1.0, 0,

@@ -474,13 +474,25 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                         "The apex is kept consistent around the axis at any value.")
         form.addRow("Surface smoothing:", self.smoothingSlider)
 
+        self.baseMethodCombo = qt.QComboBox()
+        for text, value in wallLib.BASE_METHODS:
+            self.baseMethodCombo.addItem(text, value)
+        self.baseMethodCombo.setCurrentIndex(max(0, self.baseMethodCombo.findData(defaults["baseMethod"])))
+        self.baseMethodCombo.toolTip = (
+            "Where the wall ends at the base, along each angle. Adaptive (default): a preliminary segment (50 % of "
+            "each angle's wall counts) gives the blood pool and each angle's basal wall counts, and the wall ends "
+            "half way between the two, so a basal defect (inferobasal) is followed to the valve plane instead of "
+            "ending the wall early. Fixed share: the wall ends at Base threshold of each angle's wall counts")
+        self.baseMethodCombo.connect("currentIndexChanged(int)", lambda _: self.updateFitControls())
+        form.addRow("Base detection:", self.baseMethodCombo)
+
         self.baseSlider = ctk.ctkSliderWidget()
         self.baseSlider.minimum, self.baseSlider.maximum = 20.0, 80.0
         self.baseSlider.singleStep = 5.0
         self.baseSlider.decimals = 0
         self.baseSlider.suffix = " %"
         self.baseSlider.value = 100.0 * defaults["baseFraction"]
-        self.baseSlider.toolTip = ("Along each angle the wall ends where its counts fall below this share of that "
+        self.baseSlider.toolTip = ("Base detection: Fixed share only. Along each angle the wall ends where its counts fall below this share of that "
                                    "angle's wall counts, or where the cavity fills up (the rays reach the atria); "
                                    "the valve plane is fitted through these ends, with low-uptake (infarcted) "
                                    "angles counting less")
@@ -581,6 +593,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("fit", self.fitCombo)
         self.parameterPanel.bind("fitPull", self.fitPullSlider)
         self.updateFitControls()
+        self.parameterPanel.bind("baseMethod", self.baseMethodCombo)
         self.parameterPanel.bind("baseThreshold", self.baseSlider)
         self.parameterPanel.bind("minThickness", self.minThicknessSpin)
         self.parameterPanel.bind("maxThickness", self.maxThicknessSpin)
@@ -847,15 +860,21 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # --- detection -------------------------------------------------------------
     def updateFitControls(self):
-        """Surface smoothing belongs to the ellipsoid fit, the pull to the surface fits."""
+        """Surface smoothing belongs to the ellipsoid fit, the pull to the surface fits, the base threshold to the
+        fixed-share base detection."""
         ellipsoid = (self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.DEFAULTS["fit"]) == "ellipsoid"
         self.smoothingSlider.enabled = ellipsoid
         self.fitPullSlider.enabled = not ellipsoid
+        self.baseSlider.enabled = self.baseMethod() == "fraction"
+
+    def baseMethod(self):
+        return self.baseMethodCombo.itemData(self.baseMethodCombo.currentIndex) or wallLib.DEFAULTS["baseMethod"]
 
     def parameters(self):
         return {"angles": int(self.anglesSpin.value), "smoothing": float(self.smoothingSlider.value),
                 "fit": self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.DEFAULTS["fit"],
                 "fitPull": float(self.fitPullSlider.value),
+                "baseMethod": self.baseMethod(),
                 "baseFraction": float(self.baseSlider.value) / 100.0,
                 "resolution": float(self.resolutionSpin.value),
                 "minThickness": float(self.minThicknessSpin.value),
