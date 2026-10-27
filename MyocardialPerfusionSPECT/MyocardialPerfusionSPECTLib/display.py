@@ -22,7 +22,7 @@ from MyocardialPerfusionSPECTLib.views import ORIENTATIONS, ORIENTATION_TITLES
 
 DEFAULT_GRID_ROWS = 2
 DEFAULT_GRID_COLUMNS = 12
-MOSAIC_PANEL_VERSION = 13  # bump when SliceMosaicPanel changes, so a reload replaces the old panel
+MOSAIC_PANEL_VERSION = 14  # bump when SliceMosaicPanel changes, so a reload replaces the old panel
 
 # (combo label, color node name or ID); the first one is the default. "MPI ..." tables are this
 # extension's own (colortables.py), made in the scene when first used.
@@ -1259,6 +1259,24 @@ def bestGrid(count, width, height, gap=SliceMosaicPanel.GAP, maxRows=8, maxColum
     return rows, columns
 
 
+def addCopyImageMenu(widget):
+    """Right-click menu on a panel of our own with "Copy image", as Slicer's own views offer: the panel as
+    it is shown (titles, color bars and all) goes to the clipboard, to paste into a slide or a report. Child
+    widgets with a menu of their own (the text of the gating information) keep theirs."""
+    widget.setContextMenuPolicy(qt.Qt.CustomContextMenu)
+
+    def copy():
+        qt.QApplication.clipboard().setPixmap(widget.grab())
+
+    def show(position):
+        menu = qt.QMenu(widget)
+        menu.addAction("Copy image").connect("triggered()", copy)
+        menu.exec_(widget.mapToGlobal(position))
+        menu.deleteLater()
+
+    widget.connect("customContextMenuRequested(QPoint)", show)
+
+
 def _singletonPanel(attribute, tag, panelClass):
     """A panel and its view factory live for the whole Slicer session (also across module reloads),
     because the layout manager keeps using the factory registered first. After a module update the
@@ -1272,6 +1290,7 @@ def _singletonPanel(attribute, tag, panelClass):
         setattr(slicer, attribute, state)
     if state.get("version") != MOSAIC_PANEL_VERSION or state.get("panel") is None:
         state["panel"] = panelClass()
+        addCopyImageMenu(state["panel"].widget)
         state["factory"].setWidget(state["panel"].widget)
         state["version"] = MOSAIC_PANEL_VERSION
     return state["panel"]
