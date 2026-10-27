@@ -8,7 +8,9 @@ and saved with the scene. The selected row is the active study of all MPI module
 The case (patient name and ID) is read from the DICOM headers of the studies, can be typed instead,
 and is shown in the workflow toolbar; studies of more than one patient are warned about
 (MyocardialPerfusionSPECTLib/case.py).
-See MyocardialPerfusionSPECTLib/studies.py for how gated sequences are recognised and paired.
+See MyocardialPerfusionSPECTLib/studies.py for how gated sequences are recognised and paired (gated PET
+loaded as a MultiVolume included). A gated study without a static image (e.g. gated PET only) is offered
+to be summed into one, once per sequence (MPI.SumOffered on it).
 """
 
 import html
@@ -36,6 +38,7 @@ from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E40
 from MyocardialPerfusionSPECTLib import case as caseLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import narrowLabel, styleButton  # noqa: E402
 
+SUM_OFFERED_ATTRIBUTE = "MPI.SumOffered"   # on a gated sequence: the user was asked to sum it into a static image
 STUDIES_TABLE_HEIGHT = 250   # px, fixed height of the studies table
 
 
@@ -283,6 +286,43 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.patients = caseLib.updateFromDicom(self.studies)
             caseLib.warnIfMixed(self.patients)
             self.showCase()
+        if any(self.gatedOnlyToOffer()):
+            qt.QTimer.singleShot(0, self.offerSumGates)   # after the table is shown
+
+    # --- gated studies without a static image -------------------------------------------------------
+    def gatedOnlyToOffer(self):
+        """Gated-only studies (no static image) whose sequence the user was not asked about yet."""
+        return [s for s in self.studies if s.staticNode is None and s.gatedNode is not None
+                and s.role != studiesLib.EXCLUDED_ROLE and not s.gatedNode.GetAttribute(SUM_OFFERED_ATTRIBUTE)]
+
+    def offerSumGates(self):
+        """Ask once per sequence to make the static image of gated-only studies by summing their gates."""
+        studies = self.gatedOnlyToOffer()
+        if not studies or slicer.app.commandOptions().noMainWindow:
+            return
+        for study in studies:
+            study.gatedNode.SetAttribute(SUM_OFFERED_ATTRIBUTE, "1")
+        names = "\n".join(f"  \u2022 {s.gatedNode.GetName()} ({s.gates} gates)" for s in studies)
+        one = len(studies) == 1
+        text = ((f"This gated study has no static image:\n{names}\n\n" if one else
+                 f"These gated studies have no static image:\n{names}\n\n")
+                + "Processing, Myocardium and Perfusion work on a static image. Create it by summing the gates? "
+                "(Later: select the study and press Create static from gates.)")
+        if not slicer.util.confirmYesNoDisplay(text, windowTitle="Create static image from the gates"):
+            return
+        with slicer.util.tryWithErrorDisplay("Could not sum the gates.", waitCursor=True):
+            node = None
+            for study in studies:
+                node = self.sumStudy(study)
+            if one and node is not None:
+                session.setActiveStudy(node)
+            self.refreshStudies()
+
+    @staticmethod
+    def sumStudy(study):
+        node = studiesLib.sumGates(study.gatedNode)
+        node.SetAttribute(studiesLib.ROLE_ATTRIBUTE, study.role)
+        return node
 
     # --- case -------------------------------------------------------------------------------
     def showCase(self):
@@ -421,8 +461,7 @@ class MPIDataRolesWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not (study and study.gatedNode):
             return
         with slicer.util.tryWithErrorDisplay("Could not sum the gates.", waitCursor=True):
-            node = studiesLib.sumGates(study.gatedNode)
-            node.SetAttribute(studiesLib.ROLE_ATTRIBUTE, study.role)
+            node = self.sumStudy(study)
             session.setActiveStudy(node)
             self.refreshStudies()
 
@@ -434,6 +473,8 @@ class MPIDataRolesTest(ScriptedLoadableModuleTest):
     def runTest(self):
         self.setUp()
         self.test_ActiveStudy()
+        self.setUp()
+        self.test_GatedMultiVolume()
 
     def test_ActiveStudy(self):
         import numpy as np
@@ -458,6 +499,33 @@ class MPIDataRolesTest(ScriptedLoadableModuleTest):
         self.assertEqual(len(caseLib.patientGroups([("a", "DOE^JOHN", "1"), ("b", "Doe, John", ""),
                                                      ("c", "ROE^JANE", "2")])), 2)
         self.delayDisplay("Data roles test passed")
+
+    def test_GatedMultiVolume(self):
+        """Gated PET loaded as a MultiVolume (one volume, a frame per gate): recognised as a gated-only study, the
+        static image is the sum of the gates."""
+        import numpy as np
+        frames = np.stack([np.full((10, 12, 14), gate + 1.0, dtype=np.float32) for gate in range(8)], axis=-1)
+        multiVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVectorVolumeNode", "Stress gated PET")
+        multiVolume.SetSpacing(4.0, 4.0, 4.0)
+        slicer.util.updateVolumeFromArray(multiVolume, frames)
+        multiVolume.SetAttribute("MultiVolume.NumberOfFrames", "8")
+        multiVolume.SetAttribute("MultiVolume.FrameLabels", ",".join(str(10 * g) for g in range(8)))
+        multiVolume.SetAttribute("DICOM.Modality", "PT")
+        studies = studiesLib.scanStudies()
+        self.assertEqual(len(studies), 1)
+        study = studies[0]
+        self.assertIsNone(study.staticNode)
+        self.assertEqual(study.gates, 8)
+        self.assertEqual(study.role, "Stress")
+        self.assertEqual(study.gatedNode.GetNthDataNode(2).GetAttribute("DICOM.Modality"), "PT")
+        self.assertEqual(len(studiesLib.scanStudies()), 1)   # converted once
+        static = MPIDataRolesWidget.sumStudy(study)
+        self.assertAlmostEqual(float(slicer.util.arrayFromVolume(static).mean()), 36.0)
+        studies = studiesLib.scanStudies()
+        self.assertEqual(len(studies), 1)
+        self.assertIs(studies[0].staticNode, static)
+        self.assertIs(studies[0].gatedNode, study.gatedNode)
+        self.delayDisplay("Gated MultiVolume test passed")
 
 # saved Advanced parameters of every step, this module's constants included (see parameters.py)
 parametersLib.applySaved()
