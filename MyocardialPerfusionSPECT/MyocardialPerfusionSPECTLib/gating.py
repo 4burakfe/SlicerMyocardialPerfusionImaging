@@ -1,7 +1,8 @@
 """Gated QC helpers without a Slicer dependency: the ECG gating information stored on the gate volumes
 by the DICOM SPECT Recon extension, per-frame count checks and their text.
 
-Attributes read (all optional, "SPECTRecon." prefix, written by DICOMSpectRecon nmdata.readGatingInfo):
+Attributes read (all optional, "SPECTRecon." prefix, written by DICOMSpectRecon nmdata.readGatingInfo, or
+"GatedPET." prefix, written by the gated PET DICOM plugin of this extension):
     GatingTimeSlots, GatingBeatRejection, GatingLowRRMs, GatingHighRRMs, GatingRRWindowPercent,
     GatingNominalIntervalMs (+ Source), GatingHeartRateBpm (+ Source), GatingIntervalsAcquired,
     GatingIntervalsRejected, GatingRejectedPercent, GatingSlotWidthMs, GatingFrameTimeMs,
@@ -17,19 +18,21 @@ import math
 import numpy as np
 
 PREFIX = "SPECTRecon."
+PREFIXES = (PREFIX, "GatedPET.")   # gated PET: same keys, written by DICOMGatedPETPlugin
 COUNT_BAND_PERCENT = 10.0      # a frame whose counts differ more from the mean is flagged
 REJECTED_WARNING_PERCENT = 20.0
 RR_DRIFT_WARNING_PERCENT = 10.0
 
 
 def attributes(node):
-    """{name without prefix: text} of the SPECTRecon attributes of a volume node."""
+    """{name without prefix: text} of the SPECTRecon (or GatedPET) attributes of a volume node."""
     out = {}
     if node is None:
         return out
     for name in node.GetAttributeNames() or ():
-        if name.startswith(PREFIX):
-            out[name[len(PREFIX):]] = node.GetAttribute(name)
+        for prefix in PREFIXES:
+            if name.startswith(prefix):
+                out[name[len(prefix):]] = node.GetAttribute(name)
     return out
 
 

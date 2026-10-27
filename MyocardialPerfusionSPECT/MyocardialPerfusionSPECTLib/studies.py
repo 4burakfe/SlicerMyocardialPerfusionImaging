@@ -9,7 +9,8 @@ Everything is stored as node attributes, so it is saved with the scene and survi
 
 Recognition
     gated     a sequence of scalar volumes with 4 to 32 items of identical geometry. Sequences from
-              the DICOM SPECT Recon extension are recognised by SPECTRecon.Gate on their items.
+              the DICOM SPECT Recon extension (SPECTRecon.Gate on their items) and from the gated PET
+              DICOM plugin (GatedPET.Gate) are always recognised.
               A MultiVolume (e.g. gated PET loaded by the MultiVolume importer: one volume with a frame
               per gate) is copied once into such a sequence (convertMultiVolumes), placed next to it.
     pairing   a gated sequence goes with the static volume that has the same reconstruction
@@ -360,7 +361,7 @@ def gatedSequences():
             first = sequence.GetNthDataNode(0)
             if first is None or not first.IsA("vtkMRMLScalarVolumeNode") or first.IsA("vtkMRMLLabelMapVolumeNode"):
                 continue
-            fromRecon = first.GetAttribute("SPECTRecon.Gate") is not None
+            fromRecon = first.GetAttribute("SPECTRecon.Gate") is not None or first.GetAttribute("GatedPET.Gate") is not None
             if not looksLikeEmission(first.GetImageData(), modality(first)):
                 continue
             if not fromRecon:
@@ -486,23 +487,33 @@ def saveStudy(study):
 
 
 def sumGates(sequence, name=None):
-    """New scalar volume holding the sum of all gates (the static image of a gated acquisition)."""
+    """New scalar volume holding the sum of all gates (the static image of a gated acquisition).
+    Gated PET gates (GatedPET.Gate) are each a full concentration / SUV image, so they are averaged."""
     slicer = _slicer()
     import numpy as np
     n = sequence.GetNumberOfDataNodes()
     first = sequence.GetNthDataNode(0)
+    average = first.GetAttribute("GatedPET.Gate") is not None
     total = None
     for i in range(n):
         array = slicer.util.arrayFromVolume(sequence.GetNthDataNode(i)).astype(np.float64)
         total = array if total is None else total + array
+    if average:
+        total /= n
     node = slicer.mrmlScene.AddNewNodeByClass(
-        "vtkMRMLScalarVolumeNode", slicer.mrmlScene.GenerateUniqueName(name or f"{sequence.GetName()} summed"))
+        "vtkMRMLScalarVolumeNode",
+        slicer.mrmlScene.GenerateUniqueName(name or f"{sequence.GetName()} {'mean' if average else 'summed'}"))
     node.CopyOrientation(first)
     slicer.util.updateVolumeFromArray(node, total.astype(np.float32))
+    perGate = ("SPECTRecon.Gate", "GatedPET.Gate", "GatedPET.TriggerTimeMs", "GatedPET.FrameDurationMs")
     for attribute in first.GetAttributeNames() or ():
-        if attribute != "SPECTRecon.Gate":
+        if attribute not in perGate:
             node.SetAttribute(attribute, first.GetAttribute(attribute))
+    if first.GetVoxelValueUnits() is not None:
+        node.SetVoxelValueUnits(first.GetVoxelValueUnits())
     node.SetAttribute("MPI.SummedFromGates", str(n))
+    if average:
+        node.SetAttribute("MPI.AveragedGates", "1")
     node.SetAttribute(GATED_ATTRIBUTE, sequence.GetID())
     node.CreateDefaultDisplayNodes()
     try:
