@@ -195,6 +195,13 @@ STEP_PARAMETERS = {
           "valve plane (a defect further toward the apex does not end the wall)", "Valve plane"),
         P("maxValveTilt", "Largest valve plane tilt", 40.0, f"{MYO}:DEFAULTS.maxValveTilt", 0.0, 80.0, 1.0, 0, " deg",
           "Largest tilt of the valve plane against the short-axis plane", "Valve plane"),
+        P("valveShape", "Base rim shape", "saddle", f"{MYO}:DEFAULTS.valveShape", tooltip=(
+          "Shape of the base rim fitted through the ends of the wall around the LV. Saddle: a tilted plane that may "
+          "rise and fall twice around the LV (as the mitral annulus does), up to the saddle limit. Plane: a tilted "
+          "plane. Either way every angle of the wall is cut at one height, where its mid-wall meets the rim"),
+          group="Valve plane", choices=(("Saddle", "saddle"), ("Plane", "plane"))),
+        P("saddleMax", "Base rim saddle limit", 8.0, f"{MYO}:SADDLE_MAX_MM", 0.0, 20.0, 0.5, 1, " mm",
+          "Base rim Saddle: largest rise or fall of the rim against the tilted plane", "Valve plane"),
         P("maxBaseNarrowing", "Steepest basal narrowing", 35.0, f"{MYO}:DEFAULTS.maxBaseNarrowing", 0.0, 80.0, 1.0, 0,
           " deg", "Steepest the wall may turn toward the axis on its way to the base", "Valve plane"),
         P("resolutionNM", "System resolution, SPECT", 12.0, f"{STUDIES}:SYSTEM_RESOLUTION_MM.NM", 3.0, 30.0, 0.5, 1,

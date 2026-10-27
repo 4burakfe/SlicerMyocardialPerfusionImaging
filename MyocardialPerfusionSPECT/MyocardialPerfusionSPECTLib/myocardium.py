@@ -19,13 +19,16 @@ labelling:
    it flat.
 3. Base. Along every column of rays (one angle around the axis), going from the LV center toward
    the base, the wall ends where its counts fall below a threshold (so the dim atria and great vessels
-   behind the valves are not taken as wall). By default (baseMethod "adaptive") a preliminary segment at
-   a fraction of the column's own wall counts gives the cavity's blood pool and each column's basal wall
-   counts, and the wall ends half way between the two, so a defect at the base (inferobasal) does not
-   end its column early; "fraction" keeps the fixed share of the column's wall counts (which already
-   copes with a defect along the whole column, not with one at the base only). A plane is fitted through these
-   end points (robust least squares, tilt limited), so the valve plane may be oblique to the long
-   axis. It can be moved along the axis and tilted afterwards (valve offset and tilt).
+   behind the valves are not taken as wall). By default (baseMethod "global") a preliminary segment at
+   a fraction of the column's own wall counts gives the cavity's blood pool and the mean counts of the whole
+   myocardium, and every column's wall ends half way between the two (one level: steady in noisy gate
+   frames); "adaptive" takes each column's own basal wall counts instead of the whole myocardium's, so a
+   defect at the base only (inferobasal) does not end its column early; "fraction" keeps the fixed share of the column's wall counts (which already
+   copes with a defect along the whole column, not with one at the base only). A base rim is fitted through
+   these end points (robust least squares, tilt limited): a plane oblique to the long axis that, with
+   valveShape "saddle" (default), may also rise and fall twice around the LV, as the mitral annulus does.
+   Every column is cut at one height, where its mid-wall meets the rim, so the endo- and epicardium end
+   together. The rim can be moved along the axis and tilted afterwards (valve offset and tilt).
 4. Endo- and epicardium. With the surface fits (thicknessModel "width") where the count profile falls
    half way from the wall peak to the blood pool (_poolLevel: the cavity sampled CAVITY_GAP_MM inside
    the endocardium) and to the lowest counts outside, each half width fitted over the wall, with no
@@ -60,12 +63,15 @@ DEFAULTS = {
     "smoothing": 1.25,         # "ellipsoid": Gaussian sigma of the surface smoothing, in grid samples (0 = none)
     "thicknessSmoothing": 3.0, # "ellipsoid": Gaussian sigma of the wall thickness map, in grid samples
     "shapeModel": True,        # "ellipsoid": rays without a wall peak (defects) follow an ellipsoid model of the whole LV
-    "baseMethod": "adaptive",  # BASE_METHODS: "adaptive" ends the wall half way between its basal counts and the
-                               # blood pool, "fraction" at baseFraction of its column's wall counts (_fitValvePlane)
+    "baseMethod": "global",    # BASE_METHODS: "global" ends the wall half way between the whole myocardium's counts and
+                               # the blood pool, "adaptive" half way between its column's basal counts and the blood
+                               # pool, "fraction" at baseFraction of its column's wall counts (_fitValvePlane)
     "baseFraction": 0.55,      # "fraction": wall ends where its counts fall below this fraction of its column's wall counts
     "basePrelimFraction": 0.50,  # "adaptive": the same for the preliminary segment the blood pool and basal wall come from
     "baseEdgeFraction": 0.50,  # "adaptive": the wall ends this far from its basal counts down to the blood pool
     "maxValveTilt": 40.0,      # deg, largest tilt of the valve plane against the short-axis plane
+    "valveShape": "saddle",    # VALVE_SHAPES: "saddle" lets the base rim rise and fall twice around the LV on top of
+                               # the plane's tilt (up to SADDLE_MAX_MM), "plane" keeps it flat
     "maxBaseNarrowing": 35.0,  # deg, steepest the wall may turn toward the axis on its way to the base
     "resolution": 12.0,        # system resolution (FWHM, mm) removed from the profile width
     "thicknessModel": "width", # surface fits and gate frames (THICKNESS_MODELS): "width" puts the endo- and epicardium
@@ -172,9 +178,9 @@ def fitWall(sample, center, u, w, radius, params=None):
     result = _fitOnGrid(sample, WallGrid(center, u, w, radius, params))
     grid = result["grid"]
     apex = float(np.median(result["endo"][-1]))                    # apical endocardium on the axis
-    a, gw, gs = result["valvePlane"]
+    a, slope, saddle = _rimColumns(grid.theta, result["valvePlane"])
     radiusAtBase = np.array([np.interp(a, grid.z, result["epi"][:grid.nCyl, c]) for c in range(grid.nTheta)])
-    rise = float(np.max((gw * np.cos(grid.theta) + gs * np.sin(grid.theta)) * radiusAtBase))
+    rise = float(np.max(slope * radiusAtBase + saddle))
     # the middle of the LV, or further toward the apex when the steep side of the valve plane needs
     # it, but the cap keeps at least 8 mm of cavity in front of the apical endocardium
     shift = max(0.5 * (a + apex), a + max(rise, 0.0) + 3.0 * grid.dz)
@@ -412,6 +418,8 @@ GATE_DEFAULTS = {
     "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
     "myocardialVolume": "own", # GATE_VOLUMES: "own" every frame's wall thickness from its own profile widths,
                                # "ed" / "es" every frame's thickness scaled to the myocardial volume of that frame
+    "valveCycle": "smooth",    # GATE_VALVE_CYCLES, "static": "smooth" the frames' base rim heights follow a smooth
+                               # curve over the cycle (smoothValveHeights), "own" every frame's own height
 }
 GATE_SEGMENTATIONS = (("Track the static wall", "static"),
                       ("Each frame from scratch", "own"))
@@ -421,6 +429,9 @@ GATE_FITS = (("B-spline surface, bending penalty", "bspline"),
 GATE_VOLUMES = (("Each frame's own (from its profile widths)", "own"),
                 ("Constant, at the end-diastolic volume (QGS-like)", "ed"),
                 ("Constant, at the end-systolic volume", "es"))
+GATE_VALVE_CYCLES = (("Smooth over the cycle", "smooth"),
+                     ("Each frame's own", "own"))
+VALVE_CYCLE_HARMONICS = 2   # smoothValveHeights: harmonics of the cardiac cycle the base rim height may follow
 WALL_FITS = GATE_FITS + (("Ellipsoid shape model, Gaussian smoothing (previous)", "ellipsoid"),)
 SPLINE_KNOT_MM = 8.0       # B-spline fit: knot spacing over the wall (mm)
 SPLINE_LENGTH_MM = 15.0    # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
@@ -433,8 +444,13 @@ THICKNESS_MODELS = (("Half way to the blood pool and to the counts outside", "wi
 CAVITY_GAP_MM = 5.0          # _poolLevel: the blood pool is sampled this far inside the endocardium ...
 POOL_MIN_RAYS = 0.5          # ... where at least this share of the rays has 3 mm of cavity there (else without the gap)
 WIDTH_SIGMA_MM = 0.75        # slabThickness: uncertainty of a measured profile width (mm)
-BASE_METHODS = (("Adaptive: half way from the basal wall to the blood pool", "adaptive"),
+BASE_METHODS = (("Adaptive, global: half way from the whole myocardium's counts to the blood pool", "global"),
+                ("Adaptive: half way from the basal wall to the blood pool", "adaptive"),
                 ("Fixed share of each angle's wall counts", "fraction"))
+VALVE_SHAPES = (("Saddle: a tilted plane that may rise and fall twice around the LV", "saddle"),
+                ("Plane", "plane"))
+SADDLE_MAX_MM = 8.0        # "saddle" base rim: largest rise / fall of the rim against the tilted plane (mm)
+SADDLE_RIDGE = 0.1         # "saddle" base rim: cost of the saddle in the fit, as a share of the wall ends' weights
 BASE_BAND_MM = 12.0        # "adaptive" base: the basal wall counts are taken this far apical of the preliminary plane
 BASE_SEARCH_MM = 16.0      # "adaptive" base: each column is searched toward the base from this far apical of it
 BASE_MIN_CONTRAST = 0.25   # "adaptive" base: basal wall counts taken at least this share of the way from blood pool to wall
@@ -558,7 +574,8 @@ def _trackedGateWall(grid, profiles, reference, g):
     within maxWallShift of the static mid-wall and trusted where both the frame and the static image (which
     has all the counts) trace the wall; the fit is of their displacement from the static mid-wall, so the
     frame keeps the static wall's shape where it does not show its own. Rays past the static valve plane
-    do not count."""
+    do not count. The base rim keeps the static rim's shape (tilt and saddle, from all the counts), moved to
+    the frame's own height: the median height of the frame's wall ends over that shape."""
     p = grid.params
     refMid = reference["mid"]
     shift = float(g["maxWallShift"])
@@ -572,10 +589,14 @@ def _trackedGateWall(grid, profiles, reference, g):
     mid = refMid + fitSurface(grid, peakT - refMid, weight, g["fit"], g["fitPull"], refMid)
     mid = np.clip(mid, lo, hi)
     peak = _interp(profiles, grid.t, mid)
-    a0, gw, gs = reference["valvePlane"]
+    static = _rim(reference["valvePlane"])
     plane, basePoints = _fitValvePlane(grid, mid, peak, p, _cavityFill(profiles, grid.t, mid, peak))
+    a = plane[0]
+    if len(basePoints) >= max(6, grid.nTheta // 4):
+        _, _, saddle = _rimColumns(np.arctan2(basePoints[:, 1], basePoints[:, 0]), static)
+        a = float(np.median(basePoints[:, 2] - static[1] * basePoints[:, 0] - static[2] * basePoints[:, 1] - saddle))
     maxValve = float(g["maxValveShift"])
-    return mid, weight, (float(np.clip(plane[0], a0 - maxValve, a0 + maxValve)), gw, gs), basePoints
+    return mid, weight, (float(np.clip(a, static[0] - maxValve, static[0] + maxValve)),) + static[1:], basePoints
 
 
 def _fittedWall(grid, profiles, fit, pull, shapePrior=False):
@@ -676,6 +697,35 @@ def _wallSurfaces(grid, mid, thickness, p):
     endo = _limitBasalNarrowing(grid, np.maximum(mid - 0.5 * thickness, 1.0), p["maxBaseNarrowing"])
     epi = _limitBasalNarrowing(grid, mid + 0.5 * thickness, p["maxBaseNarrowing"])
     return endo, epi
+
+
+def smoothValveHeights(results, harmonics=None):
+    """The gate frames (fitGate results, None for a frame that failed) with their base rim heights on a smooth
+    curve over the cardiac cycle: a robust fit (outlier frames out) of the mean and the first harmonics of the
+    cycle to the frames' own heights, frame i of n at the phase 2 pi i / n. The base descends toward the apex
+    in systole and returns in diastole; a frame whose noisy wall ends put its rim a few mm off no longer
+    jumps. The rim's shape (tilt, saddle) is kept; "detectedBaseZ" keeps the frame's own height. Too few
+    frames for the fit: the frames as they are."""
+    harmonics = VALVE_CYCLE_HARMONICS if harmonics is None else int(harmonics)
+    known = [i for i, r in enumerate(results) if r is not None]
+    if len(known) < 2 * harmonics + 3:
+        return list(results)
+    phase = 2.0 * math.pi * np.array(known, dtype=float) / len(results)
+    design = np.column_stack([np.ones(len(known))] + [f(k * phase) for k in range(1, harmonics + 1)
+                                                      for f in (np.cos, np.sin)])
+    heights = np.array([_rim(results[i]["valvePlane"])[0] for i in known])
+    weights = np.ones(len(known))
+    for _ in range(5):
+        sw = np.sqrt(weights)
+        coef = np.linalg.lstsq(design * sw[:, None], heights * sw, rcond=None)[0]
+        residual = heights - design @ coef
+        scale = max(1.4826 * float(np.median(np.abs(residual))), 1.0)
+        weights = np.clip(1.0 - (residual / (3.0 * scale)) ** 2, 0.0, 1.0) ** 2 + 1e-6
+    out = list(results)
+    for i, a in zip(known, design @ coef):
+        rim = _rim(results[i]["valvePlane"])
+        out[i] = dict(results[i], valvePlane=(float(a),) + rim[1:], baseZ=float(a), valveCycle="smooth")
+    return out
 
 
 def _rayVolumes(result, inner, outer, power):
@@ -1150,8 +1200,9 @@ def shiftedResult(result, shift):
             t = np.maximum(t + (_bilinear(surface, row, col) - dist).reshape(t.shape), 0.5)
         out[key] = t
     out["thickness"] = out["epi"] - out["endo"]
-    a, gw, gs = result["valvePlane"]
-    out["valvePlane"] = (a - float(shift @ grid.u) + gw * float(shift @ grid.w) + gs * float(shift @ grid.s), gw, gs)
+    a, gw, gs, b2, c2 = _rim(result["valvePlane"])
+    out["valvePlane"] = (a - float(shift @ grid.u) + gw * float(shift @ grid.w) + gs * float(shift @ grid.s),
+                         gw, gs, b2, c2)
     return out
 
 
@@ -1265,8 +1316,9 @@ def _cavityFill(profiles, t, mid, peak):
 
 
 def _fitValvePlane(grid, mid, peak, p, fill=None):
-    """Valve plane z = a + gw * x + gs * y in the cardiac frame (x along w, y along s), fitted
-    through the end of the wall in every column. Along a column the wall ends where its counts fall
+    """Base rim (a, gw, gs, b2, c2) in the cardiac frame (x along w, y along s, angle theta from w toward s):
+    z = a + gw * x + gs * y + b2 * cos 2 theta + c2 * sin 2 theta, a tilted plane that may rise and fall twice
+    around the LV (valveShape "saddle", _planeThroughEnds), fitted through the end of the wall in every column. Along a column the wall ends where its counts fall
     below a threshold, or where the cavity fills up (the rays leave the LV for the atria, whose counts
     can pass the count threshold in small hearts).
 
@@ -1281,7 +1333,7 @@ def _fitValvePlane(grid, mid, peak, p, fill=None):
     base. Each column is searched from BASE_SEARCH_MM apical of the preliminary plane toward the base
     (a defect at the mid-ventricle does not end it), and counts in the fit by the contrast of its basal
     wall against the blood pool (a scar as dim as the blood pool has no edge to find).
-    Returns ((a, gw, gs), end points [K, 3] frame)."""
+    Returns ((a, gw, gs, b2, c2), end points [K, 3] frame)."""
     nCyl = grid.nCyl
     cyl = peak[:nCyl]
     if fill is not None:
@@ -1294,7 +1346,8 @@ def _fitValvePlane(grid, mid, peak, p, fill=None):
         filled = fill[:nCyl] > fillLimit[None, :]
     else:
         filled = np.zeros(cyl.shape, dtype=bool)
-    adaptive = p.get("baseMethod", "adaptive") == "adaptive"
+    method = p.get("baseMethod", "adaptive")
+    adaptive = method in ("adaptive", "global")
 
     reference = np.percentile(peak, 85, axis=0)                  # each column's wall counts
     reference = _circularMedian(reference[None, :], _angleWindow(grid, 5))[0]
@@ -1317,17 +1370,21 @@ def _fitValvePlane(grid, mid, peak, p, fill=None):
     pool = min(pool, 0.5 * wall)
     contrast = max(wall - pool, 1e-9)
     # every column's basal wall: within BASE_BAND_MM of the preliminary plane, on the LV side
-    a, gw, gs = plane
-    slope = gw * np.cos(grid.theta) + gs * np.sin(grid.theta)
-    above = grid.z[:, None] - (a + slope[None, :] * mid[:nCyl])    # mm on the apical side of the plane
+    a, slope, saddle = _rimColumns(grid.theta, plane)
+    above = grid.z[:, None] - (a + slope[None, :] * mid[:nCyl] + saddle[None, :])   # mm on the apical side of the rim
     band = (above >= 0.0) & (above <= BASE_BAND_MM)
     basal = np.array([np.median(cyl[band[:, c], c]) if np.any(band[:, c]) else reference[c]
                       for c in range(grid.nTheta)])
     basal = _circularMedian(basal[None, :], _angleWindow(grid, 3))[0]
     basal = np.clip(basal, pool + BASE_MIN_CONTRAST * contrast, None)
-    threshold = pool + p.get("baseEdgeFraction", 0.5) * (basal - pool)
+    # "global": one level for every column, the mean wall counts of the whole preliminary myocardium (steadier in
+    # noisy frames, but a basal-only defect ends its column early, as "fraction" does); "adaptive": each column's
+    # own basal wall
+    level = np.full(grid.nTheta, wall) if method == "global" else basal
+    threshold = pool + p.get("baseEdgeFraction", 0.5) * (level - pool)
     weight = np.clip((basal - pool) / (0.5 * contrast), 0.0, 1.0) ** 2
-    start = np.array([np.searchsorted(grid.z, a + slope[c] * np.interp(a, grid.z, mid[:nCyl, c]) + BASE_SEARCH_MM)
+    start = np.array([np.searchsorted(grid.z, a + slope[c] * np.interp(a, grid.z, mid[:nCyl, c]) + saddle[c]
+                                      + BASE_SEARCH_MM)
                       for c in range(grid.nTheta)])
     ends, endWeights = _wallEnds(grid, mid, cyl, threshold, filled, weight, start)
     if len(ends) < max(6, grid.nTheta // 4):
@@ -1362,35 +1419,65 @@ def _wallEnds(grid, mid, cyl, threshold, filled, columnWeight, start=None):
 
 
 def _planeThroughEnds(grid, ends, endWeights, p):
-    """Valve plane (a, gw, gs) through the wall's end points: robust least squares (outlier columns out),
-    tilt limited to maxValveTilt; too few ends: the wall runs to the edge of the sampled region."""
+    """Base rim (a, gw, gs, b2, c2) through the wall's end points, z = a + gw * x + gs * y + b2 * cos 2 theta +
+    c2 * sin 2 theta: robust least squares (outlier columns out), tilt limited to maxValveTilt. valveShape
+    "saddle" fits the saddle (b2, c2) too, held toward flat (SADDLE_RIDGE) and at most SADDLE_MAX_MM, when the
+    ends go around at least half the LV; "plane" keeps it flat. Too few ends: the wall runs to the edge of the
+    sampled region."""
     zMin, zMax = float(grid.z[0]), -2.0 * grid.dz
     if len(ends) < max(6, grid.nTheta // 4):
         a = zMin if len(ends) == 0 else float(np.median(ends[:, 2]))
-        return (float(np.clip(a, zMin, zMax)), 0.0, 0.0)
-    design = np.column_stack([np.ones(len(ends)), ends[:, 0], ends[:, 1]])
+        return (float(np.clip(a, zMin, zMax)), 0.0, 0.0, 0.0, 0.0)
+    theta = np.arctan2(ends[:, 1], ends[:, 0])
+    harmonics = np.column_stack([np.cos(2.0 * theta), np.sin(2.0 * theta)])
+    saddle = p.get("valveShape", "saddle") == "saddle" and len(ends) >= grid.nTheta // 2
+    plane = np.column_stack([np.ones(len(ends)), ends[:, 0], ends[:, 1]])
+    # the plane first, its outlier columns out; then the saddle on the columns the plane kept (a run of columns
+    # ending early at a basal defect would otherwise be taken up by tilt and saddle together, a one-sided bump)
     weights = endWeights.copy()
-    for _ in range(5):                                           # iteratively reweighted (outlier columns out)
-        sw = np.sqrt(weights)
-        coef = np.linalg.lstsq(design * sw[:, None], ends[:, 2] * sw, rcond=None)[0]
-        residual = ends[:, 2] - design @ coef
-        scale = max(1.4826 * float(np.median(np.abs(residual))), 2.0)
-        weights = endWeights * np.clip(1.0 - (residual / (3.0 * scale)) ** 2, 0.0, 1.0) ** 2
-    a, gw, gs = (float(v) for v in coef)
+    for design, ridged, rounds in ((plane, False, 5), (np.column_stack([plane, harmonics]), True, 3))[:1 + saddle]:
+        for _ in range(rounds):                                  # iteratively reweighted (outlier columns out)
+            sw = np.sqrt(weights)
+            lhs, rhs = design * sw[:, None], ends[:, 2] * sw
+            if ridged:   # the saddle costs as much as SADDLE_RIDGE of the ends missing the rim by as many mm
+                ridge = math.sqrt(SADDLE_RIDGE * float(weights.sum()))
+                lhs = np.vstack([lhs, [[0.0, 0.0, 0.0, ridge, 0.0], [0.0, 0.0, 0.0, 0.0, ridge]]])
+                rhs = np.concatenate([rhs, [0.0, 0.0]])
+            coef = np.linalg.lstsq(lhs, rhs, rcond=None)[0]
+            residual = ends[:, 2] - design @ coef
+            scale = max(1.4826 * float(np.median(np.abs(residual))), 2.0)
+            weights = endWeights * np.clip(1.0 - (residual / (3.0 * scale)) ** 2, 0.0, 1.0) ** 2
+    a, gw, gs, b2, c2 = (float(v) for v in np.append(coef, [0.0, 0.0])[:5])
+    amplitude = math.hypot(b2, c2)
     slope = math.hypot(gw, gs)
     maxSlope = math.tan(math.radians(p["maxValveTilt"]))
-    if slope > maxSlope:
-        gw, gs = gw * maxSlope / slope, gs * maxSlope / slope
-        a = float(np.average(ends[:, 2] - gw * ends[:, 0] - gs * ends[:, 1], weights=weights + 1e-9))
-    return (float(np.clip(a, zMin, zMax)), gw, gs)
+    if amplitude > SADDLE_MAX_MM or slope > maxSlope:
+        b2, c2 = (v * min(1.0, SADDLE_MAX_MM / max(amplitude, 1e-9)) for v in (b2, c2))
+        gw, gs = (v * min(1.0, maxSlope / max(slope, 1e-9)) for v in (gw, gs))
+        rest = ends[:, 2] - gw * ends[:, 0] - gs * ends[:, 1] - harmonics @ np.array([b2, c2])
+        a = float(np.average(rest, weights=weights + 1e-9))
+    return (float(np.clip(a, zMin, zMax)), gw, gs, b2, c2)
+
+
+def _rim(plane):
+    """(a, gw, gs, b2, c2) of a base rim; the valve plane (a, gw, gs) of older results has no saddle."""
+    plane = tuple(float(v) for v in plane)
+    return plane + (0.0,) * (5 - len(plane))
+
+
+def _rimColumns(theta, plane):
+    """The base rim at angles theta around the axis: z = a + slope * r + saddle at a distance r from the axis.
+    Returns (a, slope, saddle)."""
+    a, gw, gs, b2, c2 = _rim(plane)
+    theta = np.asarray(theta, dtype=float)
+    return a, gw * np.cos(theta) + gs * np.sin(theta), b2 * np.cos(2.0 * theta) + c2 * np.sin(2.0 * theta)
 
 
 def _beyondBase(grid, mid, plane):
-    """Cylinder rows of each column on the atrial side of the valve plane, [rows, angles] bool."""
-    a, gw, gs = plane
-    slope = gw * np.cos(grid.theta) + gs * np.sin(grid.theta)
+    """Cylinder rows of each column on the atrial side of the base rim, [rows, angles] bool."""
+    a, slope, saddle = _rimColumns(grid.theta, plane)
     beyond = np.zeros(mid.shape, dtype=bool)
-    beyond[:grid.nCyl] = grid.z[:, None] < a + slope[None, :] * mid[:grid.nCyl]
+    beyond[:grid.nCyl] = grid.z[:, None] < a + slope[None, :] * mid[:grid.nCyl] + saddle[None, :]
     return beyond
 
 
@@ -1425,28 +1512,30 @@ def wallReach(result, point=None):
 
 
 def valvePlane(result):
-    """(a, gw, gs) of the valve plane z = a + gw * x + gs * y after the user's offset and tilt."""
+    """(a, gw, gs, b2, c2) of the base rim z = a + gw * x + gs * y + b2 * cos 2 theta + c2 * sin 2 theta
+    (_planeThroughEnds) after the user's offset and tilt."""
     grid = result["grid"]
     p = grid.params
-    a, gw, gs = result["valvePlane"]
+    a, gw, gs, b2, c2 = _rim(result["valvePlane"])
     gw = math.tan(np.clip(math.atan(gw) + math.radians(p["valveTiltAnterior"]), -1.2, 1.2))
     gs = math.tan(np.clip(math.atan(gs) + math.radians(p["valveTiltSeptal"]), -1.2, 1.2))
     a = float(np.clip(a + p["valveOffset"], grid.z[0], -grid.dz))
-    scale = _tiltScale(grid, result.get("epi"), a, gw, gs)
-    return (a, gw * scale, gs * scale)
+    scale = _tiltScale(grid, result.get("epi"), a, gw, gs, b2, c2)
+    return (a, gw * scale, gs * scale, b2 * scale, c2 * scale)
 
 
-def _tiltScale(grid, epi, a, gw, gs):
-    """Factor (0..1) on the valve tilt so the plane meets the epicardium of every column inside the
+def _tiltScale(grid, epi, a, gw, gs, b2=0.0, c2=0.0):
+    """Factor (0..1) on the valve tilt and saddle so the rim meets the epicardium of every column inside the
     sampled cylinder: below the LV center and above the base end. A steep plane in a small or basally
     centered LV would otherwise reach past the LV center on one side and past the sampled region on
     the other; both are clipped, the wall is cut flat there and the endo- and epicardium end at
     different places (a notch or hole at the base)."""
-    if epi is None or (gw == 0.0 and gs == 0.0):
+    if epi is None or not any((gw, gs, b2, c2)):
         return 1.0
     nCyl = grid.nCyl
     radius = np.array([np.interp(a, grid.z, epi[:nCyl, c]) for c in range(grid.nTheta)])
-    rise = (gw * np.cos(grid.theta) + gs * np.sin(grid.theta)) * radius       # plane z - a at the epicardium
+    _, slope, saddle = _rimColumns(grid.theta, (a, gw, gs, b2, c2))
+    rise = slope * radius + saddle                                            # rim z - a at the epicardium
     top, bottom = -2.0 * grid.dz - a, float(grid.z[0]) + grid.dz - a
     scale = 1.0
     if rise.max() > 1e-9:
@@ -1463,16 +1552,27 @@ def valvePlaneZ(result):
 
 def valveTilt(result):
     """Angle between the valve plane and the short-axis plane, degrees."""
-    _, gw, gs = valvePlane(result)
+    gw, gs = valvePlane(result)[1:3]
     return math.degrees(math.atan(math.hypot(gw, gs)))
 
 
 def planeZAt(result, x, y):
-    """Valve plane z at frame coordinates (x along w, y along s), kept between the base end of the
-    sampled region and just below the LV center."""
+    """Base rim z at frame coordinates (x along w, y along s), kept between the base end of the
+    sampled region and just below the LV center. The wall itself is cut at rimZAt."""
     grid = result["grid"]
-    a, gw, gs = valvePlane(result)
-    return np.clip(a + gw * x + gs * y, grid.z[0], -grid.dz)
+    plane = valvePlane(result)
+    _, _, saddle = _rimColumns(np.arctan2(y, x), plane)
+    return np.clip(plane[0] + plane[1] * x + plane[2] * y + saddle, grid.z[0], -grid.dz)
+
+
+def rimZAt(result, theta, zBase=None):
+    """Height (z, mm) at which the wall is cut at angles theta around the axis: where the mid-wall of each
+    column meets the base rim (_polarBaseZ), interpolated between the columns. The whole column is cut at that
+    one height, endo- and epicardium alike: the rim crossing the epicardium elsewhere (a basal wall flaring
+    out under a tilted rim) leaves no notch or loose piece."""
+    grid = result["grid"]
+    zBase = _polarBaseZ(result) if zBase is None else zBase
+    return np.interp(np.mod(theta, 2.0 * math.pi), np.append(grid.theta, 2.0 * math.pi), np.append(zBase, zBase[0]))
 
 
 # ---------------------------------------------------------------------------
@@ -1483,33 +1583,28 @@ LABEL_CAVITY = 2
 
 
 def classify(result, points):
-    """Label of world points: 0 outside, LABEL_MYOCARDIUM, LABEL_CAVITY (closed by the valve plane)."""
+    """Label of world points: 0 outside, LABEL_MYOCARDIUM, LABEL_CAVITY (closed at the base rim, rimZAt)."""
     grid = result["grid"]
     row, col, dist, z = grid.toGrid(points)
     endo = _bilinear(result["endo"], row, col)
     epi = _bilinear(result["epi"], row, col)
     labels = np.zeros(len(dist), dtype=np.uint8)
-    d = np.asarray(points, dtype=float) - grid.center
-    inside = (z >= planeZAt(result, d @ grid.w, d @ grid.s)) & (row <= grid.nRows - 1)
+    inside = (z >= rimZAt(result, col * (2.0 * math.pi / grid.nTheta))) & (row <= grid.nRows - 1)
     labels[inside & (dist <= epi)] = LABEL_MYOCARDIUM
     labels[inside & (dist < endo)] = LABEL_CAVITY
     return labels
 
 
 def surfaceGrid(result, which):
-    """World points [rows, angles, 3] of one surface ("endo", "mid", "epi") from the valve plane to
-    the apex. In every column the cylinder rows are spread evenly from the point where the surface
-    meets the (possibly oblique) valve plane up to the LV center, so the first row lies in the plane."""
+    """World points [rows, angles, 3] of one surface ("endo", "mid", "epi") from the base rim to
+    the apex. In every column the cylinder rows are spread evenly from the height where the mid-wall
+    meets the base rim (rimZAt, the same for every surface: the endo- and epicardium end together) up to
+    the LV center, so the first row lies on the rim."""
     grid = result["grid"]
     distance = result[which]
     nCyl = grid.nCyl
-    a, gw, gs = valvePlane(result)
-    slope = gw * np.cos(grid.theta) + gs * np.sin(grid.theta)          # plane z change per mm of radius
     cylinder = distance[:nCyl]
-    zBase = np.full(grid.nTheta, a)
-    for _ in range(6):                                                 # surface radius depends on z
-        radius = np.array([np.interp(zBase[c], grid.z, cylinder[:, c]) for c in range(grid.nTheta)])
-        zBase = np.clip(a + slope * radius, grid.z[0], -grid.dz)
+    zBase = _polarBaseZ(result)
     fractions = np.linspace(0.0, 1.0, nCyl)[:, None]
     zRows = zBase[None, :] * (1.0 - fractions)                         # [nCyl, angles], 0 at the center
     rRows = np.column_stack([np.interp(zRows[:, c], grid.z, cylinder[:, c]) for c in range(grid.nTheta)])
@@ -1619,15 +1714,14 @@ def lvDiameterMm(result, level=None, angles=None):
 
 
 def _polarBaseZ(result):
-    """Where the mid-wall of every column (angle) meets the valve plane, along the axis (mm)."""
+    """Where the mid-wall of every column (angle) meets the base rim, along the axis (mm)."""
     grid = result["grid"]
-    a, gw, gs = valvePlane(result)
-    slope = gw * np.cos(grid.theta) + gs * np.sin(grid.theta)
+    a, slope, saddle = _rimColumns(grid.theta, valvePlane(result))
     mid = result["mid"][:grid.nCyl]
     zBase = np.full(grid.nTheta, a)
     for _ in range(6):
         radius = np.array([np.interp(zBase[c], grid.z, mid[:, c]) for c in range(grid.nTheta)])
-        zBase = np.clip(a + slope * radius, grid.z[0], -grid.dz)
+        zBase = np.clip(a + slope * radius + saddle, grid.z[0], -grid.dz)
     return zBase
 
 
@@ -1676,13 +1770,13 @@ def _wallRays(result, points):
 
 def wallField(result, points):
     """Signed distance-like value of world points, positive inside the myocardium: the smaller of
-    (epi - distance), (distance - endo) and the height above the valve plane, in mm. Its zero level
-    is the whole wall as one closed surface: epicardium, endocardium and the rim in the valve plane."""
+    (epi - distance), (distance - endo) and the height above the base rim (rimZAt), in mm. Its zero level
+    is the whole wall as one closed surface: epicardium, endocardium and the rim at the base."""
     grid = result["grid"]
     _, _, endo, epi, dist, z = _wallRays(result, points)
     d = np.asarray(points, dtype=float) - grid.center
-    plane = z - planeZAt(result, d @ grid.w, d @ grid.s)
-    return np.minimum(np.minimum(epi - dist, dist - endo), plane)
+    rim = z - rimZAt(result, np.arctan2(d @ grid.s, d @ grid.w))
+    return np.minimum(np.minimum(epi - dist, dist - endo), rim)
 
 
 def uptakeAtPoints(result, sample, points, samplesAcrossWall=9):
@@ -2028,11 +2122,9 @@ def wallStatistics(result, labels, voxelVolumeMm3):
     cavity = float(np.count_nonzero(labels == LABEL_CAVITY)) * voxelVolumeMm3 / 1000.0
     myocardium = float(np.count_nonzero(labels == LABEL_MYOCARDIUM)) * voxelVolumeMm3 / 1000.0
     grid = result["grid"]
-    a, gw, gs = valvePlane(result)
-    radius = result["mid"][:grid.nCyl]
-    planeZ = a + radius * (gw * np.cos(grid.theta) + gs * np.sin(grid.theta))[None, :]
+    a = valvePlaneZ(result)
     inWall = np.ones(result["mid"].shape, dtype=bool)
-    inWall[:grid.nCyl] = grid.z[:, None] >= planeZ
+    inWall[:grid.nCyl] = grid.z[:, None] >= _polarBaseZ(result)[None, :]
     return {"cavityMl": cavity, "myocardiumMl": myocardium, "massG": 1.05 * myocardium,
             "meanThicknessMm": float(result["thickness"][inWall].mean()), "baseZ": a,
             "valveTiltDeg": valveTilt(result)}

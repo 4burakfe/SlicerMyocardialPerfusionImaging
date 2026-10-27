@@ -479,10 +479,13 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.baseMethodCombo.addItem(text, value)
         self.baseMethodCombo.setCurrentIndex(max(0, self.baseMethodCombo.findData(defaults["baseMethod"])))
         self.baseMethodCombo.toolTip = (
-            "Where the wall ends at the base, along each angle. Adaptive (default): a preliminary segment (50 % of "
-            "each angle's wall counts) gives the blood pool and each angle's basal wall counts, and the wall ends "
-            "half way between the two, so a basal defect (inferobasal) is followed to the valve plane instead of "
-            "ending the wall early. Fixed share: the wall ends at Base threshold of each angle's wall counts")
+            "Where the wall ends at the base, along each angle. Adaptive, global (default): a preliminary segment "
+            "(50 % of each angle's wall counts) gives the blood pool and the mean counts of the whole myocardium, "
+            "and every angle's wall ends half way between the two: one level for all angles, steadier in the noisy "
+            "gate frames; angles whose basal wall is dim (a scar) count less in the plane fit. Adaptive: the same "
+            "with each angle's own basal wall counts instead of the whole myocardium's, so a basal-only defect "
+            "(inferobasal) is followed to the valve plane, but the level is noisier in a gate frame. Fixed share: "
+            "the wall ends at Base threshold of each angle's wall counts")
         self.baseMethodCombo.connect("currentIndexChanged(int)", lambda _: self.updateFitControls())
         form.addRow("Base detection:", self.baseMethodCombo)
 

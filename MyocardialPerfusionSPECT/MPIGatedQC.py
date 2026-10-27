@@ -9,7 +9,8 @@ Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before 
     through the rays whose wall the frame shows and draws the others; every frame's thickness from its
     own profile widths, a blurred slab leaning to a prior where the blur hides it, fitted the same way; or,
     as QGS does, every frame's thickness scaled to the myocardial volume of the ED or ES frame,
-    constantVolumeGates);
+    constantVolumeGates; when tracked, every frame keeps the static base rim's shape at its own height,
+    smoothed over the cycle by default, smoothValveHeights);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
     frame's endo- and epicardium;
@@ -249,7 +250,11 @@ class GatedStudy:
             for name in ORIENTATIONS:
                 self.slices[name].append(resliceLike(array, matrix, outputs[name], mask, center))
             self.peaks.append(self._peakNear(self.slices["SA"][-1], outputs["SA"], center, reach))
-        volume = (params or {}).get("myocardialVolume", wallLib.GATE_DEFAULTS["myocardialVolume"])
+        g = dict(wallLib.GATE_DEFAULTS, **(params or {}))
+        if g["segmentation"] == "static" and g["valveCycle"] == "smooth":
+            # the frames' base rim heights on a smooth curve over the cycle (a noisy frame's rim no longer jumps)
+            self.results = wallLib.smoothValveHeights(self.results)
+        volume = g["myocardialVolume"]
         if volume != "own":
             # every frame at the myocardial volume of the ED (or ES) frame, as QGS
             self.results = wallLib.constantVolumeGates(self.results, volume)
@@ -398,6 +403,18 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.valveShiftSpin.setSuffix(" mm")
         self.valveShiftSpin.toolTip = "How far the valve plane of a frame may move from the static one (base descent)"
         advancedForm.addRow("Valve plane limit:", self.valveShiftSpin)
+        self.valveCycleCombo = qt.QComboBox()
+        for text, value in wallLib.GATE_VALVE_CYCLES:
+            self.valveCycleCombo.addItem(text, value)
+        self.valveCycleCombo.setCurrentIndex(
+            max(0, self.valveCycleCombo.findData(wallLib.GATE_DEFAULTS["valveCycle"])))
+        self.valveCycleCombo.toolTip = (
+            "Height of the base rim over the cycle (tracking the static wall; every frame keeps the static rim's "
+            "shape, tilt and saddle, from all the counts). Smooth (default): the frames' own heights are fitted "
+            "with the mean and the first two harmonics of the cycle, outlier frames left out, so a noisy frame's "
+            "rim does not jump; the base descent from ED to ES is kept. Each frame's own: the height found in "
+            "the frame")
+        advancedForm.addRow("Valve plane over the cycle:", self.valveCycleCombo)
         self.fitCombo = qt.QComboBox()
         for text, value in wallLib.GATE_FITS:
             self.fitCombo.addItem(text, value)
@@ -462,6 +479,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("gateFitPull", self.fitPullSlider)
         self.parameterPanel.bind("gateSegmentation", self.segmentationCombo)
         self.parameterPanel.bind("gateMyocardialVolume", self.volumeCombo)
+        self.parameterPanel.bind("gateValveCycle", self.valveCycleCombo)
         self.updateSegmentationControls()
         self.layout.addStretch(1)
 
@@ -608,7 +626,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def updateSegmentationControls(self):
         """The motion and valve limits belong to the tracking of the static wall."""
         static = self.segmentation() == "static"
-        for widget in (self.wallShiftSpin, self.valveShiftSpin):
+        for widget in (self.wallShiftSpin, self.valveShiftSpin, self.valveCycleCombo):
             widget.enabled = static
 
     def params(self):
@@ -616,7 +634,9 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 "fit": self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.GATE_DEFAULTS["fit"],
                 "fitPull": float(self.fitPullSlider.value), "segmentation": self.segmentation(),
                 "myocardialVolume": (self.volumeCombo.itemData(self.volumeCombo.currentIndex)
-                                     or wallLib.GATE_DEFAULTS["myocardialVolume"])}
+                                     or wallLib.GATE_DEFAULTS["myocardialVolume"]),
+                "valveCycle": (self.valveCycleCombo.itemData(self.valveCycleCombo.currentIndex)
+                               or wallLib.GATE_DEFAULTS["valveCycle"])}
 
     def gatedStudy(self, slot, rebuild=False):
         """GatedStudy of a slot, built once per study, gated sequence, static wall and settings."""
