@@ -10,6 +10,8 @@ name and ID, case.py) is shown next to the logo, in orange when the studies belo
 patient; a click opens Data roles. The second row
 holds the most used controls of the step shown, made by its widget (buildToolbar(bar) with a
 StepBar, kept up to date by its syncToolbar()); they drive the step panel's own controls.
+At the right of the first row: Save (scene as .mrb, Slicer's Save dialog, screenshot), Save screen as DICOM
+and Save scene as DICOM (dicomexport.py).
 
 One toolbar lives for the whole Slicer session. A developer reload never deletes the old one
 (deleting Qt widgets that Python still wraps can crash Slicer): it is hidden and replaced.
@@ -26,11 +28,12 @@ import slicer
 from MyocardialPerfusionSPECTLib import session
 from MyocardialPerfusionSPECTLib import studies as studiesLib
 from MyocardialPerfusionSPECTLib import case as caseLib
+from MyocardialPerfusionSPECTLib import dicomexport
 from MyocardialPerfusionSPECTLib.widgets import BUTTON_COLORS
 
 TOOLBAR_OBJECT_NAME = "MPIWorkflowToolbar"
 CONTROLS_OBJECT_NAME = "MPIStepControlsToolbar"
-TOOLBAR_VERSION = 12      # bump when the class changes, so a reload replaces the toolbar
+TOOLBAR_VERSION = 13      # bump when the class changes, so a reload replaces the toolbar
 BADGE_SIZE = 22
 CASE_MAX_CHARACTERS = 40   # longer case names are cut in the toolbar (the tooltip has all of it)
 ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Resources", "Icons",
@@ -380,6 +383,49 @@ class WorkflowToolbar:
         tb.addWidget(self.panelButton)
         self._panelHidden = False
         self.syncPanelButton()
+
+        # Saving, at the right end: scene / screenshot, the screen and the scene as DICOM
+        spacer = qt.QWidget()
+        spacer.setSizePolicy(qt.QSizePolicy.Expanding, qt.QSizePolicy.Preferred)
+        tb.addWidget(spacer)
+        self.saveButton = qt.QToolButton()
+        self.saveButton.setText("\U0001F4BE Save")
+        self.saveButton.setAutoRaise(True)
+        self.saveButton.setFocusPolicy(qt.Qt.NoFocus)
+        self.saveButton.setPopupMode(qt.QToolButton.InstantPopup)
+        self.saveButton.setStyleSheet("QToolButton { border-radius: 5px; padding: 3px 8px; font-weight: bold; }")
+        self.saveButton.toolTip = dicomexport.TOOLTIPS["save"]
+        self.saveMenu = qt.QMenu(self.saveButton)
+        self.saveMenu.setToolTipsVisible(True)
+        for text, toolTip, function in (
+                ("Save scene (.mrb)...", "The whole exam in one Medical Reality Bundle named after the case",
+                 dicomexport.saveSceneBundle),
+                ("Save data (Slicer dialog)...", "Slicer's Save dialog: every node as its own file, chosen formats",
+                 dicomexport.openSaveDialog),
+                (None, None, None),
+                ("Save screenshot (PNG)...", "The views shown (and the Monitor 2 window when it is open)",
+                 dicomexport.saveScreenshot),
+                ("Save screen as DICOM...", dicomexport.TOOLTIPS["screen"], dicomexport.saveScreenAsDicom),
+                ("Save scene as DICOM...", dicomexport.TOOLTIPS["scene"], dicomexport.saveSceneAsDicom),
+                ("Choose DICOM folder...", "Folder the DICOM exports are written to (asked the first time, then "
+                 "kept)", dicomexport.chooseDicomFolder)):
+            if text is None:
+                self.saveMenu.addSeparator()
+                continue
+            action = self.saveMenu.addAction(text)
+            action.setToolTip(toolTip)
+            action.connect("triggered()", lambda function=function: function())
+        self.saveButton.setMenu(self.saveMenu)
+        tb.addWidget(self.saveButton)
+        for text, key, function in (("Save screen as DICOM", "screen", dicomexport.saveScreenAsDicom),
+                                    ("Save scene as DICOM", "scene", dicomexport.saveSceneAsDicom)):
+            button = qt.QToolButton()
+            button.setText(text)
+            button.setFocusPolicy(qt.Qt.NoFocus)
+            button.setStyleSheet(StepBar.colorStyle("create"))
+            button.toolTip = dicomexport.TOOLTIPS[key]
+            button.connect("clicked(bool)", lambda checked=False, function=function: function())
+            tb.addWidget(button)
 
     # -- Module panel --
     @staticmethod

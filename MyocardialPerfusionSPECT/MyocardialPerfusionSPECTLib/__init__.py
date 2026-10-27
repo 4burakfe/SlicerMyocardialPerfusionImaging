@@ -11,6 +11,7 @@ step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC,
     session     active study shared by the modules, workflow steps
     case        case (patient) name and ID from the DICOM headers, mixed-patient warning
     widgets     coloured action buttons
+    dicomexport saving: scene (.mrb), screenshot, screen and scene as DICOM (toolbar buttons)
     toolbar     workflow toolbar (shown while the hub is open)
     parameters  adjustable constants of every step (Advanced parameters, Save parameters / Restore defaults)
 """
@@ -18,7 +19,7 @@ step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC,
 import logging
 import traceback
 
-SUBMODULES = ("geometry", "myocardium", "gating", "resampling", "views", "colortables", "display", "studies", "session", "case", "widgets", "toolbar", "parameters")  # dependency order
+SUBMODULES = ("geometry", "myocardium", "gating", "resampling", "views", "colortables", "display", "studies", "session", "case", "widgets", "dicomexport", "toolbar", "parameters")  # dependency order
 
 
 def reloadInDeveloperMode():

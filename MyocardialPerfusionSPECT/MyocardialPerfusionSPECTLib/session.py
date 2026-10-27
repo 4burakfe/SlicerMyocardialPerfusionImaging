@@ -7,6 +7,7 @@ scene. Modules and the workflow toolbar register a listener to follow changes.
 import logging
 import traceback
 
+import numpy as np
 import slicer
 
 from MyocardialPerfusionSPECTLib import studies as studiesLib
@@ -96,8 +97,80 @@ def outputsForStudy(volumeNode):
     for node in slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode"):
         orientation = node.GetAttribute("MPI.Orientation")
         if orientation and node.GetAttribute("MPI.SourceVolume") == sourceId:
+            restoreAxisOrder(node)
             outputs[orientation] = node   # later nodes in the scene are newer
     return outputs
+
+
+def expectedAxes(node):
+    """(screen right, screen up, stacking direction) a reoriented volume was made with, from the frame on its
+    MPI.* attributes (MPIProcessing orientationAxes), or None."""
+    try:
+        u = np.array([float(x) for x in node.GetAttribute("MPI.LongAxis").split()])
+        w = np.array([float(x) for x in node.GetAttribute("MPI.AnteriorAxis").split()])
+    except (AttributeError, ValueError):
+        return None
+    u = u / np.linalg.norm(u)
+    w = w - np.dot(w, u) * u
+    w = w / np.linalg.norm(w)
+    s = np.cross(u, w)
+    return {"SA": (-s, w, -u), "HLA": (-s, u, w), "VLA": (u, w, -s)}.get(node.GetAttribute("MPI.Orientation"))
+
+
+def axisOrder(ijkToRas, expected):
+    """(source axis, sign) for each expected axis: which IJK column of ijkToRas (4x4) runs along it, or None when
+    the columns do not line up with the expected axes."""
+    columns = np.asarray(ijkToRas, dtype=float)[:3, :3]
+    columns = columns / np.linalg.norm(columns, axis=0)
+    order = []
+    for axis in expected:
+        dots = columns.T @ np.asarray(axis, dtype=float)
+        source = int(np.argmax(np.abs(dots)))
+        if abs(dots[source]) < 0.9 or source in [o[0] for o in order]:
+            return None
+        order.append((source, 1 if dots[source] > 0 else -1))
+    return order
+
+
+def reorderAxes(array, ijkToRas, order):
+    """array [k, j, i] and ijkToRas with the IJK axes put in the given order (axisOrder): the same voxels at the
+    same places, only indexed differently. Returns (array, ijkToRas)."""
+    matrix = np.asarray(ijkToRas, dtype=float)
+    dims = array.shape[::-1]   # (i, j, k)
+    # numpy axis of IJK axis a is 2 - a
+    out = np.transpose(array, [2 - order[axis][0] for axis in (2, 1, 0)])
+    start = np.zeros(4)
+    start[3] = 1.0
+    result = np.eye(4)
+    for axis, (source, sign) in enumerate(order):
+        result[:3, axis] = sign * matrix[:3, source]
+        if sign < 0:
+            out = np.flip(out, axis=2 - axis)
+            start[source] = dims[source] - 1
+    result[:3, 3] = (matrix @ start)[:3]
+    return np.ascontiguousarray(out), result
+
+
+def restoreAxisOrder(node):
+    """Put the slices of a reoriented volume back in the order the steps show them (SA apex -> base, HLA
+    inferior -> anterior, VLA septum -> lateral). The volumes are made left-handed (screen right, screen up,
+    stacking direction); Slicer reads such a volume back from a saved scene (.mrb, DICOM scene) with its slice
+    axis reversed: the same voxels at the same places, but slice 1 at the base. True when it was reordered."""
+    expected = expectedAxes(node)
+    if expected is None or node.GetImageData() is None:
+        return False
+    import vtk
+    ijkToRas = vtk.vtkMatrix4x4()
+    node.GetIJKToRASMatrix(ijkToRas)
+    matrix = slicer.util.arrayFromVTKMatrix(ijkToRas)
+    order = axisOrder(matrix, expected)
+    if order is None or order == [(0, 1), (1, 1), (2, 1)]:
+        return False
+    array, matrix = reorderAxes(slicer.util.arrayFromVolume(node), matrix, order)
+    slicer.util.updateVolumeFromArray(node, array)
+    node.SetIJKToRASMatrix(slicer.util.vtkMatrixFromArray(matrix))
+    logging.info(f"MPI: slice order of {node.GetName()} restored (axes {order})")
+    return True
 
 
 STUDY_SLOT_ROLES = {"stress": ("Stress",), "rest": ("Rest", "Redistribution")}   # roles filling each place
