@@ -1657,7 +1657,9 @@ WALLS = ("Apex", "Anterior", "Septal", "Inferior", "Lateral")
 APEX_RADIUS = POLAR_RING_EDGES[1]
 WALL_CENTERS_DEG = (0.0, 90.0, 180.0, 270.0)        # anterior, septal, inferior, lateral
 WALL_LABEL_PLACES = ((0.0, 0.0),) + tuple((0.5 * (APEX_RADIUS + 1.0), c) for c in WALL_CENTERS_DEG)
-REGION_VIEWS = ("walls", "segments", "pixels")   # how a polar map is painted: wall means, segment means, per pixel
+# how a polar map is painted: per pixel, or the mean of each of the 17 segments, the five walls or the territories
+REGION_VIEWS = ("pixels", "segments", "walls", "vessels")
+REGION_OVERLAYS = ("vessels", "segments", "walls")   # the segmentations a polar map can show (borders and values)
 
 
 def wallIndex(radius, angle):
@@ -1704,13 +1706,27 @@ def wallBullseye(polar, size, resolution=181):
 
 
 def regionBullseye(polar, size, view="pixels"):
-    """Bullseye painted per REGION_VIEWS: "walls" (five wall means), "segments" (17 segment means) or
-    "pixels" (the polar map itself)."""
+    """Bullseye painted per REGION_VIEWS: "walls" (five wall means), "segments" (17 segment means), "vessels"
+    (territory means) or "pixels" (the polar map itself)."""
     if view == "walls":
         return wallBullseye(polar, size)[0]
     if view == "segments":
         return segmentBullseye(polar, size)[0]
+    if view == "vessels":
+        return vesselBullseye(polar, size)[0]
     return bullseye(polar, size)[0]
+
+
+def vesselBullseye(polar, size, resolution=181):
+    """Bullseye of the territory means (VESSELS, from the 17 segments): every pixel of a territory shows its
+    mean, NaN outside the circle. Also returns the means (order of VESSELS)."""
+    values = regionValues(polar, "vessels", resolution)
+    _, segments = bullseye(polar, size)
+    territories = regionIndex(*_bullseyeCoordinates(size), overlay="vessels")
+    image = np.full(segments.shape, np.nan)
+    for index, value in enumerate(values, start=1):
+        image[territories == index] = value
+    return image, values
 
 
 def segmentBullseye(polar, size, resolution=181):

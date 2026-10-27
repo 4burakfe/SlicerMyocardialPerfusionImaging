@@ -6,8 +6,8 @@ STRESS GATED layout of Study 1 (stress), REST GATED the same of Study 2 (rest):
                  window), played as a cine: every tile shows the same frame, with that frame's
                  endo- and epicardium;
   top right      the perfusion, wall thickening (count-based: ES / ED wall counts of every ray, first
-                 harmonic over the cycle; five wall means by default, or 17-segment means or per pixel)
-                 and wall motion (mm the endocardium moves from ED to ES) polar maps side by side;
+                 harmonic over the cycle) and wall motion (mm the endocardium moves from ED to ES) polar
+                 maps side by side;
   bottom right   the LV cavity volume of every frame (EDV, ESV, EF; the frame shown is marked), the cine
                  3D wall coloured by the perfusion (SSP style), the wall motion or one color, as a surface,
                  wireframe or points, and the regional EF polar map (% of the cavity under each patch of
@@ -16,6 +16,9 @@ STRESS-REST GATED shows the stress and rest rows interleaved, with the thickenin
 3D wall of each study (the perfusion map and the volume curve left out to make room). Every layout also
 comes as SLICES (only the slice rows), PLOTS (only the plots, all of them) and DUAL MONITOR (the slices
 on the main window, all plots in a second window on the second monitor).
+Every polar map has the same views (Map view): per pixel, or the mean of each of the 17 segments, the five walls
+or the vessel territories. A map painted per region shows that segmentation (borders and scores); a per pixel
+map shows the one chosen under Segmentation (vessels, 17 segments, 5 walls or none).
 The frames and their walls come from Gated QC (MPIGatedQC.py, segmented there on first use). The slice
 and polar map settings are taken over from Perfusion (MPIReview.py) when the screen opens and can be
 changed here; the cine has its own speed and play / stop.
@@ -98,11 +101,20 @@ SLICE_PLANE_OPACITY = 0.14
 SLICE_PLANE_MARGIN_MM = 8.0       # the planes reach this far beyond the epicardium
 STATIC_VIEW_ELEVATION_DEG = 30.0   # static 3D wall: seen from anteroseptal, raised this much toward the base
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}
-OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "segments"), ("None", ""))
+OVERLAY_CHOICES = (("Vessels (LAD / RCA / LCX)", "vessels"), ("17 segments", "segments"), ("5 walls", "walls"),
+                   ("None", ""))   # segmentation of the per pixel maps
 REPRESENTATIONS = (("Surface", "surface"), ("Wireframe", "wireframe"), ("Points", "points"))
-THICKENING_VIEWS = (("5 walls (apex and an X: anterior, septal, inferior, lateral)", "walls"),
-                   ("17 segments", "segments"), ("Per pixel", "pixels"))   # wallLib.REGION_VIEWS
-DEFAULT_THICKENING_VIEW = "pixels"
+MAP_VIEWS = (("Per pixel", "pixels"), ("17 segments", "segments"),
+             ("5 walls (apex and an X: anterior, septal, inferior, lateral)", "walls"),
+             ("Vessels (LAD / RCA / LCX)", "vessels"))   # wallLib.REGION_VIEWS, the same for every polar map
+DEFAULT_MAP_VIEW = "pixels"
+VIEW_NOTES = {"pixels": ", per pixel.", "segments": ", mean of each of the 17 segments.",
+              "walls": ", mean of each of the five walls.", "vessels": ", mean of each vessel territory."}
+MAP_VIEW_TIP = ("How the {name} polar map is painted: every pixel (default), or the mean of each of the 17 "
+                "segments, of the five walls (the apex, and four quarters cut by an X centred on the anterior, "
+                "septal, inferior and lateral walls) or of the vessel territories (LAD / RCA / LCX). A map painted "
+                "per region shows that segmentation and its scores; a per pixel map the one chosen under "
+                "Segmentation")
 COHERENCE_HATCH_PX = 3                 # width of the stripes the phase coherence overlay hatches with
 COHERENCE_HATCH_DIM = 0.25             # brightness the hatched stripes keep
 THICKENING_WINDOW = (-20.0, 150.0, 0.0, 40.0)   # range and default window of the thickening map, %
@@ -114,7 +126,6 @@ MOTION_WINDOW = (0.0, 25.0, 0.0, 5.0)   # inward wall motion window, mm (QGS: 0-
 EF_WINDOW = (-50.0, 100.0, 0.0, 80.0)    # range and default window of the regional EF map, %
 DEFAULT_EF_REFERENCE = "fixed"        # regional EF: a wedge grows or shrinks with a heart that moves as a whole
 DEFAULT_EF_CUT = "base"                  # regional EF: wallLib.REGIONAL_EF_CUTS
-DEFAULT_EF_VIEW = "pixels"               # regional EF map: wallLib.REGION_VIEWS
 DEFAULT_FPS = 8
 VOLUME_COLOR = (255, 200, 80)
 LABEL_DISTANCE_MM = 45.0
@@ -518,18 +529,13 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarWindowRange = self._windowWidget(
             "Color window of the perfusion polar maps and the 3D walls, % of the polar map maximum")
         polarForm.addRow("", self.polarWindowRange)
+        self.perfusionViewCombo = self._mapViewCombo("perfusion")
+        polarForm.addRow("Perfusion map:", self.perfusionViewCombo)
         self.thickeningRange = self._windowWidget(
             "Color window of the wall thickening maps, % thickening from ED to ES", *THICKENING_WINDOW)
         polarForm.addRow("Thickening window:", self.thickeningRange)
-        self.thickeningViewCombo = qt.QComboBox()
-        for text, value in THICKENING_VIEWS:
-            self.thickeningViewCombo.addItem(text, value)
-        self.thickeningViewCombo.setCurrentIndex(max(0, self.thickeningViewCombo.findData(DEFAULT_THICKENING_VIEW)))
-        self.thickeningViewCombo.toolTip = (
-            "How the wall thickening map is painted: the mean of each of the five walls (the apex, and four "
-            "quarters cut by an X centred on the anterior, septal, inferior and lateral walls; the overlay then "
-            "shows these walls and their scores), the mean of each of the 17 segments (default), or every pixel "
-            "(a count ratio per pixel is noisy)")
+        self.thickeningViewCombo = self._mapViewCombo(
+            "wall thickening", " (a count ratio per pixel is noisy: the segment or wall means read steadier)")
         polarForm.addRow("Thickening map:", self.thickeningViewCombo)
         self.coherenceCheck = qt.QCheckBox("Hatch where the count phases are random")
         self.coherenceCheck.checked = True
@@ -546,6 +552,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "black at 0 to full color at -4 mm). " + READING_NOTE, *MOTION_WINDOW,
             suffix=" mm")
         polarForm.addRow("Motion window:", self.motionRange)
+        self.motionViewCombo = self._mapViewCombo("wall motion")
+        polarForm.addRow("Motion map:", self.motionViewCombo)
         self.motionReferenceCombo = qt.QComboBox()
         for text, value in wallLib.MOTION_REFERENCES:
             self.motionReferenceCombo.addItem(text, value)
@@ -565,12 +573,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "Color window of the regional EF maps, % of the cavity under each patch of endocardium emptied from "
             "ED to ES (below the window: its lowest color)", *EF_WINDOW)
         polarForm.addRow("Regional EF window:", self.efRange)
-        self.efViewCombo = qt.QComboBox()
-        for text, value in THICKENING_VIEWS:
-            self.efViewCombo.addItem(text, value)
-        self.efViewCombo.setCurrentIndex(max(0, self.efViewCombo.findData(DEFAULT_EF_VIEW)))
-        self.efViewCombo.toolTip = ("How the regional EF map is painted: the mean of each of the five walls, of each "
-                                    "of the 17 segments, or every pixel (default)")
+        self.efViewCombo = self._mapViewCombo("regional EF")
         polarForm.addRow("Regional EF map:", self.efViewCombo)
         self.efReferenceCombo = qt.QComboBox()
         for text, value in wallLib.MOTION_REFERENCES:
@@ -601,7 +604,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.overlayCombo = qt.QComboBox()
         for text, value in OVERLAY_CHOICES:
             self.overlayCombo.addItem(text, value)
-        self.overlayCombo.toolTip = "Regions drawn on the polar maps: coronary territories, the 17 segments or none"
+        self.overlayCombo.toolTip = ("Segmentation drawn on the per pixel polar maps: the coronary territories, the "
+                                     "17 segments, the five walls or none. A map painted per region (Map view) "
+                                     "shows its own segmentation")
         self.scoresButton = qt.QPushButton("Scores")
         self.scoresButton.checkable = True
         self.scoresButton.checked = True
@@ -609,7 +614,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                      "EF in %, motion in mm)")
         overlayRow.addWidget(self.overlayCombo, 1)
         overlayRow.addWidget(self.scoresButton)
-        polarForm.addRow("Show:", overlayRow)
+        polarForm.addRow("Segmentation:", overlayRow)
 
         # 3D
         threeD = ctk.ctkCollapsibleButton()
@@ -714,9 +719,11 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("polarLink", self.polarLinkCheck)
         self.parameterPanel.bind("polarWindow", self.polarWindowRange)
         self.parameterPanel.bind("thickeningWindow", self.thickeningRange)
+        self.parameterPanel.bind("perfusionView", self.perfusionViewCombo)
         self.parameterPanel.bind("thickeningView", self.thickeningViewCombo)
         self.parameterPanel.bind("phaseCoherenceHatch", self.coherenceCheck)   # was "phaseCoherenceOverlay", off
         self.parameterPanel.bind("motionWindow", self.motionRange)
+        self.parameterPanel.bind("motionView", self.motionViewCombo)
         self.parameterPanel.bind("motionReference", self.motionReferenceCombo)
         self.parameterPanel.bind("regionalEFWindow", self.efRange)
         self.parameterPanel.bind("regionalEFView", self.efViewCombo)
@@ -761,12 +768,12 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarLinkCheck.connect("toggled(bool)", lambda _: self.refresh(rebuild3D=False))
         self.polarWindowRange.connect("valuesChanged(double,double)", lambda a, b: self.refresh(rebuild3D=False))
         self.thickeningRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
-        self.thickeningViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
+        for combo in (self.perfusionViewCombo, self.thickeningViewCombo, self.motionViewCombo, self.efViewCombo):
+            combo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
         self.coherenceCheck.connect("toggled(bool)", lambda _: self.refreshPolars())
         self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.onMotionWindowChanged())
         self.motionReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onMotionReferenceChanged())
         self.efRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
-        self.efViewCombo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
         self.efReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onEFReferenceChanged())
         self.efCutCombo.connect("currentIndexChanged(int)", lambda _: self.onEFReferenceChanged())
         self.overlayCombo.connect("currentIndexChanged(int)", lambda _: self.onOverlaysChanged())
@@ -821,8 +828,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.tbSync = bar.toggle("Sync", self.syncCheck.toolTip,
                                  lambda c: self.fromToolbar(lambda: setattr(self.syncCheck, "checked", c)))
         bar.separator()
-        self.tbOverlay = bar.choice([("Vessels", "vessels", "Coronary territories (LAD / RCA / LCX) on the polar maps"),
-                                     ("17 seg", "segments", "The 17 segments on the polar maps")],
+        self.tbOverlay = bar.choice([("Vessels", "vessels", "Coronary territories (LAD / RCA / LCX) on the per pixel "
+                                                            "polar maps"),
+                                     ("17 seg", "segments", "The 17 segments on the per pixel polar maps"),
+                                     ("5 walls", "walls", "The five walls on the per pixel polar maps")],
                                     self.onToolbarOverlay)
         self.tbScores = bar.toggle("Scores", self.scoresButton.toolTip,
                                    lambda c: self.fromToolbar(lambda: setattr(self.scoresButton, "checked", c)))
@@ -1145,7 +1154,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 "polarLinked": bool(review.polarLinkCheck.checked),
                 "polarWindow": (review.polarWindowRanges[first].minimumValue,
                                 review.polarWindowRanges[first].maximumValue),
-                "overlay": review.overlayCombo.currentIndex, "scores": bool(review.scoresButton.checked),
+                "overlay": review.overlayCombo.itemData(review.overlayCombo.currentIndex),
+                "scores": bool(review.scoresButton.checked),
                 "fov": float(review.fovSpin.value), "sync": bool(review.syncButton.checked)}
 
     def inheritPerfusion(self, force=False):
@@ -1177,7 +1187,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.stepSpin.setValue(settings["step"])
             self.polarLinkCheck.checked = settings["polarLinked"]
             self.polarWindowRange.minimumValue, self.polarWindowRange.maximumValue = settings["polarWindow"]
-            self.overlayCombo.setCurrentIndex(settings["overlay"])
+            index = self.overlayCombo.findData(settings["overlay"] or "")
+            if index >= 0:
+                self.overlayCombo.setCurrentIndex(index)
             self.scoresButton.checked = settings["scores"]
             for key, (value, maximum) in settings["first"].items():
                 spin = self.firstSliceSpins[key]
@@ -1606,24 +1618,44 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 panel.setLegend(table if ownLegend else None, low, top)
                 size = panel.polarSize()
                 if size:
-                    key = (id(data), int(size), self.colormapCombo.currentText, low, top)
+                    view = self.mapView("polar")
+                    key = (id(data), int(size), self.colormapCombo.currentText, low, top, view)
                     cached = self.polarImages.get((slot, tags["polar"]))
                     if cached is None or cached[0] != key:
-                        image, regions = self.reviewWidget().polarPercent(data.staticPolar, size)
+                        image, regions = self.polarPercent(data.staticPolar, size, view)
                         rgb = colorize(np.nan_to_num(image), top, table, low)
                         rgb[np.isnan(image)] = 0
-                        cached = (key, (rgbToQImage(rgb), {k: [float(v) for v in values] for k, values in regions.items()}))
+                        cached = (key, (rgbToQImage(rgb), regions))
                         self.polarImages[(slot, tags["polar"])] = cached
+                    panel.regionOverride = None if view == "pixels" else view
                     panel.setPolar(cached[1][0], cached[1][1], f"{title} perfusion",
-                                   note="Static study, in % of the polar map maximum.")
+                                   note="Static study, in % of the polar map maximum" + VIEW_NOTES[view])
             for kind in ("thickening", "motion", "ef"):
                 if kind in kinds:
                     self.refreshFunctionPolar(slot, data, tags[kind], kind, table, title)
 
-    def thickeningView(self, combo=None):
-        combo = self.thickeningViewCombo if combo is None else combo
+    def _mapViewCombo(self, name, extra=""):
+        combo = qt.QComboBox()
+        for text, value in MAP_VIEWS:
+            combo.addItem(text, value)
+        combo.setCurrentIndex(max(0, combo.findData(DEFAULT_MAP_VIEW)))
+        combo.toolTip = MAP_VIEW_TIP.format(name=name) + extra
+        return combo
+
+    def mapView(self, kind):
+        """How the polar map of a kind (POLAR_KINDS) is painted: a value of wallLib.REGION_VIEWS."""
+        combo = {"polar": self.perfusionViewCombo, "thickening": self.thickeningViewCombo,
+                 "motion": self.motionViewCombo, "ef": self.efViewCombo}[kind]
         view = combo.itemData(combo.currentIndex)
-        return view if view in wallLib.REGION_VIEWS else DEFAULT_THICKENING_VIEW
+        return view if view in wallLib.REGION_VIEWS else DEFAULT_MAP_VIEW
+
+    @staticmethod
+    def polarPercent(polar, size, view="pixels"):
+        """(bullseye painted per view, {segmentation: region values}), all in % of the map maximum."""
+        maximum = float(np.nanmax(polar["values"])) or 1.0
+        image = 100.0 * wallLib.regionBullseye(polar, size, view) / maximum
+        return image, {overlay: [float(v) for v in 100.0 * wallLib.regionValues(polar, overlay) / maximum]
+                       for overlay in wallLib.REGION_OVERLAYS}
 
     def refreshFunctionPolar(self, slot, data, tag, kind, table, title):
         """The wall thickening, wall motion or regional EF polar map."""
@@ -1643,7 +1675,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         panel.setLegend(table, low, top, unit=unit)
         size = panel.polarSize()
         if size:
-            view = {"thickening": self.thickeningView(), "ef": self.thickeningView(self.efViewCombo)}.get(kind, "pixels")
+            view = self.mapView(kind)
             hatch = kind == "thickening" and bool(self.coherenceCheck.checked) and data.coherence is not None
             key = (id(data), id(polar), int(size), self.colormapCombo.currentText, low, top, view, hatch,
                    wallLib.PHASE_COHERENCE_LOW)
@@ -1655,17 +1687,17 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 if hatch:
                     hatchIncoherent(rgb, wallLib.regionBullseye(data.coherence, size, view), wallLib.PHASE_COHERENCE_LOW)
                 regions = {overlay: [float(v) for v in wallLib.regionValues(polar, overlay)]
-                           for overlay in wallLib.OVERLAYS + ("walls",)}
+                           for overlay in wallLib.REGION_OVERLAYS}
                 cached = (key, (rgbToQImage(rgb), regions))
                 self.polarImages[(slot, tag)] = cached
-            # painted per wall: the overlay shows the five walls and their scores (not the territories)
-            panel.regionOverride = "walls" if view == "walls" else None
+            # painted per region: that segmentation and its scores are shown, whatever is chosen for per pixel maps
+            panel.regionOverride = None if view == "pixels" else view
             _, _, _, ed, es = data.phases
             frames = f"ED frame {data.gated.labels[ed]} to ES frame {data.gated.labels[es]}"
-            where = {"walls": ", mean of each of the five walls.", "segments": ", mean of each of the 17 segments.",
-                     "pixels": ", per pixel."}[view]
+            where = VIEW_NOTES[view]
             if kind == "motion":
-                note = f"mm the endocardium moves inward (below 0: outward), {frames} (valve descent included)."
+                note = (f"mm the endocardium moves inward (below 0: outward), {frames} (valve descent included)"
+                        + where)
             elif kind == "ef":
                 cut = ("cones from the base center" if data.efCut == "base"
                        else "wedges from the long axis, cones from the LV center at the apex")
