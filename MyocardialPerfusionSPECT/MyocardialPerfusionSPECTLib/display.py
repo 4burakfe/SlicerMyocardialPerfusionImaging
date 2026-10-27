@@ -670,9 +670,9 @@ class SliceMosaicPanel:
 class PolarPanel:
     """Polar map (bullseye with the 17 segments), in its own place of the layout above the 3D view.
     Region overlay: the coronary territories ("vessels", the default), the 17 segments, or None
-    (overlay); their values can be switched off (showScores). A map painted per wall sets
-    regionOverride = "walls": whenever an overlay is shown, the five walls (apex and the four quarters of
-    the X) are drawn and scored instead."""
+    (overlay); their values can be switched off (showScores). A map painted per region (the mean of each
+    segment, wall or territory) sets regionOverride to that segmentation ("segments", "walls", "vessels"): it is
+    drawn and scored whatever overlay is chosen, so the borders always match the painted regions."""
 
     POLAR_MARGIN = 0.09    # share of the side left around the disk for the ANT / SEPT / LAT / INF labels
 
@@ -776,7 +776,7 @@ class PolarPanel:
         return int(round(diameter * ratio)) if diameter else 0
 
     def setOverlays(self, overlay, scores):
-        """overlay: "vessels", "segments" or None (no borders and values)."""
+        """overlay: "vessels", "segments", "walls" or None (no borders and values; see regionOverride)."""
         self.overlay, self.showScores = overlay or None, bool(scores)
         self.paintPolar()
 
@@ -820,7 +820,7 @@ class PolarPanel:
             def point(r, degrees):   # angle from anterior (up) toward the septum (left)
                 a = math.radians(degrees)
                 return qt.QPointF(center.x() - r * radius * math.sin(a), center.y() - r * radius * math.cos(a))
-            overlay = self.regionOverride if self.overlay and self.regionOverride else self.overlay
+            overlay = self.regionOverride or self.overlay
             bold = overlay in ("vessels", "walls")   # few large regions: heavier borders, larger values
             if overlay:
                 pen = qt.QPen(qt.QColor(255, 255, 255, 190 if bold else 170))
