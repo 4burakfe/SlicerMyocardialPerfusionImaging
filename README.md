@@ -20,6 +20,7 @@ Author: Burak Demir, MD, FEBNM · License: [MIT](LICENSE)
 - [Highlights](#highlights)
 - [Installation](#installation)
 - [Quick start](#quick-start)
+  - [Gated PET from DICOM](#gated-pet-from-dicom)
 - [The interface: hub and workflow toolbar](#the-interface-hub-and-workflow-toolbar)
 - [The modules](#the-modules)
   - [1. Data roles](#1-data-roles)
@@ -90,6 +91,27 @@ in Myocardium instead of 12 mm for SPECT.
 7. **Gated QC** segments every frame; check the counts and gating, then press **Gated Review ›**.
 8. **Gated Review**: play the cine and read the thickening, motion and EF.
 
+### Gated PET from DICOM
+
+Slicer's PET SUV and MultiVolume plugins often stack the images of an ECG gated PET series into one
+volume or fail to split it. The extension adds a DICOM plugin for gated PET (Modality PT with Series Type
+`GATED\IMAGE` or Number of Time Slots above 1, e.g. GE Discovery cardiac gated PET):
+
+- The series shows up in the DICOM browser as **"<series> gated SUVbw"** (selected) and
+  **"<series> gated Bq/ml"**. Load gives a sequence of gates (index *Gate*) with a browser and a
+  *(current gate)* volume, in the series' patient/study folder, with one window for all gates.
+- Images are split into gates by Image Index (0054,1330), else Trigger Time, else repeated slice
+  positions, and sorted along the slice normal; every image keeps its own rescale slope.
+- SUVbw follows the QIBA vendor-neutral method: weight, injected dose decayed from the injection time to
+  the scan start (series time, or GE's scan start when the series time is later than the acquisition;
+  no decay for Decay Correction ADMIN). Philips counts images use the Philips SUV scale factor. When SUV
+  cannot be computed (no weight, dose or times), only the Bq/ml loadable is offered and the reason is in
+  its tooltip. The inputs used are stored on every gate (`GatedPET.*` attributes).
+- The ECG gating fields of the header (accepted R-R window, beats, heart rate) are stored with the same
+  names as the DICOM SPECT Recon gating attributes, so Gated QC shows them.
+- Each gate of a gated PET is a full activity image, so *Create static from gates* averages PET gates
+  instead of summing them.
+
 ## The interface: hub and workflow toolbar
 
 **Hub.** The listed module is the hub. Its overview page shows the active study and the six steps with
@@ -149,7 +171,7 @@ swaps them and *By role* picks them from the roles again.
   italics are guesses from the volume, series and study names; picking a role confirms it. The selected
   row is the active study of all steps.
 - **Gated sequences** are recognised as sequences of 4 to 32 volumes with the same grid (DICOM SPECT Recon
-  gates always), and paired with the static study from the same reconstruction, else the same subject
+  and gated PET plugin gates always), and paired with the static study from the same reconstruction, else the same subject
   hierarchy study and the longest common name, else the same grid. The pairing can be changed per row.
 - **Create static from gates** sums the frames of a gated-only study into a static volume.
 
@@ -480,10 +502,12 @@ MyocardialPerfusionSPECT/
   MPIReview.py                       4. Perfusion (hidden)
   MPIGatedQC.py                      5. Gated QC: per-frame segmentation, counts, gating checks (hidden)
   MPIGated.py                        6. Gated Review (hidden)
+  DICOMGatedPETPlugin.py             DICOM plugin: gated PET series as a sequence of gates in SUVbw / Bq/ml (hidden)
   MyocardialPerfusionSPECTLib/
     geometry.py                      cardiac frame vectors, matrices, ellipsoid masks
     myocardium.py                    LV wall fitting (rays, mid-wall, thickness, valve plane; per gate frame), no Slicer imports
     gating.py                        ECG gating information and per-frame count checks, no Slicer imports
+    gatedpet.py                      gated PET DICOM: gate ordering, geometry, SUV, gating fields, no Slicer imports
     resampling.py                    B-spline / sinc / linear reslicing, in-plane zoom
     views.py                         layouts and view helpers
     display.py                       colour maps, the slice panel, the polar map panel and the Gated QC charts
