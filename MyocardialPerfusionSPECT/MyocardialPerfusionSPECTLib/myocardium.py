@@ -410,12 +410,17 @@ GATE_DEFAULTS = {
                                # "own": every frame detected from scratch on the static rays (its wall is fitted)
     "fit": "bspline",          # surface fit of the traced rays that also draws the untraced ones (GATE_FITS)
     "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
+    "myocardialVolume": "own", # GATE_VOLUMES: "own" every frame's wall thickness from its own profile widths,
+                               # "ed" / "es" every frame's thickness scaled to the myocardial volume of that frame
 }
 GATE_SEGMENTATIONS = (("Track the static wall", "static"),
                       ("Each frame from scratch", "own"))
 GATE_FITS = (("B-spline surface, bending penalty", "bspline"),
              ("Deformable mesh, every ray tied to its neighbours", "mesh"),
              ("Legacy: limited jump between neighbouring rays", "legacy"))
+GATE_VOLUMES = (("Each frame's own (from its profile widths)", "own"),
+                ("Constant, at the end-diastolic volume (QGS-like)", "ed"),
+                ("Constant, at the end-systolic volume", "es"))
 WALL_FITS = GATE_FITS + (("Ellipsoid shape model, Gaussian smoothing (previous)", "ellipsoid"),)
 SPLINE_KNOT_MM = 8.0       # B-spline fit: knot spacing over the wall (mm)
 SPLINE_LENGTH_MM = 15.0    # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
@@ -687,6 +692,69 @@ def _rayVolumes(result, inner, outer, power):
     return (float(ring[inside[:nCyl]].sum()) + float(shell.sum())) / 1000.0
 
 
+def myocardialVolumeMl(result):
+    """Myocardial volume (ml) of a wall fit: between endo- and epicardium, below the valve plane."""
+    return _rayVolumes(result, np.asarray(result["endo"], dtype=float), np.asarray(result["epi"], dtype=float), 1)
+
+
+def cavityVolumeMl(result):
+    """LV cavity volume (ml) of a wall fit: inside the endocardium, below the valve plane."""
+    return _rayVolumes(result, None, np.asarray(result["endo"], dtype=float), 0)
+
+
+def constantVolumeGates(results, reference="ed"):
+    """The gate frames (fitGate results, None for a frame that failed) with the myocardial volume of one frame,
+    as QGS constrains its surfaces (Germano et al., J Nucl Med 1995: "constant myocardial volume throughout the
+    cardiac cycle"). reference "ed": the frame with the largest cavity, "es": the smallest. Every other frame
+    keeps its mid-wall and the shape of its thickness map (from its own profile widths); its endo- and
+    epicardial half widths are scaled by one factor, found by bisection, until its myocardial volume is the
+    reference's. A wall that moves inward then thickens, so the thickness, the cavity and the EF follow from
+    the motion of the mid-wall. Any other reference returns the frames as they are."""
+    known = [(cavityVolumeMl(r), i) for i, r in enumerate(results) if r is not None]
+    if reference not in ("ed", "es") or len(known) < 2:
+        return list(results)
+    index = (max(known) if reference == "ed" else min(known))[1]
+    target = myocardialVolumeMl(results[index])
+    adjusted = []
+    for i, result in enumerate(results):
+        if result is None:
+            adjusted.append(None)
+            continue
+        if i == index:
+            adjusted.append(dict(result, myocardialVolume=reference, thicknessScale=1.0))
+            continue
+        grid, p = result["grid"], result["grid"].params
+        mid = np.asarray(result["mid"], dtype=float)
+        inner = np.maximum(mid - np.asarray(result["endo"], dtype=float), 0.0)
+        outer = np.maximum(np.asarray(result["epi"], dtype=float) - mid, 0.0)
+
+        def surfaces(scale):
+            endo = _limitBasalNarrowing(grid, np.maximum(mid - scale * inner, 1.0), p["maxBaseNarrowing"])
+            epi = _limitBasalNarrowing(grid, mid + scale * outer, p["maxBaseNarrowing"])
+            return endo, epi
+
+        def volume(scale):
+            endo, epi = surfaces(scale)
+            return _rayVolumes(result, endo, epi, 1)
+        low, high = 0.2, 5.0
+        if volume(low) >= target:
+            scale = low
+        elif volume(high) <= target:
+            scale = high
+        else:
+            for _ in range(40):
+                scale = 0.5 * (low + high)
+                if volume(scale) < target:
+                    low = scale
+                else:
+                    high = scale
+            scale = 0.5 * (low + high)
+        endo, epi = surfaces(scale)
+        adjusted.append(dict(result, endo=endo, epi=epi, thickness=epi - endo,
+                             myocardialVolume=reference, thicknessScale=float(scale)))
+    return adjusted
+
+
 # ---------------------------------------------------------------------------
 # Surface fits of the gate frames: a smooth surface through the traced rays that draws the others
 # ---------------------------------------------------------------------------
@@ -942,6 +1010,36 @@ def thickeningMap(gatePolars, ed, es, smoothing=None, countSmoothing=None):
     values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -100.0, 200.0)
     reference = gatePolars[ed]
     return {"values": values, "rho": np.asarray(reference["rho"]).copy(), "theta": np.asarray(reference["theta"]).copy()}
+
+
+def geometricThickeningMap(gateResults, ed, es, weights=None, smoothing=None):
+    """Wall thickening polar map from the wall thickness itself, in % = (ES / ED thickness - 1) x 100: the
+    distance from the endo- to the epicardium along every polar map ray (polarRays) of each frame, fitted with
+    the first harmonic over the cycle (as thickeningMap). It shows what the frames' surfaces do: with every
+    frame's own thickness (from its profile widths, which a blur near the wall's own width hardly changes) it
+    reads low; with a constant myocardial volume (constantVolumeGates, as QGS) a wall that moves inward
+    thickens by construction. weights (e.g. the mean wall counts of each ray) let rays through a defect follow
+    their neighbours when the map is smoothed. Returns a polar map dict like polarMap (rho of the ED frame)
+    with "values" in %. smoothing defaults to MOTION_SMOOTHING."""
+    smoothing = MOTION_SMOOTHING if smoothing is None else smoothing
+    thickness, rho = [], None
+    for index, result in enumerate(gateResults):
+        _, _, endo, epi, frameRho = polarRays(result)
+        thickness.append(np.maximum(epi - endo, 0.0))
+        if index == ed:
+            rho = frameRho
+    stack = np.array(thickness)                                       # [frames, rows, angles]
+    _, edThickness, esThickness = _firstHarmonic(stack, ed, es)
+    values = 100.0 * (esThickness / np.maximum(edThickness, 1e-6) - 1.0)
+    if weights is None:
+        weights = np.ones(values.shape)
+    weights = np.clip(np.asarray(weights, dtype=float) / max(float(np.nanmax(weights)), 1e-9), 0.0, 1.0) ** 2
+    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -100.0, 200.0)
+    return {"values": values, "rho": np.asarray(rho).copy(), "theta": gateResults[ed]["grid"].theta.copy()}
+
+
+THICKENING_SOURCES = (("Wall counts (partial volume)", "counts"),
+                      ("Wall thickness, endo- to epicardium", "geometry"))
 
 
 def phaseCoherenceMap(gatePolars, ed, es, smoothing=None):
@@ -1482,6 +1580,42 @@ def polarRays(result):
     fromApex = np.concatenate([np.cumsum(steps[::-1])[::-1], [0.0]])
     rho = fromApex / max(fromApex[0], 1e-9)
     return origins, directions, endo, epi, rho
+
+
+DIAMETER_LEVEL = 0.8       # lvDiameterMm: bullseye radius of the level (0 apex .. 1 valve plane), basal-mid like echo
+DIAMETER_ANGLES = (60.0, 240.0)   # lvDiameterMm: anteroseptal and inferolateral (the parasternal long-axis line)
+
+
+def lvDiameterMm(result, level=None, angles=None):
+    """LV internal diameter (mm) of a wall fit, as echo measures LVEDD / LVESD in the parasternal long axis:
+    from the endocardium of the anteroseptal to that of the inferolateral wall (DIAMETER_ANGLES, deg from
+    anterior toward the septum, as the bullseye), across the long axis, at a level (DIAMETER_LEVEL) on the
+    polar map rays (polarRays: rho 1 at the valve plane, 0 at the apex), where echo takes it near the mitral
+    leaflet tips. The distance along the long axis between the two points (a tilted valve plane) is left
+    out. None when the fit has no endocardium."""
+    level = DIAMETER_LEVEL if level is None else float(level)
+    angles = DIAMETER_ANGLES if angles is None else angles
+    if result is None or result.get("endo") is None:
+        return None
+    grid = result["grid"]
+    origins, directions, endo, _, rho = polarRays(result)
+    points = origins + endo[..., None] * directions                     # [rows, angles, 3]
+    order = np.argsort(rho)
+    row = float(np.interp(level, np.asarray(rho)[order], np.arange(len(rho), dtype=float)[order]))
+    r0 = int(np.clip(math.floor(row), 0, len(rho) - 1))
+    r1 = min(r0 + 1, len(rho) - 1)
+    fr = row - r0
+    ends = []
+    for degrees in angles:
+        col = np.mod(math.radians(degrees), 2.0 * math.pi) / (2.0 * math.pi / grid.nTheta)
+        c0 = int(math.floor(col)) % grid.nTheta
+        c1 = (c0 + 1) % grid.nTheta
+        fc = col - math.floor(col)
+        rowPoints = (1.0 - fr) * points[r0] + fr * points[r1]            # [angles, 3]
+        ends.append((1.0 - fc) * rowPoints[c0] + fc * rowPoints[c1])
+    d = ends[0] - ends[1]
+    d = d - np.dot(d, grid.u) * grid.u
+    return float(np.linalg.norm(d))
 
 
 def _polarBaseZ(result):

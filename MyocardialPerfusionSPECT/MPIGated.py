@@ -5,8 +5,8 @@ STRESS GATED layout of Study 1 (stress), REST GATED the same of Study 2 (rest):
   left           SA / HLA / VLA rows of the gate frames as in Perfusion (same grid, slices, colors and
                  window), played as a cine: every tile shows the same frame, with that frame's
                  endo- and epicardium;
-  top right      the perfusion, wall thickening (count-based: ES / ED wall counts of every ray, first
-                 harmonic over the cycle) and wall motion (mm the endocardium moves from ED to ES) polar
+  top right      the perfusion, wall thickening (count-based: ES / ED wall counts of every ray, or from
+                 the endo- to epicardial thickness of the frames; first harmonic over the cycle) and wall motion (mm the endocardium moves from ED to ES) polar
                  maps side by side;
   bottom right   the LV cavity volume of every frame (EDV, ESV, EF; the frame shown is marked), the cine
                  3D wall coloured by the perfusion (SSP style), the wall motion or one color, as a surface,
@@ -292,7 +292,9 @@ class GatedReviewData:
         self.staticPolar = staticPolar     # perfusion polar map of the static study
         self.volumes = gated.cavityMl()
         self.phases = ejectionFraction(self.volumes)
-        self.thickening = None             # count-based thickening polar map (%)
+        self.thickening = None             # thickening polar map (%), from the wall counts or the wall thickness
+        self.thickeningSource = "counts"   # wallLib.THICKENING_SOURCES value the thickening map was made with
+        self._polars = None                # wall counts of every frame on the polar map rays
         self.coherence = None              # phase coherence polar map (%) of the wall counts
         self.motion = None                 # wall motion polar map (mm), made with the thickening
         self.motionReference = "fixed"     # wallLib.MOTION_REFERENCES value the motion map was made with
@@ -328,12 +330,26 @@ class GatedReviewData:
             sample = MPIGatedQC.sampler(array, MPIGatedQC.worldToIjk(node, self.gated.study), mask, center)
             polars.append(wallLib.polarMap(self.result(index), sample))
         _, _, _, ed, es = self.phases
-        self.thickening = wallLib.thickeningMap(polars, ed, es)
+        self._polars = polars
         self.coherence = wallLib.phaseCoherenceMap(polars, ed, es)
         meanCounts = np.mean([p["values"] for p in polars], axis=0)
         self._motionInputs = ([self.result(i) for i in range(len(gates))], ed, es, meanCounts)
+        self.buildThickeningMap()
         self.buildMotion()
         self.buildRegionalEF()
+
+    def buildThickeningMap(self, source=None):
+        """Thickening map from the wall counts (partial volume, thickeningMap) or from the wall thickness of the
+        frames' surfaces (geometricThickeningMap)."""
+        if source is not None:
+            self.thickeningSource = source
+        if self._polars is None or self._motionInputs is None:
+            return
+        results, ed, es, weights = self._motionInputs
+        if self.thickeningSource == "geometry":
+            self.thickening = wallLib.geometricThickeningMap(results, ed, es, weights=weights)
+        else:
+            self.thickening = wallLib.thickeningMap(self._polars, ed, es)
 
     def buildMotion(self, reference=None):
         """Wall motion map against the fixed or the floating reference (the 3D walls are made again)."""
@@ -537,6 +553,18 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.thickeningViewCombo = self._mapViewCombo(
             "wall thickening", " (a count ratio per pixel is noisy: the segment or wall means read steadier)")
         polarForm.addRow("Thickening map:", self.thickeningViewCombo)
+        self.thickeningSourceCombo = qt.QComboBox()
+        for text, value in wallLib.THICKENING_SOURCES:
+            self.thickeningSourceCombo.addItem(text, value)
+        self.thickeningSourceCombo.toolTip = (
+            "What the thickening map is made from. Wall counts (default): the partial volume effect, a wall thinner "
+            "than about twice the resolution looks brighter as it thickens, % = ES / ED wall counts - 1; it does not "
+            "depend on where the edges are drawn. Wall thickness: the distance "
+            "from the endo- to the epicardium of the frames' surfaces, % = ES / ED thickness - 1 (QGS works this "
+            "way). With each frame's own thickness (Gated QC, Myocardial volume) a blur close to the wall's width "
+            "hardly changes the profile widths, so it reads low; with a constant myocardial volume an inward "
+            "moving wall thickens by construction")
+        polarForm.addRow("Thickening from:", self.thickeningSourceCombo)
         self.coherenceCheck = qt.QCheckBox("Hatch where the count phases are random")
         self.coherenceCheck.checked = True
         self.coherenceCheck.toolTip = (
@@ -721,6 +749,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("thickeningWindow", self.thickeningRange)
         self.parameterPanel.bind("perfusionView", self.perfusionViewCombo)
         self.parameterPanel.bind("thickeningView", self.thickeningViewCombo)
+        self.parameterPanel.bind("thickeningSource", self.thickeningSourceCombo)
         self.parameterPanel.bind("phaseCoherenceHatch", self.coherenceCheck)   # was "phaseCoherenceOverlay", off
         self.parameterPanel.bind("motionWindow", self.motionRange)
         self.parameterPanel.bind("motionView", self.motionViewCombo)
@@ -771,6 +800,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for combo in (self.perfusionViewCombo, self.thickeningViewCombo, self.motionViewCombo, self.efViewCombo):
             combo.connect("currentIndexChanged(int)", lambda _: self.refreshPolars())
         self.coherenceCheck.connect("toggled(bool)", lambda _: self.refreshPolars())
+        self.thickeningSourceCombo.connect("currentIndexChanged(int)", lambda _: self.onThickeningSourceChanged())
         self.motionRange.connect("valuesChanged(double,double)", lambda a, b: self.onMotionWindowChanged())
         self.motionReferenceCombo.connect("currentIndexChanged(int)", lambda _: self.onMotionReferenceChanged())
         self.efRange.connect("valuesChanged(double,double)", lambda a, b: self.refreshPolars())
@@ -1103,6 +1133,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             raise ValueError(message)
         data = GatedReviewData(gated, staticResult, frame, staticPolar)
         data.motionReference = self.motionReference()
+        data.thickeningSource = self.thickeningSource()
         data.efReference = self.efReference()
         data.efCut = self.efCut()
         data.buildThickening()
@@ -1676,7 +1707,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         size = panel.polarSize()
         if size:
             view = self.mapView(kind)
-            hatch = kind == "thickening" and bool(self.coherenceCheck.checked) and data.coherence is not None
+            # the phase coherence is of the wall counts: it hatches the count-based map only
+            hatch = (kind == "thickening" and bool(self.coherenceCheck.checked) and data.coherence is not None
+                     and data.thickeningSource == "counts")
             key = (id(data), id(polar), int(size), self.colormapCombo.currentText, low, top, view, hatch,
                    wallLib.PHASE_COHERENCE_LOW)
             cached = self.polarImages.get((slot, tag))
@@ -1703,7 +1736,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                        else "wedges from the long axis, cones from the LV center at the apex")
                 note = f"% of the cavity under each patch of endocardium emptied, {frames} ({cut})" + where
             else:
-                note = f"% thickening from the wall counts, {frames} (first harmonic over the cycle)" + where
+                source = ("the wall thickness (endo- to epicardium)" if data.thickeningSource == "geometry"
+                          else "the wall counts")
+                note = f"% thickening from {source}, {frames} (first harmonic over the cycle)" + where
                 if hatch:
                     note += f" Hatched: count phases random (coherence below {wallLib.PHASE_COHERENCE_LOW:.0f} %)."
             panel.setPolar(cached[1][0], cached[1][1], f"{title} {name}", note=note)
@@ -1982,6 +2017,17 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.wallColorPicker.enabled = self.wallColorMode() == "constant"
         self.updateRepresentation()
         self.update3DColors()
+
+    def thickeningSource(self):
+        return self.thickeningSourceCombo.itemData(self.thickeningSourceCombo.currentIndex) or "counts"
+
+    def onThickeningSourceChanged(self):
+        """The thickening maps of the studies loaded, made again from the counts or the wall thickness."""
+        for slot, (_, data) in self.data.items():
+            if data.thickeningSource != self.thickeningSource():
+                data.buildThickeningMap(self.thickeningSource())
+                self.polarImages.pop((slot, gatedTags(slot)["thickening"]), None)
+        self.refreshPolars()
 
     def motionReference(self):
         return self.motionReferenceCombo.itemData(self.motionReferenceCombo.currentIndex) or "fixed"

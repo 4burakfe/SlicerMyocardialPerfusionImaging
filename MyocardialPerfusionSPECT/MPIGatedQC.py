@@ -7,7 +7,9 @@ Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before 
     Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: tracked from the static wall, or every
     frame from scratch; a surface fit, B-spline, deformable mesh or the legacy jump-limited path, runs
     through the rays whose wall the frame shows and draws the others; every frame's thickness from its
-    own profile widths, a blurred slab leaning to a prior where the blur hides it, fitted the same way);
+    own profile widths, a blurred slab leaning to a prior where the blur hides it, fitted the same way; or,
+    as QGS does, every frame's thickness scaled to the myocardial volume of the ED or ES frame,
+    constantVolumeGates);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
     frame's endo- and epicardium;
@@ -247,6 +249,10 @@ class GatedStudy:
             for name in ORIENTATIONS:
                 self.slices[name].append(resliceLike(array, matrix, outputs[name], mask, center))
             self.peaks.append(self._peakNear(self.slices["SA"][-1], outputs["SA"], center, reach))
+        volume = (params or {}).get("myocardialVolume", wallLib.GATE_DEFAULTS["myocardialVolume"])
+        if volume != "own":
+            # every frame at the myocardial volume of the ED (or ES) frame, as QGS
+            self.results = wallLib.constantVolumeGates(self.results, volume)
         for index, (label, node, matrix, voxel) in enumerate(frames):
             array = slicer.util.arrayFromVolume(node).astype(np.float32)   # again, one frame at a time
             stats = {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
@@ -275,6 +281,21 @@ class GatedStudy:
     def cavityMl(self):
         return [s["cavityMl"] for s in self.stats]
 
+    def myocardiumMl(self):
+        return [s["myocardiumMl"] for s in self.stats]
+
+    def diameterMm(self):
+        """LV internal diameter of every frame (wallLib.lvDiameterMm: anteroseptal to inferolateral
+        endocardium, basal-mid, as echo LVEDD / LVESD)."""
+        values = []
+        for result in self.results:
+            try:
+                values.append(wallLib.lvDiameterMm(result))
+            except Exception:
+                logging.warning("MPI: LV diameter failed:\n" + traceback.format_exc())
+                values.append(None)
+        return values
+
     def projectionCounts(self):
         values = gatingLib.jsonList(self.attributes, "GatePhotopeakCounts")
         return values if values and len(values) == len(self.labels) else None
@@ -289,6 +310,8 @@ class GatedStudy:
         sequence.SetAttribute("MPI.GateCavityMl", json.dumps([None if v is None else round(v, 1) for v in self.cavityMl()]))
         sequence.SetAttribute("MPI.GateMyocardiumMl",
                               json.dumps([None if s["myocardiumMl"] is None else round(s["myocardiumMl"], 1) for s in self.stats]))
+        sequence.SetAttribute("MPI.GateDiameterMm",
+                              json.dumps([None if v is None else round(v, 1) for v in self.diameterMm()]))
         sequence.SetAttribute("MPI.GatedQCOf", self.study.GetID())
 
 
@@ -395,6 +418,20 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.fitPullSlider.toolTip = ("How far a traced ray is pulled from its own count peak to the fit: 1 the fit, "
                                       "0 its own peak (the rays without a wall always take the fit)")
         advancedForm.addRow("Smoothing (pull to the fit):", self.fitPullSlider)
+        self.volumeCombo = qt.QComboBox()
+        for text, value in wallLib.GATE_VOLUMES:
+            self.volumeCombo.addItem(text, value)
+        self.volumeCombo.setCurrentIndex(
+            max(0, self.volumeCombo.findData(wallLib.GATE_DEFAULTS["myocardialVolume"])))
+        self.volumeCombo.toolTip = (
+            "Myocardial volume of the frames. Each frame's own (default): every frame's wall thickness from its own "
+            "count profile widths, so the myocardial volume may change over the cycle. Constant at the end-diastolic "
+            "volume (QGS-like, Germano et al., J Nucl Med 1995): every frame keeps its mid-wall and the shape of its "
+            "thickness map, scaled to the myocardial volume of the frame with the largest cavity, so a wall that "
+            "moves inward thickens and the endocardium moves further in than the mid-wall (smaller ESV, higher EF). "
+            "Constant at the end-systolic volume: the same at the volume of the frame with the smallest cavity "
+            "(thinner walls at ED, larger EDV)")
+        advancedForm.addRow("Myocardial volume:", self.volumeCombo)
         self.segmentButton = styleButton(qt.QPushButton("Segment frames again"), "create")
         advancedForm.addRow(self.segmentButton)
 
@@ -424,6 +461,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel.bind("gateFit", self.fitCombo)
         self.parameterPanel.bind("gateFitPull", self.fitPullSlider)
         self.parameterPanel.bind("gateSegmentation", self.segmentationCombo)
+        self.parameterPanel.bind("gateMyocardialVolume", self.volumeCombo)
         self.updateSegmentationControls()
         self.layout.addStretch(1)
 
@@ -576,7 +614,9 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def params(self):
         return {"maxWallShift": float(self.wallShiftSpin.value), "maxValveShift": float(self.valveShiftSpin.value),
                 "fit": self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.GATE_DEFAULTS["fit"],
-                "fitPull": float(self.fitPullSlider.value), "segmentation": self.segmentation()}
+                "fitPull": float(self.fitPullSlider.value), "segmentation": self.segmentation(),
+                "myocardialVolume": (self.volumeCombo.itemData(self.volumeCombo.currentIndex)
+                                     or wallLib.GATE_DEFAULTS["myocardialVolume"])}
 
     def gatedStudy(self, slot, rebuild=False):
         """GatedStudy of a slot, built once per study, gated sequence, static wall and settings."""
@@ -789,8 +829,11 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             parts.append("<p style='color:#a0a8b0'>No ECG gating information stored on the frames (reconstruct with "
                          "the DICOM SPECT Recon extension to keep the R-R window and beat counts).</p>")
         cavity = data.cavityMl()
+        myocardium = data.myocardiumMl()
+        diameter = data.diameterMm()
         header = "<tr><th nowrap>Frame</th>" + ("<th nowrap>Projections</th>" if projections else "") + \
-                 "<th nowrap>Image</th><th nowrap>Myocardium</th><th nowrap>Cavity ml</th></tr>"
+                 "<th nowrap>Image</th><th nowrap>Myocardium</th><th nowrap>Cavity ml</th>" \
+                 "<th nowrap>Myocardium ml</th><th nowrap>Diameter mm</th></tr>"
         deviations = {name: gatingLib.deviations(series) for name, series in
                       (("p", projections or []), ("i", data.imageCounts), ("m", data.myocardiumCounts()))}
 
@@ -805,7 +848,9 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for index, label in enumerate(data.labels):
             body += (f"<tr><td>{label}</td>" + (cell(projections, "p", index) if projections else "")
                      + cell(data.imageCounts, "i", index) + cell(data.myocardiumCounts(), "m", index)
-                     + f"<td>{'-' if cavity[index] is None else f'{cavity[index]:.0f}'}</td></tr>")
+                     + f"<td>{'-' if cavity[index] is None else f'{cavity[index]:.0f}'}</td>"
+                     + f"<td>{'-' if myocardium[index] is None else f'{myocardium[index]:.0f}'}</td>"
+                     + f"<td>{'-' if diameter[index] is None else f'{diameter[index]:.1f}'}</td></tr>")
         parts.append(f"<p><table>{header}{body}</table></p>")
         known = [(v, i) for i, v in enumerate(cavity) if v is not None]
         if len(known) >= 2:
@@ -814,6 +859,17 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             parts.append(f"<p style='color:#a0a8b0'>LV cavity largest {edv:.0f} ml (frame {data.labels[ed]}), smallest "
                          f"{esv:.0f} ml (frame {data.labels[es]}): preliminary EF {ef:.0f} %. Volumes and EF are "
                          "for checking the segmentation; the gated analysis is in Gated Review.</p>")
+            if diameter[ed] is not None and diameter[es] is not None:
+                fs = 100.0 * (diameter[ed] - diameter[es]) / diameter[ed] if diameter[ed] > 0 else float("nan")
+                parts.append(f"<p style='color:#a0a8b0'>LV internal diameter (anteroseptal to inferolateral "
+                             f"endocardium, basal-mid, as echo LVEDD / LVESD): {diameter[ed]:.1f} mm at the largest "
+                             f"cavity, {diameter[es]:.1f} mm at the smallest; fractional shortening {fs:.0f} %.</p>")
+        walls = [v for v in myocardium if v is not None]
+        if len(walls) >= 2 and max(walls) > 0:
+            spread = 100.0 * (max(walls) - min(walls)) / max(walls)
+            parts.append(f"<p style='color:#a0a8b0'>Myocardium {min(walls):.0f} to {max(walls):.0f} ml over the frames "
+                         f"({spread:.0f} % of the largest); a real myocardium keeps its volume, so a wide spread points "
+                         "to the edges.</p>")
         if data.errors:
             parts.append("<p style='color:#f06060'>Not segmented: " + "; ".join(data.errors) + "</p>")
         return "".join(parts)
