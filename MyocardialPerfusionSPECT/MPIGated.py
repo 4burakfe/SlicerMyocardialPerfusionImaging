@@ -122,7 +122,7 @@ READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with
                 "data. With the fixed motion reference (default) motion is measured from one LV center and axis: "
                 "when the whole heart moves down in systole, an apex that contracts well can show little motion "
                 "while its wall clearly thickens (Motion reference: Floating takes such a shift out).")
-MOTION_WINDOW = (0.0, 25.0, 0.0, 5.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
+MOTION_WINDOW = (0.0, 25.0, 0.0, 8.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
 EF_WINDOW = (-50.0, 100.0, 0.0, 80.0)    # range and default window of the regional EF map, %
 DEFAULT_EF_REFERENCE = "fixed"        # regional EF: a wedge grows or shrinks with a heart that moves as a whole
 DEFAULT_EF_CUT = "base"                  # regional EF: wallLib.REGIONAL_EF_CUTS
