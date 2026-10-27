@@ -10,6 +10,8 @@ Everything is stored as node attributes, so it is saved with the scene and survi
 Recognition
     gated     a sequence of scalar volumes with 4 to 32 items of identical geometry. Sequences from
               the DICOM SPECT Recon extension are recognised by SPECTRecon.Gate on their items.
+              A MultiVolume (e.g. gated PET loaded by the MultiVolume importer: one volume with a frame
+              per gate) is copied once into such a sequence (convertMultiVolumes), placed next to it.
     pairing   a gated sequence goes with the static volume that has the same reconstruction
               (SPECTRecon.AcquisitionStart), else the same subject hierarchy study folder and the
               longest common name, else the same grid.
@@ -28,6 +30,7 @@ UNKNOWN_ROLE = "Other"
 
 ROLE_ATTRIBUTE = "MPI.StudyRole"
 GATED_ATTRIBUTE = "MPI.GatedSequence"
+FROM_MULTIVOLUME_ATTRIBUTE = "MPI.FromMultiVolume"   # on a sequence made from a MultiVolume: its ID
 
 MIN_GATES = 4
 MAX_GATES = 32
@@ -223,6 +226,128 @@ def isProxyNode(node):
         return False
 
 
+def isMultiVolume(node):
+    """A MultiVolume node (or a vector volume holding MultiVolume frames): one volume, one frame per component."""
+    if node is None or node.GetImageData() is None:
+        return False
+    return node.IsA("vtkMRMLMultiVolumeNode") or (
+        node.IsA("vtkMRMLVectorVolumeNode") and bool(node.GetAttribute("MultiVolume.NumberOfFrames")))
+
+
+def multiVolumeFrameLabels(node, count):
+    """Frame labels of a MultiVolume (MultiVolume.FrameLabels), else 1..count."""
+    labels = [t.strip() for t in (node.GetAttribute("MultiVolume.FrameLabels") or "").split(",") if t.strip()]
+    return labels if len(labels) == count else [str(i + 1) for i in range(count)]
+
+
+def splitFrames(array):
+    """Frames of a MultiVolume voxel array [k, j, i, frames] as [k, j, i] arrays."""
+    import numpy as np
+    array = np.asarray(array)
+    if array.ndim != 4:
+        raise ValueError("A MultiVolume has a frame axis after k, j, i.")
+    return [np.ascontiguousarray(array[..., n]) for n in range(array.shape[3])]
+
+
+def _dicomInstanceUids(node):
+    uids = node.GetAttribute("DICOM.instanceUIDs") or ""
+    if uids:
+        return uids
+    slicer = _slicer()
+    try:
+        shNode = slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode(slicer.mrmlScene)
+        item = shNode.GetItemByDataNode(node)
+        if item:
+            return shNode.GetItemUID(item, slicer.vtkMRMLSubjectHierarchyConstants.GetDICOMInstanceUIDName()) or ""
+    except Exception:
+        pass
+    return ""
+
+
+def multiVolumeSequence(node):
+    """The sequence made from a MultiVolume, if it is still in the scene (also after a scene load that renamed
+    the node IDs: the one the MultiVolume points to, else any that names it)."""
+    slicer = _slicer()
+    sequence = slicer.mrmlScene.GetNodeByID(node.GetAttribute(GATED_ATTRIBUTE) or "")
+    if sequence is not None and sequence.IsA("vtkMRMLSequenceNode"):
+        return sequence
+    return next((s for s in slicer.util.getNodesByClass("vtkMRMLSequenceNode")
+                 if s.GetAttribute(FROM_MULTIVOLUME_ATTRIBUTE) == node.GetID()), None)
+
+
+def sequenceFromMultiVolume(node):
+    """A sequence of scalar volumes (one per frame, index "Gate") with the frames of a MultiVolume, in its
+    subject hierarchy folder, with a browser so it can be played. The DICOM attributes are copied to the frames
+    (patient, modality, series description are read from them)."""
+    slicer = _slicer()
+    frames = splitFrames(slicer.util.arrayFromVolume(node))
+    labels = multiVolumeFrameLabels(node, len(frames))
+    scene = slicer.mrmlScene
+    sequence = scene.AddNewNodeByClass("vtkMRMLSequenceNode", scene.GenerateUniqueName(f"{node.GetName()} gated"))
+    sequence.SetIndexName("Gate")
+    sequence.SetIndexUnit("")
+    sequence.SetIndexType(sequence.NumericIndex)
+    uids = _dicomInstanceUids(node)
+    attributes = {name: node.GetAttribute(name) for name in (node.GetAttributeNames() or ())
+                  if not name.startswith("MultiVolume.") and not name.startswith("MPI.")}
+    if uids:
+        attributes["DICOM.instanceUIDs"] = uids
+    if not attributes.get("DICOM.Modality"):
+        found = modality(node)
+        if found:
+            attributes["DICOM.Modality"] = found
+    for index, (label, frame) in enumerate(zip(labels, frames)):
+        volume = slicer.vtkMRMLScalarVolumeNode()
+        volume.SetName(f"{node.GetName()} gate {label}")
+        volume.CopyOrientation(node)
+        slicer.util.updateVolumeFromArray(volume, frame)
+        for name, value in attributes.items():
+            volume.SetAttribute(name, value)
+        sequence.SetDataNodeAtValue(volume, str(index + 1))
+    sequence.SetAttribute(FROM_MULTIVOLUME_ATTRIBUTE, node.GetID())
+    stored = node.GetAttribute(ROLE_ATTRIBUTE)
+    if stored in ROLES:
+        sequence.SetAttribute(ROLE_ATTRIBUTE, stored)
+    node.SetAttribute(GATED_ATTRIBUTE, sequence.GetID())
+    try:
+        browser = scene.AddNewNodeByClass("vtkMRMLSequenceBrowserNode", f"{sequence.GetName()} browser")
+        browser.SetAndObserveMasterSequenceNodeID(sequence.GetID())
+        proxy = browser.GetProxyNode(sequence)
+        if proxy is not None:
+            proxy.SetName(f"{sequence.GetName()} (current gate)")
+    except Exception:
+        logging.warning("MPI: could not make a browser for the gated sequence", exc_info=True)
+    try:
+        shNode = slicer.vtkMRMLSubjectHierarchyNode.GetSubjectHierarchyNode(scene)
+        parent = shNode.GetItemParent(shNode.GetItemByDataNode(node))
+        if parent and parent != shNode.GetSceneItemID():
+            shNode.SetItemParent(shNode.GetItemByDataNode(sequence), parent)
+    except Exception:
+        pass
+    return sequence
+
+
+def convertMultiVolumes():
+    """Make a gated sequence of every emission MultiVolume of 4 to 32 frames not converted yet. Returns the new
+    sequences."""
+    slicer = _slicer()
+    made = []
+    for node in slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode"):
+        try:
+            if not isMultiVolume(node) or multiVolumeSequence(node) is not None:
+                continue
+            frames = node.GetImageData().GetNumberOfScalarComponents()
+            if not (MIN_GATES <= frames <= MAX_GATES):
+                continue
+            if not looksLikeEmission(node.GetImageData(), modality(node)):
+                continue
+            made.append(sequenceFromMultiVolume(node))
+            logging.info(f"MPI: gated sequence made from the MultiVolume {node.GetName()} ({frames} frames)")
+        except Exception:
+            logging.warning("MPI: could not convert a MultiVolume:\n" + traceback.format_exc())
+    return made
+
+
 def gatedSequences():
     """Sequences in the scene that hold gated SPECT or PET: [(sequence node, number of gates, first item)]."""
     slicer = _slicer()
@@ -261,6 +386,8 @@ def staticVolumes():
     for node in slicer.util.getNodesByClass("vtkMRMLScalarVolumeNode"):
         if node.IsA("vtkMRMLLabelMapVolumeNode") or node.GetImageData() is None:
             continue
+        if isMultiVolume(node) or node.GetImageData().GetNumberOfScalarComponents() != 1:
+            continue   # gated frames in one volume: used through its sequence (convertMultiVolumes)
         if node.GetHideFromEditors() or node.GetAttribute("MPI.Orientation") or node.GetAttribute("MPI.Helper"):
             continue
         if isProxyNode(node):
@@ -313,7 +440,9 @@ class Study:
 
 
 def scanStudies():
-    """All studies in the scene. Stored roles and pairings are kept; new ones are guessed."""
+    """All studies in the scene. Stored roles and pairings are kept; new ones are guessed. MultiVolumes are
+    made into gated sequences first."""
+    convertMultiVolumes()
     gatedList = gatedSequences()
     gatesById = {seq.GetID(): (seq, n, first) for seq, n, first in gatedList}
     statics = staticVolumes()
