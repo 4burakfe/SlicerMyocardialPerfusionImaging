@@ -48,7 +48,7 @@ from MyocardialPerfusionImagingLib import myocardium as wallLib  # noqa: E402
 from MyocardialPerfusionImagingLib.resampling import DEFAULT_INTERPOLATION, zoomInPlane  # noqa: E402
 from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     GATED_LAYOUT_IDS, ORIENTATIONS, ORIENTATION_TITLES, gatedLayoutXml, gatedPlotKinds, gatedTags,
-    placeMonitor2Window, registerLayout, threeDWidgetByTag, CameraLink, secondaryScreen, notSaved)
+    placeMonitor2Window, registerLayout, threeDWidgetByTag, CameraLink, defaultDualScreen, notSaved)
 from MyocardialPerfusionImagingLib.geometry import worldToLocalMatrix  # noqa: E402
 from MyocardialPerfusionImagingLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
@@ -865,7 +865,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.tbOverlay = bar.choice([("Vessels", "vessels", "Coronary territories (LAD / RCA / LCX) on the per pixel "
                                                             "polar maps"),
                                      ("17 seg", "segments", "The 17 segments on the per pixel polar maps"),
-                                     ("5 walls", "walls", "The five walls on the per pixel polar maps")],
+                                     ("5 walls", "walls", "The five walls on the per pixel polar maps"),
+                                     ("None", "", "No segmentation on the per pixel polar maps")],
                                     self.onToolbarOverlay)
         self.tbScores = bar.toggle("Scores", self.scoresButton.toolTip,
                                    lambda c: self.fromToolbar(lambda: setattr(self.scoresButton, "checked", c)))
@@ -927,7 +928,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             bar.setChecked(self.tbContours, self.contoursButton.checked)
             bar.setChecked(self.tbSync, self.syncCheck.checked)
             self.tbSync.enabled = self.syncCheck.enabled
-            bar.setChoice(self.tbOverlay, self.overlay())
+            bar.setChoice(self.tbOverlay, self.overlay() or "")
             bar.setChecked(self.tbScores, self.scoresButton.checked)
             offered = self.toolbarLayouts()
             for key, button in self.tbLayouts.items():
@@ -949,8 +950,8 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def defaultMode(self):
         """Slices and plots of the gated studies there: stress-rest when both are ready, on two monitors when
-        there is a second screen."""
-        dual = secondaryScreen() is not None
+        there is a second screen and the hub setting allows it."""
+        dual = defaultDualScreen()
         ready = self.readyStudies()
         prefix = "stressRest" if len(ready) == 2 else ready[0] if ready else None
         if prefix is None:
@@ -1001,6 +1002,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onSceneClosed(self, caller=None, event=None):
         self.playButton.checked = False
+        self.cameraLink.unlink()   # its anchors and cameras belong to the closed studies
         self.data, self.tiles, self.polarImages, self.staticSamples = {}, {}, {}, {}
         self.slicePositions = {}
         self.surfaceKeys = {}

@@ -37,7 +37,7 @@ from MyocardialPerfusionImagingLib.resampling import DEFAULT_INTERPOLATION, zoom
 from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     RESULT_LAYOUT_ID, SLICES_LAYOUT_ID, DUAL_RESULT_LAYOUT_ID, POLAR_LAYOUT_ID, PERF_DUAL_LAYOUT_ID,
     DUAL_PERF_DUAL_LAYOUT_ID, PERFUSION_MONITOR2_TITLE, perfusionDualMonitorLayoutXml, placeMonitor2Window,
-    ORIENTATIONS, ORIENTATION_TITLES, secondaryScreen,
+    ORIENTATIONS, ORIENTATION_TITLES, defaultDualScreen,
     POLAR_TAG, POLAR_REST_TAG, POLAR_DIFF_TAG, PERFUSION_3D_VIEW, PERFUSION_3D_VIEW_REST,
     resultLayoutXml, slicesLayoutXml, dualResultLayoutXml, polarLayoutXml, registerLayout, threeDWidgetByTag,
     CameraLink)
@@ -426,7 +426,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                  lambda c: self.fromToolbar(lambda: setattr(self.syncButton, "checked", c)))
         bar.separator()
         self.tbOverlay = bar.choice([("Vessels", "vessels", "Coronary territories (LAD / RCA / LCX) on the polar maps"),
-                                     ("17 seg", "segments", "The 17 segments on the polar maps")],
+                                     ("17 seg", "segments", "The 17 segments on the polar maps"),
+                                     ("None", "", "No segmentation on the polar maps")],
                                     self.onToolbarOverlay)
         self.tbScores = bar.toggle("Scores", self.scoresButton.toolTip,
                                    lambda c: self.fromToolbar(lambda: setattr(self.scoresButton, "checked", c)))
@@ -500,7 +501,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             bar.setValue(self.tbFov, self.fovSpin.value)
             bar.setChecked(self.tbContours, self.contoursButton.checked)
             bar.setChecked(self.tbSync, self.syncButton.checked)
-            bar.setChoice(self.tbOverlay, self.overlay())
+            bar.setChoice(self.tbOverlay, self.overlay() or "")
             bar.setChecked(self.tbScores, self.scoresButton.checked)
             for widget in [self.tbMax, self.tbFov, self.tbContours, self.tbScores] + list(self.tbOverlay.values()):
                 widget.enabled = anyReady
@@ -524,8 +525,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def defaultMode(self):
         """Slices and plots of the studies there: stress-rest when both are ready, on two monitors when there
-        is a second screen."""
-        dual = secondaryScreen() is not None
+        is a second screen and the hub setting allows it."""
+        dual = defaultDualScreen()
         ready = self.readyStudies()
         if len(ready) == 2:
             return "stressRestPerfDual" if dual else "stressRestPerf"
@@ -586,6 +587,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.showResults(self.preferredMode())
 
     def onSceneClosed(self, caller=None, event=None):
+        self.cameraLink.unlink()   # its anchors and cameras belong to the closed studies
         self.studies = {STRESS: None, REST: None}
         self.outputs = {STRESS: {}, REST: {}}
         self.tileCache = {}

@@ -391,6 +391,25 @@ def secondaryScreen():
     return next((screen for screen in screens if not screen.geometry.contains(center)), None)
 
 
+AUTO_DUAL_SCREEN_KEY = "MyocardialPerfusionImaging/AutoDualScreen"
+
+
+def autoDualScreen():
+    """Whether Perfusion and Gated Review open on two monitors by themselves when there is a second screen
+    (the hub's "Auto use dual screen when available" setting, on by default)."""
+    value = slicer.app.userSettings().value(AUTO_DUAL_SCREEN_KEY, True)
+    return str(value).lower() not in ("false", "0")
+
+
+def setAutoDualScreen(on):
+    slicer.app.userSettings().setValue(AUTO_DUAL_SCREEN_KEY, bool(on))
+
+
+def defaultDualScreen():
+    """A second screen is there and the setting lets the default layouts use it."""
+    return autoDualScreen() and secondaryScreen() is not None
+
+
 def placeMonitor2Window(viewTag=None, title=GATED_MONITOR2_TITLE):
     """Give the floating second window of a dual monitor layout normal window buttons and show it
     maximized on the second screen (as in SlicerPETReviewCompare), changing only what is not so
@@ -549,8 +568,17 @@ class CameraLink:
         return np.concatenate([local(camera.GetFocalPoint()), local(camera.GetPosition()),
                                axes.T @ np.asarray(camera.GetViewUp(), dtype=float), [camera.GetParallelScale()]])
 
+    def _current(self, tag):
+        """(widget, renderer) of a linked view whose camera is still the observed one, else (None, None):
+        after a scene close a view gets a new camera node (and vtkCamera), and the old one must
+        neither drive nor be driven."""
+        widget, renderer = self._renderer(tag)
+        if renderer is None or tag not in self.observed or renderer.GetActiveCamera() is not self.observed[tag][0]:
+            return None, None
+        return widget, renderer
+
     def onModified(self, tag):
-        if self.busy or tag not in self.anchors or tag not in self.observed:
+        if self.busy or tag not in self.anchors or self._current(tag)[1] is None:
             return
         pose = self._pose(tag, self.observed[tag][0])
         last = self.poses.get(tag)
@@ -562,7 +590,7 @@ class CameraLink:
             for other, (center, axes) in self.anchors.items():
                 if other == tag:
                     continue
-                widget, renderer = self._renderer(other)
+                widget, renderer = self._current(other)
                 if renderer is None:
                     continue
                 camera = renderer.GetActiveCamera()

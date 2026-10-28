@@ -39,6 +39,7 @@ import MyocardialPerfusionImagingLib  # noqa: E402
 MyocardialPerfusionImagingLib.reloadInDeveloperMode()
 from MyocardialPerfusionImagingLib import session  # noqa: E402
 from MyocardialPerfusionImagingLib import studies as studiesLib  # noqa: E402
+from MyocardialPerfusionImagingLib import views  # noqa: E402
 from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton  # noqa: E402
 
 ICON_PATH = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
@@ -186,6 +187,19 @@ class MyocardialPerfusionImagingWidget(ScriptedLoadableModuleWidget, VTKObservat
             row.addWidget(button)
             stepsLayout.addWidget(frame)
             self.stepWidgets[key] = {"badge": badge, "state": state, "button": button, "number": number}
+
+        settingsBox = ctk.ctkCollapsibleButton()
+        settingsBox.text = "Settings"
+        layout.addWidget(settingsBox)
+        settingsLayout = qt.QVBoxLayout(settingsBox)
+        self.autoDualScreenCheck = qt.QCheckBox("Auto use dual screen when available")
+        self.autoDualScreenCheck.toolTip = (
+            "On: Perfusion and Gated Review open on two monitors by themselves when a second screen is connected. "
+            "Off: they open in the single monitor layouts even with two or more screens (the dual monitor "
+            "layouts can still be picked by hand).")
+        self.autoDualScreenCheck.checked = views.autoDualScreen()
+        self.autoDualScreenCheck.connect("toggled(bool)", views.setAutoDualScreen)
+        settingsLayout.addWidget(self.autoDualScreenCheck)
 
         self.startButton = styleButton(qt.QPushButton("Start with Data roles \u203a"), "primary")
         self.startButton.connect("clicked(bool)", lambda: self.showStep("roles"))

@@ -86,10 +86,6 @@ def customColorNode(nodeName):
     node.SetName(nodeName)
     node.SetTypeToUser()
     node.SetNumberOfColors(256)
-    try:
-        node.SetNamesInitialised(True)
-    except AttributeError:
-        pass
     for i, (r, g, b) in enumerate(table):
         node.SetColor(i, f"{i}", float(r), float(g), float(b), 1.0)
     node.SetHideFromEditors(False)
