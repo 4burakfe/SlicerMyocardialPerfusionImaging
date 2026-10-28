@@ -447,8 +447,9 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.fitCombo.setCurrentIndex(max(0, self.fitCombo.findData(defaults["fit"])))
         self.fitCombo.toolTip = (
             "Surface fit through the rays whose wall stands out of the blood pool, which draws the others (a "
-            "defect) and smooths them, as in Gated QC: B-spline (default, a bending penalty: a defect continues the "
-            "curve of the walls around it), deformable mesh (every ray tied to its neighbours, bridges straighter) "
+            "defect) and smooths them, as in Gated QC: deformable mesh (default, every ray tied to its neighbours: "
+            "follows the walls closely, bridges a defect straighter), B-spline (a bending penalty: a defect continues the "
+            "curve of the walls around it, wall features shorter than 15 mm are smoothed out) "
             "or legacy (limited jump between neighbouring rays). With Shape model through defects (Advanced "
             "parameters, on by default) the fit is of the walls' deviation from an ellipsoid fitted to the whole "
             "LV, so a defect keeps its curve (a prolate apex behind an apical defect). Ellipsoid (previous): the "
@@ -1183,7 +1184,7 @@ class MPIMyocardiumTest(ScriptedLoadableModuleTest):
 
         def sample(world):
             return sampleTrilinear(array, np.asarray(world, dtype=float) / spacing)
-        for fit in ("ellipsoid", "mesh", "legacy", "bspline"):      # the default last, for the message
+        for fit in ("ellipsoid", "bspline", "legacy", "mesh"):      # the default last, for the message
             result = wallLib.fitWall(sample, center, u, w, 55.0, {"resolution": 8.0, "fit": fit})
             apexMid = result["centerShift"] + float(np.median(result["mid"][-1]))
             self.assertAlmostEqual(apexMid, z0 + c, delta=4.0, msg=fit)

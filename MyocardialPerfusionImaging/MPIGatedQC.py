@@ -422,9 +422,9 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.fitCombo.toolTip = (
             "Surface fit through the rays whose wall a frame shows (above its blood pool), which draws the rays "
             "it does not show (a defect) and smooths the others; the wall thickness is fitted the same way. "
-            "B-spline (default): a smooth spline surface with a bending penalty, a defect continues the curve of "
-            "the walls around it. Deformable mesh: every ray tied to its neighbours around and along the axis, a "
-            "defect is bridged straighter. Legacy: the change between neighbouring rays is limited (Brigger "
+            "Deformable mesh (default): every ray tied to its neighbours around and along the axis, so it follows "
+            "the walls closely and bridges a defect straighter. B-spline: a smooth spline surface with a bending "
+            "penalty, a defect continues the curve of the walls around it. Legacy: the change between neighbouring rays is limited (Brigger "
             "1999), ring by ring and along the axis. Their stiffness is in Advanced parameters")
         advancedForm.addRow("Fit:", self.fitCombo)
         self.fitPullSlider = ctk.ctkSliderWidget()

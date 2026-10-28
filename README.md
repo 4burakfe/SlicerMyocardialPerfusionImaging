@@ -248,8 +248,8 @@ How it works:
   moved along the axis between the valve plane and the apex (toward the apex when a steep valve plane
   needs room) and the wall is fitted again, so the result does not depend on where the LV center was
   placed.
-- *Fit* sets the surface through the peaks, as in Gated QC (see there): **B-spline** (default), **deformable
-  mesh** or **legacy**. A ray's peak counts by its wall counts against the cavity's blood pool (up to
+- *Fit* sets the surface through the peaks, as in Gated QC (see there): **deformable mesh** (default),
+  **B-spline** or **legacy**. A ray's peak counts by its wall counts against the cavity's blood pool (up to
   1.25 x it does not count, from 1.75 x fully), and the fit draws the rays that do not count. With *Shape
   model through defects* (on by default) the fit is of the peaks' deviation from the ellipsoid above, so
   a defect keeps the ellipsoid's curve; without it the fit alone bridges a defect, flatter (an apical
@@ -326,10 +326,10 @@ For the gated study of Study 1 or Study 2:
   between (*Wall not traced up to* / *traced from*, Advanced parameters). Rays at the edge of their search
   window or far from their neighbours do not count either. *Fit* sets the surface that runs through the
   traced rays and draws the others (a defect):
-  - **B-spline** (default): a cubic spline surface with a thin-plate bending penalty over the wall, so a
+  - **B-spline**: a cubic spline surface with a thin-plate bending penalty over the wall, so a
     defect continues the curve of the walls around it. Knot spacing (8 mm) and bending length (15 mm: wall
     features shorter than that are smoothed out) are in Advanced parameters.
-  - **Deformable mesh**: every ray tied to its neighbours around and along the axis (a membrane, tension
+  - **Deformable mesh** (default): every ray tied to its neighbours around and along the axis (a membrane, tension
     length 4 mm), so a defect is bridged straighter.
   - **Legacy**: the change between neighbouring rays is limited (0.6 mm per mm of wall) and the path
     closest to the traced rays within that limit is found by dynamic programming (after Brigger et al.,
