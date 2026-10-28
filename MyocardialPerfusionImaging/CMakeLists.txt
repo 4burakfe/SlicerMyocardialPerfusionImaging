@@ -1,7 +1,7 @@
 #-----------------------------------------------------------------------------
-# Myocardial Perfusion SPECT hub: the only module in Slicer's module list. It shows the workflow
+# Myocardial Perfusion Imaging hub: the only module in Slicer's module list. It shows the workflow
 # steps below (hidden modules) and carries the helper package they all use.
-set(MODULE_NAME MyocardialPerfusionSPECT)
+set(MODULE_NAME MyocardialPerfusionImaging)
 
 set(MODULE_PYTHON_SCRIPTS
   ${MODULE_NAME}.py

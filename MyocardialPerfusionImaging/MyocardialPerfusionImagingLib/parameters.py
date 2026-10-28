@@ -8,7 +8,7 @@ Saved values are applied to the module constants when a step module is imported 
 analysis uses them even before its panel is opened.
 
 A target is "module:NAME", optionally followed by ".key" for a dict entry (repeatable) and "#i" for one
-element of a tuple, e.g. "MyocardialPerfusionSPECTLib.myocardium:DEFAULTS.rowSpacing" or
+element of a tuple, e.g. "MyocardialPerfusionImagingLib.myocardium:DEFAULTS.rowSpacing" or
 "MPIMyocardium:SURFACES.endo#1". Only modules already imported are set; each step module calls
 applySaved() once it is imported, so its own constants get their saved values too.
 """
@@ -18,8 +18,8 @@ import json
 import logging
 import sys
 
-SETTINGS_GROUP = "MyocardialPerfusionSPECT/Parameters"
-LIB = "MyocardialPerfusionSPECTLib"
+SETTINGS_GROUP = "MyocardialPerfusionImaging/Parameters"
+LIB = "MyocardialPerfusionImagingLib"
 
 
 class Parameter:

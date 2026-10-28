@@ -1,5 +1,5 @@
 """
-Myocardial Perfusion SPECT for 3D Slicer - hub module
+Myocardial Perfusion Imaging for 3D Slicer - hub module
 
 The only module of the extension in Slicer's module list. It shows the active study and the
 workflow steps, which are hidden modules opened from here and from the workflow toolbar:
@@ -12,10 +12,10 @@ workflow steps, which are hidden modules opened from here and from the workflow 
     6. Gated Review (MPIGated.py)       cine slices, perfusion / thickening polar maps, volumes and EF, cine 3D
 
 The workflow toolbar at the top of the window is shown while the hub or a step is open.
-The helpers shared by all modules are in the MyocardialPerfusionSPECTLib package next to this file.
+The helpers shared by all modules are in the MyocardialPerfusionImagingLib package next to this file.
 
 Install: from the Extensions Manager, or without building: add this folder (the inner
-MyocardialPerfusionSPECT folder that holds the module files and the MyocardialPerfusionSPECTLib
+MyocardialPerfusionImaging folder that holds the module files and the MyocardialPerfusionImagingLib
 package) to Edit > Application Settings > Modules > Additional module paths, then restart.
 The module appears under "Nuclear Medicine".
 """
@@ -35,20 +35,20 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(globals().get("__file__", "") or "
 if globals().get("__file__") and _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-import MyocardialPerfusionSPECTLib  # noqa: E402
-MyocardialPerfusionSPECTLib.reloadInDeveloperMode()
-from MyocardialPerfusionSPECTLib import session  # noqa: E402
-from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton  # noqa: E402
+import MyocardialPerfusionImagingLib  # noqa: E402
+MyocardialPerfusionImagingLib.reloadInDeveloperMode()
+from MyocardialPerfusionImagingLib import session  # noqa: E402
+from MyocardialPerfusionImagingLib import studies as studiesLib  # noqa: E402
+from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton  # noqa: E402
 
-ICON_PATH = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
+ICON_PATH = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
 BANNER_PATH = os.path.join(_MODULE_DIR, "Resources", "Images", "Banner.jpg")
 STATE_TEXT = {session.STATE_DONE: "Done", session.STATE_AVAILABLE: "Ready", session.STATE_LOCKED: "Waiting"}
 
 
 def _installToolbar():
     try:
-        from MyocardialPerfusionSPECTLib import toolbar
+        from MyocardialPerfusionImagingLib import toolbar
         return toolbar.install()
     except Exception:
         logging.exception("MPI: could not install the workflow toolbar")
@@ -58,7 +58,7 @@ def _installToolbar():
 PANEL_MAX_WIDTH = 900   # px, module panel width while the hub is open
 
 
-class MyocardialPerfusionSPECT(ScriptedLoadableModule):
+class MyocardialPerfusionImaging(ScriptedLoadableModule):
     def __init__(self, parent):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "Tarvos - Myocardial Perfusion Imaging"
@@ -109,7 +109,7 @@ class _BannerScaler(qt.QObject):
         self.label.setPixmap(scaled)
 
 
-class MyocardialPerfusionSPECTWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
+class MyocardialPerfusionImagingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     """Overview page plus the panels of the step modules in one stack. The step modules are hidden
     (Slicer's module selector cannot open them), so their widget representations are shown here."""
 
@@ -301,7 +301,7 @@ class MyocardialPerfusionSPECTWidget(ScriptedLoadableModuleWidget, VTKObservatio
         self.refreshTimer.start()
 
     def refresh(self):
-        from MyocardialPerfusionSPECTLib.toolbar import badgeIcon
+        from MyocardialPerfusionImagingLib.toolbar import badgeIcon
         try:
             studies = [s for s in studiesLib.scanStudies() if s.staticNode is not None]
         except Exception:
@@ -325,7 +325,7 @@ class MyocardialPerfusionSPECTWidget(ScriptedLoadableModuleWidget, VTKObservatio
             widgets["button"].enabled = state != session.STATE_LOCKED
 
 
-class MyocardialPerfusionSPECTTest(ScriptedLoadableModuleTest):
+class MyocardialPerfusionImagingTest(ScriptedLoadableModuleTest):
     def setUp(self):
         slicer.mrmlScene.Clear()
 

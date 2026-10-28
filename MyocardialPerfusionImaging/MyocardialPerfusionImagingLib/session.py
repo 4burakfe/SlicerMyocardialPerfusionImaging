@@ -10,12 +10,12 @@ import traceback
 import numpy as np
 import slicer
 
-from MyocardialPerfusionSPECTLib import studies as studiesLib
+from MyocardialPerfusionImagingLib import studies as studiesLib
 
 SESSION_TAG = "MPISession"
 ACTIVE_STUDY_REFERENCE = "MPI.ActiveStudy"
 
-HUB_MODULE = "MyocardialPerfusionSPECT"
+HUB_MODULE = "MyocardialPerfusionImaging"
 HUB_STEP = "hub"
 
 # Workflow steps: hidden modules whose panels the hub shows. (key, module name, title, explanation)

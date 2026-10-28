@@ -4,7 +4,7 @@
     [controls of the step shown: e.g. Max % | color map | FOV | Contours | Sync | Vessels / 17 seg | Scores |
      layouts | next step]
 
-Shown only while the Myocardial Perfusion SPECT hub is the current module. The step buttons show
+Shown only while the Myocardial Perfusion Imaging hub is the current module. The step buttons show
 that step in the hub; their badge shows the step's state (done, available, locked). The case (patient
 name and ID, case.py) is shown next to the logo, in orange when the studies belong to more than one
 patient; a click opens Data roles. The second row
@@ -25,11 +25,11 @@ import traceback
 import qt
 import slicer
 
-from MyocardialPerfusionSPECTLib import session
-from MyocardialPerfusionSPECTLib import studies as studiesLib
-from MyocardialPerfusionSPECTLib import case as caseLib
-from MyocardialPerfusionSPECTLib import dicomexport
-from MyocardialPerfusionSPECTLib.widgets import BUTTON_COLORS
+from MyocardialPerfusionImagingLib import session
+from MyocardialPerfusionImagingLib import studies as studiesLib
+from MyocardialPerfusionImagingLib import case as caseLib
+from MyocardialPerfusionImagingLib import dicomexport
+from MyocardialPerfusionImagingLib.widgets import BUTTON_COLORS
 
 TOOLBAR_OBJECT_NAME = "MPIWorkflowToolbar"
 CONTROLS_OBJECT_NAME = "MPIStepControlsToolbar"
@@ -37,7 +37,7 @@ TOOLBAR_VERSION = 13      # bump when the class changes, so a reload replaces th
 BADGE_SIZE = 22
 CASE_MAX_CHARACTERS = 40   # longer case names are cut in the toolbar (the tooltip has all of it)
 ICON_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "Resources", "Icons",
-                         "MyocardialPerfusionSPECT.png")
+                         "MyocardialPerfusionImaging.png")
 
 STATE_DONE, STATE_AVAILABLE, STATE_LOCKED = session.STATE_DONE, session.STATE_AVAILABLE, session.STATE_LOCKED
 STATE_COLORS = {STATE_DONE: "#2e9e5b", STATE_AVAILABLE: "#2f7ed8", STATE_LOCKED: "#8f969c"}
@@ -322,7 +322,7 @@ class WorkflowToolbar:
     # -- Construction --
     def _build(self):
         tb = self.toolbar
-        # Hub button: logo and name, opens the Myocardial Perfusion SPECT overview
+        # Hub button: logo and name, opens the Myocardial Perfusion Imaging overview
         self.hubButton = qt.QToolButton()
         self.hubButton.setText("Tarvos")
         if os.path.exists(ICON_PATH):
@@ -487,7 +487,7 @@ class WorkflowToolbar:
 
     @staticmethod
     def resetToStart():
-        from MyocardialPerfusionSPECTLib.views import resetOwnLayout
+        from MyocardialPerfusionImagingLib.views import resetOwnLayout
         session.resetToHub()
         resetOwnLayout()
 

@@ -1,9 +1,9 @@
 """
-Myocardial Perfusion SPECT - 3. Myocardium (prototype)
+Myocardial Perfusion Imaging - 3. Myocardium (prototype)
 
 Automatic detection of the left ventricular wall of the active study, in the cardiac frame set in
 Processing: mid-wall, endocardial and epicardial surfaces and the valve plane, by count-profile
-sampling (see MyocardialPerfusionSPECTLib/myocardium.py). The counts are sampled from the SA volume
+sampling (see MyocardialPerfusionImagingLib/myocardium.py). The counts are sampled from the SA volume
 made in Processing, so the ellipsoid mask set there (when on) keeps the liver and gut out. The result is shown as contours on
 SA / HLA / VLA and as a 3D wall, and kept as surface models and a segmentation (myocardium and LV
 cavity) with the cavity and myocardial volumes. Perfusion polar maps and the gated analysis will
@@ -29,16 +29,16 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(globals().get("__file__", "") or "
 if globals().get("__file__") and _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import session  # noqa: E402
-from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.geometry import unit, worldToLocalMatrix, sampleTrilinear  # noqa: E402
-from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
+from MyocardialPerfusionImagingLib import myocardium as wallLib  # noqa: E402
+from MyocardialPerfusionImagingLib import session  # noqa: E402
+from MyocardialPerfusionImagingLib import parameters as parametersLib  # noqa: E402
+from MyocardialPerfusionImagingLib import studies as studiesLib  # noqa: E402
+from MyocardialPerfusionImagingLib.geometry import unit, worldToLocalMatrix, sampleTrilinear  # noqa: E402
+from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     MYOCARDIUM_LAYOUT_ID, DUAL_MYOCARDIUM_LAYOUT_ID, LANE_SUFFIXES, ORIENTATIONS, myocardiumLayoutXml,
     dualMyocardiumLayoutXml, myocardiumViews, registerLayout, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry,
     setViewTitle)
-from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
+from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 LABEL_SPACING_MM = 1.5      # grid of the myocardium / cavity segmentation
 # 3D view, styled as Taranis' segmentation layout: segments as flat wireframes, low opacity (dense meshes)
@@ -62,7 +62,7 @@ SURFACES = {                # key: (name, color, shown by default)
 
 def _installToolbar():
     try:
-        from MyocardialPerfusionSPECTLib import toolbar
+        from MyocardialPerfusionImagingLib import toolbar
         toolbar.install()
     except Exception:
         logging.exception("MPI: could not install the workflow toolbar")
@@ -73,7 +73,7 @@ class MPIMyocardium(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "MPI 3 · Myocardium"
         self.parent.categories = ["Nuclear Medicine.Myocardial Perfusion"]
-        self.parent.hidden = True   # opened from the Myocardial Perfusion SPECT hub and the workflow toolbar
+        self.parent.hidden = True   # opened from the Myocardial Perfusion Imaging hub and the workflow toolbar
         self.parent.dependencies = []
         self.parent.contributors = ["Burak Demir"]
         self.parent.helpText = (
@@ -82,7 +82,7 @@ class MPIMyocardium(ScriptedLoadableModule):
             "The counts are taken from the SA volume made there, masked when the Processing mask is on. "
             "The result is kept as surface models and a segmentation with the LV cavity and myocardial volumes.")
         self.parent.acknowledgementText = ""
-        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
+        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
         if os.path.exists(iconPath):
             self.parent.icon = qt.QIcon(iconPath)
         if not slicer.app.commandOptions().noMainWindow:

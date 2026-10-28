@@ -17,8 +17,8 @@ import numpy as np
 import qt
 import slicer
 
-from MyocardialPerfusionSPECTLib import colortables
-from MyocardialPerfusionSPECTLib.views import ORIENTATIONS, ORIENTATION_TITLES
+from MyocardialPerfusionImagingLib import colortables
+from MyocardialPerfusionImagingLib.views import ORIENTATIONS, ORIENTATION_TITLES
 
 DEFAULT_GRID_ROWS = 2
 DEFAULT_GRID_COLUMNS = 12
@@ -815,7 +815,7 @@ class PolarPanel:
         radius = disk / 2.0
         if image is not None and not image.isNull():
             painter.drawImage(qt.QRect(offset, offset, disk, disk), image)
-            from MyocardialPerfusionSPECTLib import myocardium as wallLib
+            from MyocardialPerfusionImagingLib import myocardium as wallLib
 
             def point(r, degrees):   # angle from anterior (up) toward the septum (left)
                 a = math.radians(degrees)
@@ -1297,62 +1297,62 @@ def _singletonPanel(attribute, tag, panelClass):
 
 
 def mosaicPanel():
-    from MyocardialPerfusionSPECTLib.views import MOSAIC_TAG
+    from MyocardialPerfusionImagingLib.views import MOSAIC_TAG
     return _singletonPanel("_mpiSliceMosaicState", MOSAIC_TAG, SliceMosaicPanel)
 
 
 def gatedMosaicPanel():
     """Slice rows of Gated QC: its own panel, so the Perfusion slice rows keep their state."""
-    from MyocardialPerfusionSPECTLib.views import GATED_MOSAIC_TAG
+    from MyocardialPerfusionImagingLib.views import GATED_MOSAIC_TAG
     return _singletonPanel("_mpiGatedMosaicState", GATED_MOSAIC_TAG, SliceMosaicPanel)
 
 
 def countCurvePanel():
-    from MyocardialPerfusionSPECTLib.views import GATED_CURVE_TAG
+    from MyocardialPerfusionImagingLib.views import GATED_CURVE_TAG
     return _singletonPanel("_mpiCountCurveState", GATED_CURVE_TAG, CountCurvePanel)
 
 
 def gatingInfoPanel():
-    from MyocardialPerfusionSPECTLib.views import GATED_INFO_TAG
+    from MyocardialPerfusionImagingLib.views import GATED_INFO_TAG
     return _singletonPanel("_mpiGatingInfoState", GATED_INFO_TAG, GatingInfoPanel)
 
 
 def gatedReviewMosaicPanel():
     """Cine slice rows of Gated Review (its own panel: Perfusion and Gated QC keep theirs)."""
-    from MyocardialPerfusionSPECTLib.views import GATED_REVIEW_MOSAIC_TAG
+    from MyocardialPerfusionImagingLib.views import GATED_REVIEW_MOSAIC_TAG
     return _singletonPanel("_mpiGatedReviewMosaicState", GATED_REVIEW_MOSAIC_TAG, SliceMosaicPanel)
 
 
 def gatedReviewMosaic2Panel():
     """HLA and VLA rows of the Gated Review layouts with three slices per axis (the SA rows are in
     gatedReviewMosaicPanel, beside the static 3D wall)."""
-    from MyocardialPerfusionSPECTLib.views import GATED_REVIEW_MOSAIC2_TAG
+    from MyocardialPerfusionImagingLib.views import GATED_REVIEW_MOSAIC2_TAG
     return _singletonPanel("_mpiGatedReviewMosaic2State", GATED_REVIEW_MOSAIC2_TAG, SliceMosaicPanel)
 
 
 def volumeCurvePanelState(tag=None):
     """Attribute name of slicer holding the LV volume curve panel of a tag (stress: GATED_VOLUME_TAG)."""
-    from MyocardialPerfusionSPECTLib.views import GATED_VOLUME_TAG
+    from MyocardialPerfusionImagingLib.views import GATED_VOLUME_TAG
     return "_mpiGatedVolumeState" if tag in (None, GATED_VOLUME_TAG) else "_mpiGatedVolumeState_" + tag
 
 
 def volumeCurvePanel(tag=None):
     """LV volume curve of Gated Review: GATED_VOLUME_TAG (stress, the default) or the rest study's tag."""
-    from MyocardialPerfusionSPECTLib.views import GATED_VOLUME_TAG
+    from MyocardialPerfusionImagingLib.views import GATED_VOLUME_TAG
     tag = tag or GATED_VOLUME_TAG
     return _singletonPanel(volumeCurvePanelState(tag), tag, CountCurvePanel)
 
 
 def polarPanelState(tag):
     """Attribute name of slicer holding the panel of a polar map tag (see polarPanel)."""
-    from MyocardialPerfusionSPECTLib.views import POLAR_TAG
+    from MyocardialPerfusionImagingLib.views import POLAR_TAG
     return "_mpiPolarPanelState" if tag == POLAR_TAG else "_mpiPolarPanelState_" + tag
 
 
 def polarPanel(tag=None):
     """Panel of one polar map place of the layouts: POLAR_TAG (stress or single study, the default),
     POLAR_REST_TAG or POLAR_DIFF_TAG."""
-    from MyocardialPerfusionSPECTLib.views import POLAR_TAG
+    from MyocardialPerfusionImagingLib.views import POLAR_TAG
     tag = tag or POLAR_TAG
     return _singletonPanel(polarPanelState(tag), tag, PolarPanel)
 

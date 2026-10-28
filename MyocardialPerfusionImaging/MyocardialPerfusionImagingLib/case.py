@@ -155,7 +155,7 @@ def dicomPatient(node):
 def scanPatients(studies=None):
     """Distinct patients of the studies in the scene (Data roles None left out), see patientGroups.
     Each group also gets "nodes": the IDs of its volumes and sequences."""
-    from MyocardialPerfusionSPECTLib import studies as studiesLib
+    from MyocardialPerfusionImagingLib import studies as studiesLib
     if studies is None:
         studies = studiesLib.scanStudies()
     entries, nodeIds = [], {}
@@ -176,7 +176,7 @@ def scanPatients(studies=None):
 
 def currentCase():
     """(name, ID, source) stored for the scene; source "" when nothing is stored yet."""
-    from MyocardialPerfusionSPECTLib import session
+    from MyocardialPerfusionImagingLib import session
     node = session.sessionNode(create=False)
     if node is None:
         return "", "", ""
@@ -186,7 +186,7 @@ def currentCase():
 
 def setCase(name, patientId, source=SOURCE_MANUAL):
     """Store the case; listeners are told only when something changed."""
-    from MyocardialPerfusionSPECTLib import session
+    from MyocardialPerfusionImagingLib import session
     name, patientId = " ".join(str(name or "").split()), " ".join(str(patientId or "").split())
     if (name, patientId, source) == currentCase():
         return False
@@ -213,7 +213,7 @@ def updateFromDicom(studies=None, force=False):
         if source == SOURCE_DICOM or force:
             setCase("", "", SOURCE_DICOM)
         return groups
-    from MyocardialPerfusionSPECTLib import session
+    from MyocardialPerfusionImagingLib import session
     active = session.activeStudy()
     chosen = next((g for g in groups if active is not None and active.GetID() in g["nodes"]), groups[0])
     setCase(chosen["name"], chosen["id"], SOURCE_DICOM)
@@ -239,4 +239,4 @@ def warnIfMixed(groups):
     import qt
     message = (text + "\n\nCheck that the right studies are used: set the volumes of another patient to None "
                "in Data roles.")
-    qt.QTimer.singleShot(0, lambda: slicer.util.warningDisplay(message, windowTitle="Myocardial Perfusion SPECT"))
+    qt.QTimer.singleShot(0, lambda: slicer.util.warningDisplay(message, windowTitle="Myocardial Perfusion Imaging"))

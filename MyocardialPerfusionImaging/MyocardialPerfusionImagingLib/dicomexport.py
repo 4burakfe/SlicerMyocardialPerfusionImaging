@@ -28,9 +28,9 @@ MANUFACTURER = "Tarvos (3D Slicer)"
 SECONDARY_CAPTURE_STORAGE = "1.2.840.10008.5.1.4.1.1.7"
 SCREEN_SERIES_NUMBER = 951
 SCENE_SERIES_NUMBER = 952
-SETTING_DICOM_FOLDER = "MyocardialPerfusionSPECT/DicomExportFolder"
-SETTING_SCENE_FOLDER = "MyocardialPerfusionSPECT/SceneFolder"
-SETTING_SCREENSHOT_FOLDER = "MyocardialPerfusionSPECT/ScreenshotFolder"
+SETTING_DICOM_FOLDER = "MyocardialPerfusionImaging/DicomExportFolder"
+SETTING_SCENE_FOLDER = "MyocardialPerfusionImaging/SceneFolder"
+SETTING_SCREENSHOT_FOLDER = "MyocardialPerfusionImaging/ScreenshotFolder"
 EXPORT_STUDY_ATTRIBUTE = "MPI.ExportStudyUID"   # study of the exports when no study came from DICOM
 
 # patient / study attributes copied from the reference DICOM file
@@ -211,8 +211,8 @@ def dicomFiles(node):
 def referenceNodes():
     """Volumes / sequences of the exam to file the exports under: the active study first, then the studies of
     the exam (Data roles None left out)."""
-    from MyocardialPerfusionSPECTLib import session
-    from MyocardialPerfusionSPECTLib import studies as studiesLib
+    from MyocardialPerfusionImagingLib import session
+    from MyocardialPerfusionImagingLib import studies as studiesLib
     nodes = [session.activeStudy()]
     try:
         for study in studiesLib.scanStudies():
@@ -252,8 +252,8 @@ def caseTags():
     """Without a DICOM study: the case name and ID as patient, and a study UID kept on the session node (one study
     for every export of the scene)."""
     from pydicom.uid import generate_uid
-    from MyocardialPerfusionSPECTLib import case as caseLib
-    from MyocardialPerfusionSPECTLib import session
+    from MyocardialPerfusionImagingLib import case as caseLib
+    from MyocardialPerfusionImagingLib import session
     name, patientId, _ = caseLib.currentCase()
     tags = {}
     if name:
@@ -283,7 +283,7 @@ def exportTags():
 
 
 def caseLabel():
-    from MyocardialPerfusionSPECTLib import case as caseLib
+    from MyocardialPerfusionImagingLib import case as caseLib
     name, patientId, _ = caseLib.currentCase()
     return safeName(patientId or name)
 
@@ -303,7 +303,7 @@ def addToDatabase(path):
 
 def _monitor2Windows():
     import qt
-    from MyocardialPerfusionSPECTLib import views
+    from MyocardialPerfusionImagingLib import views
     titles = (views.GATED_MONITOR2_TITLE, views.PERFUSION_MONITOR2_TITLE)
     return [w for w in qt.QApplication.topLevelWidgets()
             if w.windowTitle in titles and w.visible and not w.inherits("QMainWindow")]
@@ -353,7 +353,7 @@ def imagePixels(image):
 
 def _layoutName():
     """Name of the step shown, for the series description."""
-    from MyocardialPerfusionSPECTLib import session
+    from MyocardialPerfusionImagingLib import session
     key = session.currentStep()
     return next((title for k, _, title, _ in session.STEPS if k == key), "Overview")
 

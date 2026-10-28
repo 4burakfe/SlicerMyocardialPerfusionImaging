@@ -1,10 +1,10 @@
 """
-Myocardial Perfusion SPECT - 5. Gated QC
+Myocardial Perfusion Imaging - 5. Gated QC
 
 Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before the gated review:
 
   - the myocardium is segmented in every gate frame on the rays of the static wall detected in
-    Myocardium (MyocardialPerfusionSPECTLib/myocardium.py fitGate: tracked from the static wall, or every
+    Myocardium (MyocardialPerfusionImagingLib/myocardium.py fitGate: tracked from the static wall, or every
     frame from scratch; a surface fit, B-spline, deformable mesh or the legacy jump-limited path, runs
     through the rays whose wall the frame shows and draws the others; every frame's thickness from its
     own profile widths, a blurred slab leaning to a prior where the blur hides it, fitted the same way; or,
@@ -43,19 +43,19 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(globals().get("__file__", "") or "
 if globals().get("__file__") and _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from MyocardialPerfusionSPECTLib import session  # noqa: E402
-from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import gating as gatingLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.geometry import ellipsoidInsideGrid, sampleTrilinear, unit, worldToLocalMatrix  # noqa: E402
-from MyocardialPerfusionSPECTLib.resampling import DEFAULT_INTERPOLATION, reslice, zoomInPlane  # noqa: E402
-from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
+from MyocardialPerfusionImagingLib import session  # noqa: E402
+from MyocardialPerfusionImagingLib import parameters as parametersLib  # noqa: E402
+from MyocardialPerfusionImagingLib import studies as studiesLib  # noqa: E402
+from MyocardialPerfusionImagingLib import myocardium as wallLib  # noqa: E402
+from MyocardialPerfusionImagingLib import gating as gatingLib  # noqa: E402
+from MyocardialPerfusionImagingLib.geometry import ellipsoidInsideGrid, sampleTrilinear, unit, worldToLocalMatrix  # noqa: E402
+from MyocardialPerfusionImagingLib.resampling import DEFAULT_INTERPOLATION, reslice, zoomInPlane  # noqa: E402
+from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     GATED_QC_LAYOUT_ID, ORIENTATIONS, ORIENTATION_TITLES, gatedQcLayoutXml, registerLayout)
-from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
+from MyocardialPerfusionImagingLib.display import (  # noqa: E402
     COLORMAPS, colorTableArray, colorize, rgbToQImage, gatedMosaicPanel, countCurvePanel, gatingInfoPanel,
     existingPanel, tilePixelsToIjk, BoundedCache, packMask, unpackMask, FRAME_SCALES)
-from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
+from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
 SLOT_TITLES = {STRESS: "STUDY 1 GATED", REST: "STUDY 2 GATED"}   # layout buttons without a study role
@@ -70,7 +70,7 @@ MOSAIC_STATE, CURVE_STATE, INFO_STATE = "_mpiGatedMosaicState", "_mpiCountCurveS
 
 def _installToolbar():
     try:
-        from MyocardialPerfusionSPECTLib import toolbar
+        from MyocardialPerfusionImagingLib import toolbar
         toolbar.install()
     except Exception:
         logging.exception("MPI: could not install the workflow toolbar")
@@ -81,7 +81,7 @@ class MPIGatedQC(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "MPI 5 · Gated QC"
         self.parent.categories = ["Nuclear Medicine.Myocardial Perfusion"]
-        self.parent.hidden = True   # opened from the Myocardial Perfusion SPECT hub and the workflow toolbar
+        self.parent.hidden = True   # opened from the Myocardial Perfusion Imaging hub and the workflow toolbar
         self.parent.dependencies = []
         self.parent.contributors = ["Burak Demir"]
         self.parent.helpText = (
@@ -89,7 +89,7 @@ class MPIGatedQC(ScriptedLoadableModule):
             "SA / HLA / VLA rows (one tile per frame, all at the same slice; mouse wheel over a row scrolls), "
             "the counts of every frame and the ECG gating information (R-R window, accepted and rejected beats).")
         self.parent.acknowledgementText = ""
-        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
+        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
         if os.path.exists(iconPath):
             self.parent.icon = qt.QIcon(iconPath)
         if not slicer.app.commandOptions().noMainWindow:
@@ -176,7 +176,7 @@ def resliceLike(array, arrayToIjk, referenceNode, mask=None, center=None):
     section[:3, 3] = m[:3, 3] - (sections - 1) / (2.0 * sections) * kColumn
     axes = vtk.vtkMatrix4x4()
     axes.DeepCopy((arrayToIjk @ section).ravel().tolist())
-    from MyocardialPerfusionSPECTLib.resampling import arrayToImageData
+    from MyocardialPerfusionImagingLib.resampling import arrayToImageData
     interpolation = referenceNode.GetAttribute("MPI.Interpolation") or DEFAULT_INTERPOLATION
     values = reslice(arrayToImageData(array), axes, (dims[0], dims[1], dims[2] * sections), interpolation)
     if mask is not None and center is not None:

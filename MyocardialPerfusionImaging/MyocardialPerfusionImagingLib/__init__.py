@@ -1,4 +1,4 @@
-"""Helper package of the Myocardial Perfusion SPECT hub (MyocardialPerfusionSPECT) and its hidden
+"""Helper package of the Myocardial Perfusion Imaging hub (MyocardialPerfusionImaging) and its hidden
 step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC, MPIGated).
 
     geometry    vectors, matrices and ellipsoid masks of the cardiac frame (numpy/VTK only)
@@ -18,6 +18,9 @@ step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC,
 
 import logging
 import traceback
+
+SETTINGS_ROOT = "MyocardialPerfusionImaging"
+LEGACY_SETTINGS_ROOT = "MyocardialPerfusionSPECT"   # name of the extension before the rename
 
 SUBMODULES = ("geometry", "myocardium", "gating", "resampling", "views", "colortables", "display", "studies", "session", "case", "widgets", "dicomexport", "toolbar", "parameters")  # dependency order
 
@@ -40,4 +43,29 @@ def reloadInDeveloperMode():
             else:
                 importlib.import_module(fullName)
     except Exception:
-        logging.warning("Could not reload MyocardialPerfusionSPECTLib:\n" + traceback.format_exc())
+        logging.warning("Could not reload MyocardialPerfusionImagingLib:\n" + traceback.format_exc())
+
+
+def migrateLegacySettings():
+    """Move the settings saved under the old extension name (MyocardialPerfusionSPECT/...: saved parameters
+    and remembered folders) to the new name, without overwriting a value already saved under the new name."""
+    try:
+        import slicer
+        settings = slicer.app.userSettings()
+        settings.beginGroup(LEGACY_SETTINGS_ROOT)
+        keys = settings.allKeys()
+        settings.endGroup()
+        if not keys:
+            return
+        for key in keys:
+            newKey = f"{SETTINGS_ROOT}/{key}"
+            if not settings.contains(newKey):
+                settings.setValue(newKey, settings.value(f"{LEGACY_SETTINGS_ROOT}/{key}"))
+        settings.remove(LEGACY_SETTINGS_ROOT)
+        settings.sync()
+        logging.info(f"Moved {len(keys)} settings from {LEGACY_SETTINGS_ROOT}/ to {SETTINGS_ROOT}/")
+    except Exception:
+        logging.warning("Could not move the old MyocardialPerfusionSPECT settings:\n" + traceback.format_exc())
+
+
+migrateLegacySettings()

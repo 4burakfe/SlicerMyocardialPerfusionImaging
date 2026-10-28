@@ -63,7 +63,7 @@ Requirements: 3D Slicer 5.x. Nothing else needs installing; the extension uses t
 with Slicer.
 
 - **From source, without building:** download or clone this repository, add its inner
-  `MyocardialPerfusionSPECT` folder in *Edit > Application Settings > Modules > Additional module
+  `MyocardialPerfusionImaging` folder in *Edit > Application Settings > Modules > Additional module
   paths*, and restart Slicer.
 - **Built as an extension:** the top-level `CMakeLists.txt` is a standard Slicer extension.
 
@@ -471,12 +471,14 @@ frames again). Parameters marked in their tooltip need a Slicer restart.
 
 - **Save parameters** keeps the step's own controls (color maps, windows, grid, smoothing, thickness
   model, ...) and its advanced parameters as the starting values from then on, also after restarting
-  Slicer. The values go to the Slicer settings under `MyocardialPerfusionSPECT/Parameters/<step>`.
+  Slicer. The values go to the Slicer settings under `MyocardialPerfusionImaging/Parameters/<step>`.
+  Values saved by versions before the rename (under `MyocardialPerfusionSPECT/...`, also the remembered
+  export folders) are moved there the first time the extension loads.
 - **Restore defaults** sets them back to the built-in values and forgets the saved ones. Saved values
   win over new built-in defaults after an update, so press it once to pick those up.
 
 Saved analysis parameters are applied as soon as the extension loads, so a step uses them even before
-its panel is opened. The registry of all parameters is `MyocardialPerfusionSPECTLib/parameters.py`.
+its panel is opened. The registry of all parameters is `MyocardialPerfusionImagingLib/parameters.py`.
 
 ## Saved scenes
 
@@ -493,16 +495,16 @@ extension's layouts is shown, Slicer's Four-Up layout.
 
 ```
 CMakeLists.txt                       extension
-MyocardialPerfusionSPECT/
+MyocardialPerfusionImaging/
   CMakeLists.txt                     hub and step modules
-  MyocardialPerfusionSPECT.py        hub (the only listed module)
+  MyocardialPerfusionImaging.py      hub (the only listed module)
   MPIDataRoles.py                    1. Data roles (hidden)
   MPIProcessing.py                   2. Processing: reorientation logic, widget and tests (hidden)
   MPIMyocardium.py                   3. Myocardium: automatic LV wall detection (hidden)
   MPIReview.py                       4. Perfusion (hidden)
   MPIGatedQC.py                      5. Gated QC: per-frame segmentation, counts, gating checks (hidden)
   MPIGated.py                        6. Gated Review (hidden)
-  MyocardialPerfusionSPECTLib/
+  MyocardialPerfusionImagingLib/
     geometry.py                      cardiac frame vectors, matrices, ellipsoid masks
     myocardium.py                    LV wall fitting (rays, mid-wall, thickness, valve plane; per gate frame), no Slicer imports
     gating.py                        ECG gating information and per-frame count checks, no Slicer imports

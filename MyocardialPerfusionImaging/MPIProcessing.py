@@ -1,7 +1,7 @@
 """
-Myocardial Perfusion SPECT - 2. Processing: reorientation to the cardiac axes
+Myocardial Perfusion Imaging - 2. Processing: reorientation to the cardiac axes
 
-Hidden step module of the Myocardial Perfusion SPECT hub (MyocardialPerfusionSPECT.py):
+Hidden step module of the Myocardial Perfusion Imaging hub (MyocardialPerfusionImaging.py):
 1. Data roles (MPIDataRoles.py) sets the study roles and the active study, 2. Processing (this file)
 reorients it, 3. Myocardium (MPIMyocardium.py) detects the LV wall, 4. Perfusion (MPIReview.py) shows
 the slices, 5. Gated QC (MPIGatedQC.py) checks the gate frames and 6. Gated Review (MPIGated.py) the gated study. The steps are opened from the hub and from
@@ -36,9 +36,9 @@ Display follows the ASNC/SNMMI standard orientation.
 
 Resampling uses Lanczos windowed sinc interpolation by default (cubic B-spline and linear are offered):
 on coarse SPECT voxels linear interpolation leaves faceted, blocky slices. See
-MyocardialPerfusionSPECTLib/resampling.py for the reasoning.
+MyocardialPerfusionImagingLib/resampling.py for the reasoning.
 
-The helpers shared by the hub and the steps are in the MyocardialPerfusionSPECTLib package
+The helpers shared by the hub and the steps are in the MyocardialPerfusionImagingLib package
 (see its __init__.py).
 """
 
@@ -68,23 +68,23 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(globals().get("__file__", "") or "
 if globals().get("__file__") and _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-import MyocardialPerfusionSPECTLib  # noqa: E402
-MyocardialPerfusionSPECTLib.reloadInDeveloperMode()
+import MyocardialPerfusionImagingLib  # noqa: E402
+MyocardialPerfusionImagingLib.reloadInDeveloperMode()
 
-from MyocardialPerfusionSPECTLib.geometry import (  # noqa: E402
+from MyocardialPerfusionImagingLib.geometry import (  # noqa: E402
     SUPERIOR, unit, worldToLocalMatrix, ellipsoidInsideGrid, ijkToRasMatrix, sampleTrilinear)
-from MyocardialPerfusionSPECTLib.resampling import (  # noqa: E402
+from MyocardialPerfusionImagingLib.resampling import (  # noqa: E402
     INTERPOLATION_MODES, INTERPOLATION_LABELS, DEFAULT_INTERPOLATION, reslice, zoomInPlane)
-from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
+from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     REORIENT_LAYOUT_ID, DUAL_REORIENT_LAYOUT_ID, EDIT_ORDER, ORIENTATIONS, MIP_KINDS, LANE_SUFFIXES,
     laneViews, reorientLayoutXml, dualReorientLayoutXml,
     registerLayout, notSaved, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry)
-from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
+from MyocardialPerfusionImagingLib.display import (  # noqa: E402
     COLORMAPS, setVolumeDisplay, mosaicPanel)
-from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import session  # noqa: E402
-from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
+from MyocardialPerfusionImagingLib import studies as studiesLib  # noqa: E402
+from MyocardialPerfusionImagingLib import session  # noqa: E402
+from MyocardialPerfusionImagingLib import parameters as parametersLib  # noqa: E402
+from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 DEFAULT_PIXEL_SIZE_MM = 2.0       # in-plane
 DEFAULT_SLICE_THICKNESS_MM = 5.0
@@ -127,7 +127,7 @@ class MPIProcessing(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "MPI 2 \u00b7 Processing"
         self.parent.categories = ["Nuclear Medicine.Myocardial Perfusion"]
-        self.parent.hidden = True   # opened from the Myocardial Perfusion SPECT hub and the workflow toolbar
+        self.parent.hidden = True   # opened from the Myocardial Perfusion Imaging hub and the workflow toolbar
         self.parent.dependencies = []
         self.parent.contributors = ["Burak Demir"]
         self.parent.helpText = (
@@ -142,7 +142,7 @@ class MPIProcessing(ScriptedLoadableModule):
             "Press <b>Create SA / HLA / VLA volumes</b> to resample; the slices open in Perfusion."
         )
         self.parent.acknowledgementText = ""
-        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
+        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
         if os.path.exists(iconPath):
             self.parent.icon = qt.QIcon(iconPath)
         if not slicer.app.commandOptions().noMainWindow:
@@ -151,7 +151,7 @@ class MPIProcessing(ScriptedLoadableModule):
 
 def _installToolbar():
     try:
-        from MyocardialPerfusionSPECTLib import toolbar
+        from MyocardialPerfusionImagingLib import toolbar
         toolbar.install()
     except Exception:
         logging.exception("MPI: could not install the workflow toolbar")

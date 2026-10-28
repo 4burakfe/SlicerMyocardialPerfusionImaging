@@ -52,7 +52,7 @@ class StudyPairSelector:
 
     def __init__(self, parentLayout):
         import qt
-        from MyocardialPerfusionSPECTLib import session
+        from MyocardialPerfusionImagingLib import session
         self.session = session
         self._filling = False
         self._ids = []
@@ -92,7 +92,7 @@ class StudyPairSelector:
             pair = self.session.stressRestStudies()
         except Exception:
             return
-        from MyocardialPerfusionSPECTLib import studies as studiesLib
+        from MyocardialPerfusionImagingLib import studies as studiesLib
         self._filling = True
         try:
             self._ids = [""] + [n.GetID() for n in candidates]

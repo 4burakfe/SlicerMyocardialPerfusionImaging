@@ -1,14 +1,14 @@
 cmake_minimum_required(VERSION 3.16.3...3.19.7 FATAL_ERROR)
 
-project(MyocardialPerfusionSPECT)
+project(MyocardialPerfusionImaging)
 
 #-----------------------------------------------------------------------------
 # Extension meta-information
-set(EXTENSION_HOMEPAGE "https://github.com/4burakfe/SlicerMyocardialPerfusionSPECT")
+set(EXTENSION_HOMEPAGE "https://github.com/4burakfe/SlicerMyocardialPerfusionImaging")
 set(EXTENSION_CATEGORY "Nuclear Medicine")
 set(EXTENSION_CONTRIBUTORS "Burak Demir")
 set(EXTENSION_DESCRIPTION "Tarvos: myocardial perfusion SPECT and PET workflow. Study roles and case from DICOM, reorientation to the cardiac axes (SA, HLA, VLA), automatic LV wall detection, stress / rest slices, polar maps, 3D views and TID, gated QC and gated review with thickening and motion maps, LV volumes and EF. Works with volumes reconstructed by the DICOMSpectRecon extension.")
-set(EXTENSION_ICONURL "https://raw.githubusercontent.com/4burakfe/SlicerMyocardialPerfusionSPECT/main/MyocardialPerfusionSPECT/Resources/Icons/MyocardialPerfusionSPECT.png")
+set(EXTENSION_ICONURL "https://raw.githubusercontent.com/4burakfe/SlicerMyocardialPerfusionImaging/main/MyocardialPerfusionImaging/Resources/Icons/MyocardialPerfusionImaging.png")
 set(EXTENSION_SCREENSHOTURLS "")
 set(EXTENSION_DEPENDS "NA") # Specified as a list or "NA" if no dependencies
 
@@ -19,7 +19,7 @@ include(${Slicer_USE_FILE})
 
 #-----------------------------------------------------------------------------
 # Extension modules
-add_subdirectory(MyocardialPerfusionSPECT)
+add_subdirectory(MyocardialPerfusionImaging)
 
 #-----------------------------------------------------------------------------
 include(${Slicer_EXTENSION_GENERATE_CONFIG})

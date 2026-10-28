@@ -1,5 +1,5 @@
 """
-Myocardial Perfusion SPECT - 1. Data roles
+Myocardial Perfusion Imaging - 1. Data roles
 
 Lists the SPECT studies in the scene: each static (or summed-gate) volume with its role (stress,
 rest, redistribution, viability, other) and the gated sequence that goes with it. Roles are guessed
@@ -7,8 +7,8 @@ from the names and confirmed here; they are stored on the nodes (MPI.StudyRole, 
 and saved with the scene. The selected row is the active study of all MPI modules.
 The case (patient name and ID) is read from the DICOM headers of the studies, can be typed instead,
 and is shown in the workflow toolbar; studies of more than one patient are warned about
-(MyocardialPerfusionSPECTLib/case.py).
-See MyocardialPerfusionSPECTLib/studies.py for how gated sequences are recognised and paired (gated PET
+(MyocardialPerfusionImagingLib/case.py).
+See MyocardialPerfusionImagingLib/studies.py for how gated sequences are recognised and paired (gated PET
 loaded as a MultiVolume included). A gated study without a static image (e.g. gated PET only) is offered
 to be summed into one, once per sequence (MPI.SumOffered on it).
 """
@@ -30,13 +30,13 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(globals().get("__file__", "") or "
 if globals().get("__file__") and _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-import MyocardialPerfusionSPECTLib  # noqa: E402
-MyocardialPerfusionSPECTLib.reloadInDeveloperMode()
-from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import session  # noqa: E402
-from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import case as caseLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.widgets import narrowLabel, styleButton  # noqa: E402
+import MyocardialPerfusionImagingLib  # noqa: E402
+MyocardialPerfusionImagingLib.reloadInDeveloperMode()
+from MyocardialPerfusionImagingLib import studies as studiesLib  # noqa: E402
+from MyocardialPerfusionImagingLib import session  # noqa: E402
+from MyocardialPerfusionImagingLib import parameters as parametersLib  # noqa: E402
+from MyocardialPerfusionImagingLib import case as caseLib  # noqa: E402
+from MyocardialPerfusionImagingLib.widgets import narrowLabel, styleButton  # noqa: E402
 
 SUM_OFFERED_ATTRIBUTE = "MPI.SumOffered"   # on a gated sequence: the user was asked to sum it into a static image
 STUDIES_TABLE_HEIGHT = 250   # px, fixed height of the studies table
@@ -44,7 +44,7 @@ STUDIES_TABLE_HEIGHT = 250   # px, fixed height of the studies table
 
 def _installToolbar():
     try:
-        from MyocardialPerfusionSPECTLib import toolbar
+        from MyocardialPerfusionImagingLib import toolbar
         toolbar.install()
     except Exception:
         logging.exception("MPI: could not install the workflow toolbar")
@@ -55,7 +55,7 @@ class MPIDataRoles(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "MPI 1 \u00b7 Data roles"
         self.parent.categories = ["Nuclear Medicine.Myocardial Perfusion"]
-        self.parent.hidden = True   # opened from the Myocardial Perfusion SPECT hub and the workflow toolbar
+        self.parent.hidden = True   # opened from the Myocardial Perfusion Imaging hub and the workflow toolbar
         self.parent.dependencies = []
         self.parent.contributors = ["Burak Demir"]
         self.parent.helpText = (
@@ -64,7 +64,7 @@ class MPIDataRoles(ScriptedLoadableModule):
             "None leaves a volume out of the analysis. Study 1 / Study 2 are picked from the roles and can be "
             "changed in every step.")
         self.parent.acknowledgementText = ""
-        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
+        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
         if os.path.exists(iconPath):
             self.parent.icon = qt.QIcon(iconPath)
         if not slicer.app.commandOptions().noMainWindow:

@@ -1,5 +1,5 @@
 """
-Myocardial Perfusion SPECT - 6. Gated Review
+Myocardial Perfusion Imaging - 6. Gated Review
 
 STRESS GATED layout of Study 1 (stress), REST GATED the same of Study 2 (rest):
   left           SA / HLA / VLA rows of the gate frames as in Perfusion (same grid, slices, colors and
@@ -42,20 +42,20 @@ _MODULE_DIR = os.path.dirname(os.path.abspath(globals().get("__file__", "") or "
 if globals().get("__file__") and _MODULE_DIR not in sys.path:
     sys.path.insert(0, _MODULE_DIR)
 
-from MyocardialPerfusionSPECTLib import session  # noqa: E402
-from MyocardialPerfusionSPECTLib import parameters as parametersLib  # noqa: E402
-from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
-from MyocardialPerfusionSPECTLib.resampling import DEFAULT_INTERPOLATION, zoomInPlane  # noqa: E402
-from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
+from MyocardialPerfusionImagingLib import session  # noqa: E402
+from MyocardialPerfusionImagingLib import parameters as parametersLib  # noqa: E402
+from MyocardialPerfusionImagingLib import myocardium as wallLib  # noqa: E402
+from MyocardialPerfusionImagingLib.resampling import DEFAULT_INTERPOLATION, zoomInPlane  # noqa: E402
+from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     GATED_LAYOUT_IDS, ORIENTATIONS, ORIENTATION_TITLES, gatedLayoutXml, gatedPlotKinds, gatedTags,
     placeMonitor2Window, registerLayout, threeDWidgetByTag, CameraLink, secondaryScreen, notSaved)
-from MyocardialPerfusionSPECTLib.geometry import worldToLocalMatrix  # noqa: E402
-from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
+from MyocardialPerfusionImagingLib.geometry import worldToLocalMatrix  # noqa: E402
+from MyocardialPerfusionImagingLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
     rgbToQImage, gatedReviewMosaicPanel, gatedReviewMosaic2Panel, volumeCurvePanel, volumeCurvePanelState, polarPanel, polarPanelState,
     existingPanel, DEFAULT_FOV_CM, REFIT_DELAY_MS, lastFirstSlice, fovCrop, cropStack, bestGrid, signedMotionTable,
     FRAME_SCALES)
-from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
+from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
 # key: (button text, studies, layout kind, tooltip); kinds as in views.gatedLayoutXml
@@ -225,7 +225,7 @@ class GhostLayer:
 
 def _installToolbar():
     try:
-        from MyocardialPerfusionSPECTLib import toolbar
+        from MyocardialPerfusionImagingLib import toolbar
         toolbar.install()
     except Exception:
         logging.exception("MPI: could not install the workflow toolbar")
@@ -253,7 +253,7 @@ class MPIGated(ScriptedLoadableModule):
         ScriptedLoadableModule.__init__(self, parent)
         self.parent.title = "MPI 6 · Gated Review"
         self.parent.categories = ["Nuclear Medicine.Myocardial Perfusion"]
-        self.parent.hidden = True   # opened from the Myocardial Perfusion SPECT hub and the workflow toolbar
+        self.parent.hidden = True   # opened from the Myocardial Perfusion Imaging hub and the workflow toolbar
         self.parent.dependencies = []
         self.parent.contributors = ["Burak Demir"]
         self.parent.helpText = (
@@ -262,7 +262,7 @@ class MPIGated(ScriptedLoadableModule):
             "(EDV, ESV, EF) and the beating 3D wall coloured by the perfusion. The frames are segmented in "
             "Gated QC. " + READING_NOTE)
         self.parent.acknowledgementText = ""
-        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionSPECT.png")
+        iconPath = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
         if os.path.exists(iconPath):
             self.parent.icon = qt.QIcon(iconPath)
         if not slicer.app.commandOptions().noMainWindow:
