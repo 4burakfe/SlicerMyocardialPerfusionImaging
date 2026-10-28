@@ -58,7 +58,7 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
-SLOT_TITLES = {STRESS: "STUDY 1 (STRESS) GATED", REST: "STUDY 2 (REST) GATED"}
+SLOT_TITLES = {STRESS: "STUDY 1 GATED", REST: "STUDY 2 GATED"}   # layout buttons without a study role
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}
 CONTOUR_MAX_SIZE = 160
 TILE_CACHE_BYTES = 96 * 1024 * 1024      # frame tiles kept for scrolling back (oldest dropped first)
@@ -514,8 +514,10 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         bar.mirrorCombo(self.colormapCombo, toolTip="Color map of the frames")
         bar.mirror(self.contoursButton, "Contours")
         bar.separator()
+        self.tbStudyButtons = {}
         for slot, button in self.layoutButtons.items():
-            bar.mirror(button, SLOT_TITLES[slot], f"Gated frames of the {SLOT_TITLES[slot].lower()} study")
+            self.tbStudyButtons[slot] = bar.mirror(button, button.text,
+                                                   f"Gated frames of {session.SLOT_FALLBACK_TITLES[slot]}")
         bar.separator()
         bar.mirror(self.nextButton, "Gated Review ›", kind="primary")
         if not getattr(self, "_toolbarFollows", False):   # the toolbar follows this panel's controls
@@ -615,9 +617,28 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if not lines:
             lines = ["No study selected. Pick Study 1 / Study 2 above or set the roles in Data roles."]
         self.studyLabel.text = "<br>".join(lines)
+        for slot, button in self.layoutButtons.items():
+            button.text = self.buttonText(slot)
+            mirror = getattr(self, "tbStudyButtons", {}).get(slot)
+            if mirror is not None:
+                try:
+                    mirror.setText(button.text)
+                except Exception:
+                    pass   # the toolbar was rebuilt
         if self.slot in self.layoutButtons:
             self.layoutButtons[self.slot].checked = True
         self.syncToolbar()
+
+    @staticmethod
+    def slotTitle(slot):
+        """Label of Study 1 / Study 2: its role in Data roles ("STRESS", "VIABILITY")."""
+        return session.slotTitles()[slot].upper()
+
+    def buttonText(self, slot):
+        """Layout button of a study: "STUDY 1 (STRESS) GATED" with the role set in Data roles."""
+        if session.stressRestStudies()[slot] is None:
+            return SLOT_TITLES[slot]
+        return f"{session.SLOT_FALLBACK_TITLES[slot].upper()} ({self.slotTitle(slot)}) GATED"
 
     def segmentation(self):
         return (self.segmentationCombo.itemData(self.segmentationCombo.currentIndex)
@@ -690,7 +711,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             panel.onScroll = self.onScroll
             panel.onResized = self.resizeTimer.start
             panel.gridRows, panel.gridColumns = 1, max(1, len(data.labels))
-            panel.setRowKeys([(name, ORIENTATION_TITLES[name]) for name in ORIENTATIONS])
+            panel.setRowKeys([(name, self.rowTitle(slot, name)) for name in ORIENTATIONS])
             countCurvePanel()
             gatingInfoPanel()
             registerLayout(GATED_QC_LAYOUT_ID, gatedQcLayoutXml())
@@ -725,6 +746,12 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.contourCache.clear()
         self.refresh()
 
+    def rowTitle(self, slot, name):
+        """Role, volume name and orientation of a frame row: "STRESS: Stress OSEM AC  ·  Short axis (...)"."""
+        study = self.studyOf(slot)
+        return self.slotTitle(slot) + (f": {study.GetName()}" if study is not None else "") + \
+            f"  ·  {ORIENTATION_TITLES[name]}"
+
     def refresh(self):
         data = self.current()
         panel = existingPanel(MOSAIC_STATE)
@@ -741,7 +768,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             for index, label in enumerate(data.labels):
                 image = self.tile(data, name, index, k, size, windows[index], colorTable, panel.pixelRatio()) if size else None
                 tiles.append((image, label))
-            panel.setRow(name, tiles, f"{ORIENTATION_TITLES[name]}   —   slice {k + 1} of {count}, all frames")
+            panel.setRow(name, tiles, f"{self.rowTitle(self.slot, name)}   —   slice {k + 1} of {count}, all frames")
         panel.setLegend(colorTable, self.windowRange.minimumValue, self.windowRange.maximumValue)
 
     def tile(self, data, name, index, k, size, window, colorTable, ratio):

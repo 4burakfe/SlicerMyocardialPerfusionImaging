@@ -53,11 +53,11 @@ from MyocardialPerfusionSPECTLib import myocardium as wallLib  # noqa: E402
 
 
 STRESS, REST, DIFF = "stress", "rest", "diff"
-SLOT_TITLES = {STRESS: "STRESS", REST: "REST"}
-LAYOUT_XML = {RESULT_LAYOUT_ID: resultLayoutXml, SLICES_LAYOUT_ID: slicesLayoutXml,
-              DUAL_RESULT_LAYOUT_ID: dualResultLayoutXml, POLAR_LAYOUT_ID: polarLayoutXml,
-              PERF_DUAL_LAYOUT_ID: lambda: perfusionDualMonitorLayoutXml(False),
-              DUAL_PERF_DUAL_LAYOUT_ID: lambda: perfusionDualMonitorLayoutXml(True)}
+# layout ID -> XML, given the (Study 1, Study 2) labels of the 3D views
+LAYOUT_XML = {RESULT_LAYOUT_ID: lambda titles: resultLayoutXml(), SLICES_LAYOUT_ID: lambda titles: slicesLayoutXml(),
+              DUAL_RESULT_LAYOUT_ID: dualResultLayoutXml, POLAR_LAYOUT_ID: lambda titles: polarLayoutXml(),
+              PERF_DUAL_LAYOUT_ID: lambda titles: perfusionDualMonitorLayoutXml(False),
+              DUAL_PERF_DUAL_LAYOUT_ID: lambda titles: perfusionDualMonitorLayoutXml(True, titles=titles)}
 DUAL_MONITOR_LAYOUT_IDS = (PERF_DUAL_LAYOUT_ID, DUAL_PERF_DUAL_LAYOUT_ID)
 MONITOR2_PLACE_DELAY_MS = 300   # the second window is placed after the layout manager made its views
 # key: (button text, layout ID, studies of the slice rows, {polar map tag: study or DIFF}, {3D view tag: study}, tooltip)
@@ -154,6 +154,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         ScriptedLoadableModuleWidget.__init__(self, parent)
         VTKObservationMixin.__init__(self)
         self.studies = {STRESS: None, REST: None}   # static volume of each study shown
+        self.slotLabels = []   # (QLabel, slot, template) of the panel labels naming a study by its role
         self.outputs = {STRESS: {}, REST: {}}       # its reoriented volumes {orientation: node}
         self.mode = "stressPerf"
         self.chosenMode = None      # (layout the user picked, studies ready then): kept while those do not change
@@ -190,7 +191,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.windowRanges[slot] = self._windowWidget(
                 f"Color window (min - max) of the {slot} slices as a percentage of its myocardial (ROI) "
                 "maximum: counts below the minimum get the lowest color, counts above the maximum the highest")
-            form.addRow(f"{slot.capitalize()} window:", self.windowRanges[slot])
+            form.addRow(self._slotLabel(slot, "{title} window:"), self.windowRanges[slot])
 
         gridRow = qt.QHBoxLayout()
         self.gridRowsSpin = qt.QSpinBox()
@@ -253,7 +254,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.polarWindowRanges[slot] = self._windowWidget(
                 f"Color window (min - max) of the {slot} polar map and 3D uptake view, as a percentage of the "
                 "polar map maximum")
-            polarForm.addRow(f"{slot.capitalize()}:", self.polarWindowRanges[slot])
+            polarForm.addRow(self._slotLabel(slot, "{title}:"), self.polarWindowRanges[slot])
         self.diffWindowRange = self._windowWidget(
             "Color window of the difference map (rest - stress, each in % of its own maximum): positive "
             "values are lower uptake at stress (ischemia)", *DIFF_WINDOW)
@@ -291,7 +292,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 spin.toolTip = (f"First slice of the {slot} {ORIENTATION_TITLES[name]} row (mouse wheel over the "
                                 "row also scrolls)")
                 self.firstSliceSpins[(slot, name)] = spin
-                navigationForm.addRow(f"First {slot} {name} slice:", spin)
+                navigationForm.addRow(self._slotLabel(slot, "First {lower} " + name + " slice:"), spin)
 
         self.backButton = qt.QPushButton("Back to reorientation")
         self.layout.addWidget(self.backButton)
@@ -368,6 +369,27 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         session.addListener(self.onSessionChanged)
         _installToolbar()
         self.loadOutputs()
+
+    def _slotLabel(self, slot, template):
+        """Form label naming Study 1 / Study 2 by its role ({title} / {lower} in the template), kept up to date
+        by updateState."""
+        label = qt.QLabel()
+        self.slotLabels.append((label, slot, template))
+        return label
+
+    def slotTitle(self, slot):
+        """Label of Study 1 / Study 2 in the views and plots: its role in Data roles ("STRESS", "VIABILITY")."""
+        return session.slotTitles(self.studies)[slot].upper()
+
+    def modeText(self, key):
+        """Layout button text with the roles of the studies ("STRESS-REST PERF", "REST-VIABILITY PERF")."""
+        text = MODES[key][0]
+        first, second = self.slotTitle(STRESS), self.slotTitle(REST)
+        for prefix, label in (("STRESS-REST ", f"{first}-{second} "), ("STRESS REST ", f"{first} {second} "),
+                              ("STRESS ", f"{first} "), ("REST ", f"{second} ")):
+            if text.startswith(prefix):
+                return label + text[len(prefix):]
+        return text
 
     @staticmethod
     def _windowWidget(toolTip, minimum=0.0, maximum=150.0, low=0.0, high=100.0):
@@ -617,6 +639,11 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self.firstSliceSpins[(slot, name)].enabled = self.ready(slot) and not (slot == REST and self.synced())
         for key, button in self.layoutButtons.items():
             button.enabled = self.modeAvailable(key)
+            button.text = self.modeText(key)
+        titles = session.slotTitles(self.studies)
+        for label, slot, template in self.slotLabels:
+            label.text = template.format(title=titles[slot], lower=titles[slot].lower())
+        self.syncButton.text = f"Sync {titles[STRESS].lower()} and {titles[REST].lower()}"
         self.syncToolbar()
 
     # --- slice panel ----------------------------------------------------------
@@ -688,8 +715,14 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def rowKeys(self, mode=None):
         slots = self.rowSlots(mode)
-        return [(f"{slot}:{name}", f"{SLOT_TITLES[slot]}  ·  {ORIENTATION_TITLES[name]}")
+        return [(f"{slot}:{name}", self.rowTitle(slot, name))
                 for name in ORIENTATIONS for slot in slots]
+
+    def rowTitle(self, slot, name):
+        """Role, volume name and orientation of a slice row: "STRESS: Stress OSEM AC  ·  Short axis (...)"."""
+        study = self.studies.get(slot)
+        return self.slotTitle(slot) + (f": {study.GetName()}" if study is not None else "") + \
+            f"  ·  {ORIENTATION_TITLES[name]}"
 
     def setMode(self, mode):
         self.mode = mode
@@ -726,7 +759,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             polar = polarPanel(tag)
             polar.onResized = self.mosaicResizeTimer.start
             polar.overlay, polar.showScores = self.overlay(), self.scoresButton.checked
-        registerLayout(layoutId, LAYOUT_XML[layoutId]())
+        titles = session.slotTitles(self.studies)
+        registerLayout(layoutId, LAYOUT_XML[layoutId]((titles[STRESS], titles[REST])))
         slicer.app.layoutManager().setLayout(layoutId)
         slicer.app.processEvents()
         if layoutId in DUAL_MONITOR_LAYOUT_IDS:
@@ -945,13 +979,13 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                               panel.pixelRatio(), crop=self.tileCrop(slot, name, node))
                 tiles = [(images[k], k + 1) if images and 0 <= k < count else (None, None) for k in shown]
                 valid = [k for k in shown if 0 <= k < count]
-                text = f"{SLOT_TITLES[slot]}  ·  {ORIENTATION_TITLES[name]}"
+                text = self.rowTitle(slot, name)
                 if valid:
                     text += f"   —   slices {valid[0] + 1}–{valid[-1] + 1} of {count}" + (f", every {step}" if step > 1 else "")
                 panel.setRow(key, tiles, text)
         dual = len(slots) > 1
         panel.setLegends([(colorTable, self.windowRanges[slot].minimumValue, self.windowRanges[slot].maximumValue,
-                           SLOT_TITLES[slot] if dual else "") for slot in slots])
+                           self.slotTitle(slot) if dual else "") for slot in slots])
 
     def sliceImages(self, rowKey, slot, node, size, window, colorTable, ratio=1.0, shift=(0, 0), crop=None):
         """Every slice of one row rendered at the tile size (resized in the data domain, then colour
@@ -1135,11 +1169,12 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.updateCameraLink()
 
     def refreshPolarPanel(self, panel, tag, slot, polar, message):
-        title = f"{SLOT_TITLES[slot]} polar map"
         study = self.studies.get(slot)
+        title = f"{self.slotTitle(slot)} polar map" + (f": {study.GetName()}" if study is not None else "")
         if study is None:
             panel.setLegend(None)
-            panel.setPolar(None, None, title, message=f"No {slot} study: set the study roles in Data roles.")
+            panel.setPolar(None, None, title, message=f"No {session.SLOT_FALLBACK_TITLES[slot]}: pick it above or "
+                                                      "set the study roles in Data roles.")
             return
         if polar is None:
             panel.setLegend(None)
@@ -1171,6 +1206,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         layout shows both studies and both have their cavity volume, else ''."""
         if REST not in MODES[self.mode][3].values() and REST not in MODES[self.mode][4].values():
             return ""
+        if not session.isStressRest(self.studies):
+            return ""   # e.g. rest and FDG viability: no stress dilation
         volumes = []
         for slot in (STRESS, REST):
             study = self.studies.get(slot)
@@ -1185,13 +1222,14 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return f"TID {volumes[0] / volumes[1]:.2f}"
 
     def refreshDiffPanel(self, panel, tag, maps):
-        title = "Difference (rest − stress)"
+        first, second = self.slotTitle(STRESS).lower(), self.slotTitle(REST).lower()
+        title = f"Difference ({second} − {first})"
         stress, rest = maps.get(STRESS, (None, "")), maps.get(REST, (None, ""))
         low, top = self.polarWindow(DIFF)
         table = colorTableArray(self.colormapCombo.currentText)
         if stress[0] is None or rest[0] is None:
             panel.setLegend(None)
-            panel.setPolar(None, None, title, message="Needs the stress and the rest polar maps "
+            panel.setPolar(None, None, title, message=f"Needs the {first} and the {second} polar maps "
                                                       "(detect the myocardium of both studies).")
             return
         panel.setLegend(table, low, top)
@@ -1211,9 +1249,10 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                                for k in wallLib.OVERLAYS}))
             self.polarImageCache[tag] = cached
         qimage, segments = cached[1]
+        note = (f"{second.capitalize()} minus {first}, each in % of its own maximum: positive is lower uptake in "
+                f"the {first} study")
         panel.setPolar(qimage, segments, title,
-                       note="Rest minus stress, each in % of its own maximum: positive is lower uptake at stress "
-                            "(ischemia).")
+                       note=note + (" (ischemia)." if session.isStressRest(self.studies) else "."))
 
     # --- 3D uptake views ------------------------------------------------------------
     @staticmethod
@@ -1279,7 +1318,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             display.SetScalarRangeFlag(slicer.vtkMRMLDisplayNode.UseManualScalarRange)
             display.SetScalarRange(*self.polarWindow(slot))
             self.updateSegmentBorders()
-            self.setCornerText(widget, f"{SLOT_TITLES[slot]}\n{volumeText(segmentation)}",
+            self.setCornerText(widget, f"{self.slotTitle(slot)}: {study.GetName()}\n{volumeText(segmentation)}",
                                self.tidText() if slot == STRESS else "")
             if placeCamera or self.surfaceKeys.get(viewTag) != key:
                 self.surfaceKeys[viewTag] = key

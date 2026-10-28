@@ -58,7 +58,6 @@ from MyocardialPerfusionSPECTLib.display import (  # noqa: E402
 from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
-SLOT_TITLES = {STRESS: "STRESS", REST: "REST"}
 # key: (button text, studies, layout kind, tooltip); kinds as in views.gatedLayoutXml
 MODES = {}
 for _prefix, _slots, _title in (("stress", (STRESS,), "STRESS"), ("rest", (REST,), "REST"),
@@ -418,6 +417,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.staticSamples = {}    # study ID -> (key, sampler of the volume the wall was detected on)
         self.surfaceKeys = {}      # slot -> key of the 3D models made for its data
         self.ghostLayers = {STRESS: GhostLayer(), REST: GhostLayer()}
+        self.slotLabels = []       # (QLabel, slot, template) of the panel labels naming a study by its role
         self.grids = {"single": [DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS], "dual": [1, DEFAULT_GRID_COLUMNS]}
 
     def setup(self):
@@ -515,10 +515,12 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             for name in ORIENTATIONS:
                 spin = qt.QSpinBox()
                 spin.setRange(1, 1)
-                spin.toolTip = (f"First slice of the {SLOT_TITLES[slot].lower()} {ORIENTATION_TITLES[name]} row "
-                                "(mouse wheel over the row also scrolls)")
+                spin.toolTip = (f"First slice of the {session.SLOT_FALLBACK_TITLES[slot]} {ORIENTATION_TITLES[name]} "
+                                "row (mouse wheel over the row also scrolls)")
                 self.firstSliceSpins[(slot, name)] = spin
-                form.addRow(f"First {name} slice ({SLOT_TITLES[slot].lower()}):", spin)
+                label = qt.QLabel()
+                self.slotLabels.append((label, slot, f"First {name} slice ({{lower}}):"))
+                form.addRow(label, spin)
         self.contoursButton = qt.QPushButton("Myocardium segmentation")
         self.contoursButton.checkable = True
         self.contoursButton.checked = True
@@ -711,6 +713,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Layouts: one column per study (stress, rest, both), one row per kind (five kinds side by side
         # would make the panel wider than Slicer lets it be)
         self.layoutButtons = {}
+        self.layoutColumnTitles = {}   # first mode of a column -> its title label (the roles of its studies)
         self.layoutGroup = qt.QButtonGroup()
         self.layoutGroup.exclusive = True
         layoutBox = qt.QGroupBox("Layout")
@@ -719,6 +722,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             title = qt.QLabel(f"<b>{MODES[keys[0]][0].replace(' GATED', '')}</b>")
             title.alignment = qt.Qt.AlignCenter
             layoutGrid.addWidget(title, 0, column)
+            self.layoutColumnTitles[keys[0]] = title
             for row, key in enumerate(keys):
                 text, _, kind, toolTip = MODES[key]
                 button = qt.QPushButton(KIND_LABELS[kind])
@@ -1067,6 +1071,25 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return session.stressRestStudies()[slot]
 
     @staticmethod
+    def slotTitle(slot):
+        """Label of Study 1 / Study 2 in the views and plots: its role in Data roles ("STRESS", "VIABILITY")."""
+        return session.slotTitles()[slot].upper()
+
+    def studyTitle(self, slot):
+        """Role and volume name of a study, for the slice rows and 3D views: "STRESS: Stress OSEM AC"."""
+        study = self.studyOf(slot)
+        return self.slotTitle(slot) + (f": {study.GetName()}" if study is not None else "")
+
+    def modeText(self, key):
+        """Layout name with the roles of the studies ("STRESS-REST GATED", "REST-VIABILITY GATED")."""
+        text = MODES[key][0]
+        first, second = self.slotTitle(STRESS), self.slotTitle(REST)
+        for prefix, label in (("STRESS-REST ", f"{first}-{second} "), ("STRESS ", f"{first} "), ("REST ", f"{second} ")):
+            if text.startswith(prefix):
+                return label + text[len(prefix):]
+        return text
+
+    @staticmethod
     def qcWidget():
         return slicer.modules.mpigatedqc.widgetRepresentation().self()
 
@@ -1075,7 +1098,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for slot in self.slots(mode):
             ready, reason = self.qcWidget().available(slot)
             if not ready:
-                return False, (f"{SLOT_TITLES[slot].lower()}: {reason}" if len(self.slots(mode)) > 1 else reason)
+                return False, (f"{self.slotTitle(slot).lower()}: {reason}" if len(self.slots(mode)) > 1 else reason)
         return True, ""
 
     def onScreen(self):
@@ -1102,7 +1125,13 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for key, button in self.layoutButtons.items():
             ready, reason = self.available(key)
             button.enabled = ready
-            button.toolTip = f"{MODES[key][0]}: {MODES[key][3]}" + ("" if ready else f" (not available: {reason})")
+            button.toolTip = f"{self.modeText(key)}: {MODES[key][3]}" + ("" if ready else f" (not available: {reason})")
+        for key, title in self.layoutColumnTitles.items():
+            title.text = f"<b>{self.modeText(key).replace(' GATED', '')}</b>"
+        titles = session.slotTitles()
+        for label, slot, template in self.slotLabels:
+            label.text = template.format(title=titles[slot], lower=titles[slot].lower())
+        self.link3DCheck.text = f"Link the {titles[STRESS].lower()} and {titles[REST].lower()} 3D views"
         if self.mode in self.layoutButtons:
             self.layoutButtons[self.mode].checked = True
         self.polarWindowRange.enabled = not self.polarLinkCheck.checked
@@ -1357,7 +1386,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def rowKeys(self, groups=None):
         groups = self.panelGroups()[0][1] if groups is None else groups
-        return [(f"{slot}:{key}", (f"{SLOT_TITLES[slot]}  ·  " if len(self.slots()) > 1 else "")
+        return [(f"{slot}:{key}", f"{self.studyTitle(slot)}  ·  "
                  + "   |   ".join(ORIENTATION_TITLES[name] for name in names))
                 for key, names in groups for slot in self.slots()]
 
@@ -1401,7 +1430,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     elif kind == "volume":
                         volumeCurvePanel(tags["volume"])
             layoutId = self.layoutId()
-            registerLayout(layoutId, gatedLayoutXml(self.slots(), self.kind()))
+            registerLayout(layoutId, gatedLayoutXml(self.slots(), self.kind(), titles=session.slotTitles()))
             slicer.app.layoutManager().setLayout(layoutId)
             slicer.app.processEvents()
             if self.kind() in DUAL_KINDS:
@@ -1495,7 +1524,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.frameSlider.setValue(self.tick)
         self.frameSlider.blockSignals(wasBlocked)
         self.frameLabel.text = "  ·  ".join(
-            (f"{SLOT_TITLES[slot][0]} " if len(shown) > 1 else "")
+            (f"{self.slotTitle(slot).capitalize()} " if len(shown) > 1 else "")
             + f"{data.gated.labels[self.frameOf(data)]} of {data.count}" for slot, data in shown)
         panels = [(existingPanel(attribute), groups) for attribute, groups, _ in self.panelGroups()]
         for slot, data in shown:
@@ -1523,7 +1552,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 widget = threeDWidgetByTag(tags["3d"])
                 if widget is not None:
                     volume = data.volumes[index]
-                    self.setCornerText(widget, f"{SLOT_TITLES[slot]} GATED   frame {data.gated.labels[index]} of "
+                    self.setCornerText(widget, f"{self.studyTitle(slot)}\nGATED   frame {data.gated.labels[index]} of "
                                                f"{data.count}" + ("" if volume is None else f"\nLV cavity {volume:.0f} ml"),
                                        f"EF {data.phases[2]:.0f} %" if data.phases else "")
 
@@ -1581,12 +1610,12 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 crop = self.tileCrop(slot, name, data)
                 self.slicePositions[(slot, name)] = tuple(int(k) for k in shown)
                 key = (id(data), size, self.colormapCombo.currentText, tuple(round(v, 6) for w in windows for v in w),
-                       tuple(shown), contours, round(float(panel.pixelRatio()), 2), tuple(crop))
+                       tuple(shown), contours, round(float(panel.pixelRatio()), 2), tuple(crop), self.studyTitle(slot))
                 cached = self.tiles.get((slot, name))
                 if cached and cached[0] == key:
                     continue
                 valid = [k for k in shown if 0 <= k < count]
-                title = (f"{SLOT_TITLES[slot]}  ·  " if len(self.slots()) > 1 else "") + ORIENTATION_TITLES[name]
+                title = f"{self.studyTitle(slot)}  ·  {ORIENTATION_TITLES[name]}"
                 if valid and fixed:
                     title += "   —   " + ", ".join(f"{label.lower()} {k + 1}"
                                                    for label, k in zip(REPRESENTATIVE_LABELS[name], shown))
@@ -1639,7 +1668,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         table = colorTableArray(self.colormapCombo.currentText)
         kinds = self.plotKinds()
         for slot, data in self.shown():
-            title = SLOT_TITLES[slot]
+            title = self.slotTitle(slot)
             tags = gatedTags(slot)
             panel = existingPanel(polarPanelState(tags["polar"])) if "polar" in kinds else None
             if panel is not None:
@@ -1751,7 +1780,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if panel is None:
                 continue
             chart = panel.chart
-            title = f"{SLOT_TITLES[slot]}  ·  LV volume (ml)" if len(self.slots()) > 1 else "LV volume (ml)"
+            title = f"{self.slotTitle(slot)}  ·  LV volume (ml)" if len(self.slots()) > 1 else "LV volume (ml)"
             if data.phases is None:
                 chart.pointLabels = {}
                 chart.overlayText = ""

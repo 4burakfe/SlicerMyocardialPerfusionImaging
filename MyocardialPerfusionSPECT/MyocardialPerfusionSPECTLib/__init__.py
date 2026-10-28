@@ -7,7 +7,6 @@ step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC,
     display     colour maps, in-memory slice images and the slice panel of the result screen
     myocardium  LV wall fit of the static study and of every gate frame (numpy only)
     gating      ECG gating information and per-frame count checks of Gated QC
-    gatedpet    gated PET DICOM series: gate ordering, geometry, SUV (used by DICOMGatedPETPlugin)
     studies     study roles (stress, rest, ...) and gated sequence recognition/pairing
     session     active study shared by the modules, workflow steps
     case        case (patient) name and ID from the DICOM headers, mixed-patient warning
@@ -20,7 +19,7 @@ step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC,
 import logging
 import traceback
 
-SUBMODULES = ("geometry", "myocardium", "gating", "gatedpet", "resampling", "views", "colortables", "display", "studies", "session", "case", "widgets", "dicomexport", "toolbar", "parameters")  # dependency order
+SUBMODULES = ("geometry", "myocardium", "gating", "resampling", "views", "colortables", "display", "studies", "session", "case", "widgets", "dicomexport", "toolbar", "parameters")  # dependency order
 
 
 def reloadInDeveloperMode():

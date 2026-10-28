@@ -2,7 +2,7 @@
 by the DICOM SPECT Recon extension, per-frame count checks and their text.
 
 Attributes read (all optional, "SPECTRecon." prefix, written by DICOMSpectRecon nmdata.readGatingInfo, or
-"GatedPET." prefix, written by the gated PET DICOM plugin of this extension):
+"GatedPET." prefix, written by the DICOM Gated / Dynamic PET extension):
     GatingTimeSlots, GatingBeatRejection, GatingLowRRMs, GatingHighRRMs, GatingRRWindowPercent,
     GatingNominalIntervalMs (+ Source), GatingHeartRateBpm (+ Source), GatingIntervalsAcquired,
     GatingIntervalsRejected, GatingRejectedPercent, GatingSlotWidthMs, GatingFrameTimeMs,
@@ -18,7 +18,7 @@ import math
 import numpy as np
 
 PREFIX = "SPECTRecon."
-PREFIXES = (PREFIX, "GatedPET.")   # gated PET: same keys, written by DICOMGatedPETPlugin
+PREFIXES = (PREFIX, "GatedPET.")   # gated PET: same keys, written by the DICOMGatedDynamicPET extension
 COUNT_BAND_PERCENT = 10.0      # a frame whose counts differ more from the mean is flagged
 REJECTED_WARNING_PERCENT = 20.0
 RR_DRIFT_WARNING_PERCENT = 10.0

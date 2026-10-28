@@ -1457,7 +1457,7 @@ class ProcessingLane(VTKObservationMixin):
 # Widget
 # ---------------------------------------------------------------------------
 MODE_SINGLE, MODE_DUAL = "single", "dual"
-DUAL_ROLES = ("Stress", "Rest")   # top and bottom study of the stress-rest screen
+DUAL_SLOTS = ("stress", "rest")   # top and bottom study (Study 1, Study 2) of the two-study screen
 
 
 class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
@@ -1508,11 +1508,11 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.laneButtons = []
         laneGroup = qt.QButtonGroup(self.laneRow)
         laneGroup.setExclusive(True)
-        for index, role in enumerate(DUAL_ROLES):
-            button = qt.QPushButton(role)
+        for index, slot in enumerate(DUAL_SLOTS):
+            button = qt.QPushButton(session.SLOT_FALLBACK_TITLES[slot])
             button.checkable = True
-            button.toolTip = (f"The panel below edits the {role.lower()} study. Dragging a point in its views "
-                              "switches here too.")
+            button.toolTip = (f"The panel below edits {session.SLOT_FALLBACK_TITLES[slot]} (its role in Data roles "
+                              "on the button). Dragging a point in its views switches here too.")
             laneGroup.addButton(button)
             laneLayout.addWidget(button)
             self.laneButtons.append(button)
@@ -1817,7 +1817,8 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def activateLayout(self):
         if self.mode == MODE_DUAL:
             layoutId = DUAL_REORIENT_LAYOUT_ID
-            registerLayout(layoutId, dualReorientLayoutXml(tuple(role[0] for role in DUAL_ROLES)))
+            titles = session.slotTitles()
+            registerLayout(layoutId, dualReorientLayoutXml(tuple(titles[slot] for slot in DUAL_SLOTS)))
         else:
             layoutId = REORIENT_LAYOUT_ID
             registerLayout(layoutId, reorientLayoutXml())
@@ -1845,6 +1846,10 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.updateButtonStates()
 
     def updateModeButtons(self, mode, pair):
+        titles = session.slotTitles()
+        self.dualRadio.text = f"{titles['stress']} + {titles['rest'].lower()}"
+        for button, slot in zip(self.laneButtons, DUAL_SLOTS):
+            button.text = titles[slot]
         self.dualRadio.enabled = bool(pair)
         self.dualRadio.toolTip = ("Two processing screens stacked: the stress study above the rest study"
                                   if pair else "Needs a Stress and a Rest study (set the roles in Data roles)")
@@ -1905,8 +1910,9 @@ class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.mipSection.enabled = started
         self.outputSection.enabled = started
         self.createButton.enabled = started and all(l.roiPlaced for l in lanes)
-        self.createButton.text = ("Create SA / HLA / VLA volumes (stress and rest)" if dual
-                                  else "Create SA / HLA / VLA volumes")
+        titles = session.slotTitles()
+        self.createButton.text = (f"Create SA / HLA / VLA volumes ({titles['stress'].lower()} and "
+                                  f"{titles['rest'].lower()})" if dual else "Create SA / HLA / VLA volumes")
         self.reviewButton.enabled = len(session.outputsForStudy(session.activeStudy())) == len(ORIENTATIONS)
         self.syncToolbar()
 

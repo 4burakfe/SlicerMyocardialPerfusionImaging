@@ -36,7 +36,8 @@ from MyocardialPerfusionSPECTLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionSPECTLib.geometry import unit, worldToLocalMatrix, sampleTrilinear  # noqa: E402
 from MyocardialPerfusionSPECTLib.views import (  # noqa: E402
     MYOCARDIUM_LAYOUT_ID, DUAL_MYOCARDIUM_LAYOUT_ID, LANE_SUFFIXES, ORIENTATIONS, myocardiumLayoutXml,
-    dualMyocardiumLayoutXml, myocardiumViews, registerLayout, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry)
+    dualMyocardiumLayoutXml, myocardiumViews, registerLayout, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry,
+    setViewTitle)
 from MyocardialPerfusionSPECTLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 LABEL_SPACING_MM = 1.5      # grid of the myocardium / cavity segmentation
@@ -576,8 +577,8 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.singleButton = qt.QPushButton("ACTIVE STUDY")
         self.singleButton.toolTip = "SA, HLA, VLA and the 3D wall of the active study"
         self.dualButton = qt.QPushButton("STRESS-REST")
-        self.dualButton.toolTip = ("Stress study on the top row, rest study below (roles from Data roles); "
-                                   "Detect and the valve sliders act on the active study")
+        self.dualButton.toolTip = ("Study 1 (e.g. stress) on the top row, Study 2 (e.g. rest) below (roles from "
+                                   "Data roles); Detect and the valve sliders act on the active study")
         for button in (self.singleButton, self.dualButton):
             button.checkable = True
             self.layoutGroup.addButton(button)
@@ -637,7 +638,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             bar.mirror(check, SURFACES[key][0].capitalize(), f"Show the {SURFACES[key][0]} in the views")
         bar.separator()
         bar.mirror(self.singleButton, "ACTIVE STUDY")
-        bar.mirror(self.dualButton, "STRESS-REST")
+        self.tbDualButton = bar.mirror(self.dualButton, self.dualButton.text)
         bar.separator()
         bar.mirror(self.perfusionButton, "Perfusion ›", kind="primary")
 
@@ -750,6 +751,13 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.statsLabel.text = self.statsText(segmentation)
         self.perfusionButton.enabled = len(session.outputsForStudy(self.studyNode)) == len(ORIENTATIONS)
         self.dualButton.enabled = self.dualAvailable()
+        titles = session.slotTitles()
+        self.dualButton.text = f"{titles['stress']}-{titles['rest']}".upper()
+        if getattr(self, "tbDualButton", None) is not None:
+            try:
+                self.tbDualButton.setText(self.dualButton.text)
+            except Exception:
+                pass   # the toolbar was rebuilt
         self.syncToolbar()
 
     @staticmethod
@@ -777,7 +785,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return DUAL_MYOCARDIUM_LAYOUT_ID if self.dualShown() else MYOCARDIUM_LAYOUT_ID
 
     def lanes(self):
-        """[(study, view tag suffix)] of the studies on screen: the active one, or stress and rest."""
+        """[(study, view tag suffix)] of the studies on screen: the active one, or Study 1 and Study 2."""
         if self.dualShown():
             found = session.stressRestStudies()
             return [(found["stress"], LANE_SUFFIXES[0]), (found["rest"], LANE_SUFFIXES[1])]
@@ -790,7 +798,9 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def showLayout(self):
         dual = self.dualShown()
         layoutId = self.layoutId()
-        registerLayout(layoutId, dualMyocardiumLayoutXml() if dual else myocardiumLayoutXml())
+        titles = session.slotTitles()
+        registerLayout(layoutId, dualMyocardiumLayoutXml((titles["stress"], titles["rest"])) if dual
+                       else myocardiumLayoutXml())
         slicer.app.layoutManager().setLayout(layoutId)
         slicer.app.processEvents()
         for study, suffix in self.lanes():
@@ -800,10 +810,15 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             axes = orientationAxes(frame)
             outputs = session.outputsForStudy(study)
             fov = 2.0 * frame["radius"]
-            for name, tag in myocardiumViews(suffix)[0].items():
-                showVolumeInView(tag, outputs.get(name) or study)
+            slices, threeDTag = myocardiumViews(suffix)
+            role = titles["stress" if suffix == LANE_SUFFIXES[0] else "rest"] if dual else session.studyRoleTitle(study)
+            for name, tag in slices.items():
+                shown = outputs.get(name) or study
+                showVolumeInView(tag, shown)
                 right, up, stack = axes[name]
                 setSliceGeometry(sliceNodeByTag(tag), right, up, stack, frame["center"], fov)
+                setViewTitle(tag, f"{role}: {shown.GetName()}" if role else shown.GetName())
+            setViewTitle(threeDTag, f"{role}: {study.GetName()}" if role else study.GetName(), (0.9, 0.9, 0.9))
         self.assignViews()
         try:
             self.placeCamera()

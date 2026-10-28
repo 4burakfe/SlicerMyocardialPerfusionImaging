@@ -180,9 +180,10 @@ def slicesLayoutXml():
     return f'<layout type="horizontal"><item><{MOSAIC_TAG}></{MOSAIC_TAG}></item></layout>'
 
 
-def dualResultLayoutXml():
+def dualResultLayoutXml(titles=("Stress", "Rest")):
     """STRESS-REST PERF: stress and rest slice rows on the left; on the right a 2 x 2 region with
-    the stress polar map and 3D uptake (top) and the rest ones (bottom)."""
+    the stress polar map and 3D uptake (top) and the rest ones (bottom). titles: labels of the 3D views
+    (the roles of Study 1 and Study 2)."""
     def pair(polarTag, viewTag, label):
         return ('<item splitSize="500"><layout type="horizontal" split="true">'
                 f'<item splitSize="500"><{polarTag}></{polarTag}></item>'
@@ -191,8 +192,8 @@ def dualResultLayoutXml():
     return ('<layout type="horizontal" split="true">'
             f'<item splitSize="640"><{MOSAIC_TAG}></{MOSAIC_TAG}></item>'
             '<item splitSize="380"><layout type="vertical" split="true">'
-            + pair(POLAR_TAG, PERFUSION_3D_VIEW, "Stress")
-            + pair(POLAR_REST_TAG, PERFUSION_3D_VIEW_REST, "Rest")
+            + pair(POLAR_TAG, PERFUSION_3D_VIEW, titles[0])
+            + pair(POLAR_REST_TAG, PERFUSION_3D_VIEW_REST, titles[1])
             + '</layout></item>'
             '</layout>')
 
@@ -208,7 +209,7 @@ def _twoMonitorXml(main, second, name, title, mainViewport=None):
             '</viewports>')
 
 
-def perfusionDualMonitorLayoutXml(twoStudies=False, mainViewport=None):
+def perfusionDualMonitorLayoutXml(twoStudies=False, mainViewport=None, titles=("Stress", "Rest")):
     """STRESS / REST PERF DUAL: the slice rows on the main window; the polar map next to the 3D uptake
     on the second monitor. STRESS-REST PERF DUAL: the stress, rest and difference polar maps (top) over
     the stress and rest 3D uptake views (bottom) on the second monitor."""
@@ -219,8 +220,8 @@ def perfusionDualMonitorLayoutXml(twoStudies=False, mainViewport=None):
                             for tag in (POLAR_TAG, POLAR_REST_TAG, POLAR_DIFF_TAG))
                   + '</layout></item>'
                   '<item splitSize="500"><layout type="horizontal" split="true">'
-                  f'<item splitSize="500">{_threeDXml(PERFUSION_3D_VIEW, "Stress")}</item>'
-                  f'<item splitSize="500">{_threeDXml(PERFUSION_3D_VIEW_REST, "Rest")}</item>'
+                  f'<item splitSize="500">{_threeDXml(PERFUSION_3D_VIEW, titles[0])}</item>'
+                  f'<item splitSize="500">{_threeDXml(PERFUSION_3D_VIEW_REST, titles[1])}</item>'
                   '</layout></item>'
                   '</layout>')
     else:
@@ -272,10 +273,13 @@ def gatedPlotKinds(slots, kind):
     return GATED_PLOT_KINDS
 
 
-def _gatedPlotXml(slot, kind):
+SLOT_DEFAULT_TITLES = {"stress": "Stress", "rest": "Rest"}   # labels of Study 1 / Study 2 when no roles are given
+
+
+def _gatedPlotXml(slot, kind, titles=None):
     tag = gatedTags(slot)[kind]
     if kind == "3d":
-        return _threeDXml(tag, f"{'Rest' if slot == 'rest' else 'Stress'} gated 3D")
+        return _threeDXml(tag, f"{(titles or SLOT_DEFAULT_TITLES)[slot]} gated 3D")
     return f"<{tag}></{tag}>"
 
 
@@ -283,16 +287,16 @@ def _items(views, size=500):
     return "".join(f'<item splitSize="{size}">{view}</item>' for view in views)
 
 
-def _gatedPlotsXml(slots, kinds):
+def _gatedPlotsXml(slots, kinds, titles=None):
     """The plots of the studies: one study as a 2 x 3 grid, its perfusion, thickening and motion polar maps
     (top row) over the volume curve, the 3D wall and the regional EF polar map (bottom row); two studies as
     one row per study."""
     if len(slots) == 1:
-        top = [_gatedPlotXml(slots[0], k) for k in kinds if k in ("polar", "thickening", "motion")]
-        bottom = [_gatedPlotXml(slots[0], k) for k in kinds if k in ("volume", "3d", "ef")]
+        top = [_gatedPlotXml(slots[0], k, titles) for k in kinds if k in ("polar", "thickening", "motion")]
+        bottom = [_gatedPlotXml(slots[0], k, titles) for k in kinds if k in ("volume", "3d", "ef")]
         rows = [(top, 500), (bottom, 500)]
     else:
-        rows = [([_gatedPlotXml(slot, k) for k in kinds], 500) for slot in slots]
+        rows = [([_gatedPlotXml(slot, k, titles) for k in kinds], 500) for slot in slots]
     return ('<layout type="vertical" split="true">'
             + "".join(f'<item splitSize="{size}"><layout type="horizontal" split="true">{_items(views)}</layout></item>'
                       for views, size in rows if views)
@@ -306,10 +310,11 @@ def _mosaicXml(tag=GATED_REVIEW_MOSAIC_TAG):
 REPRESENTATIVE_LAYOUT_KINDS = ("full", "dual")   # three slices per axis (MPIGated.REPRESENTATIVE_KINDS)
 
 
-def _representativeSlicesXml(slots):
+def _representativeSlicesXml(slots, titles=None):
     """The slice area of the three-slices-per-axis layouts: SA (top left) beside the static 3D wall with the
     slice planes (top right, one view per study), HLA and VLA side by side below."""
-    views = "".join(f'<item splitSize="500">{_threeDXml(gatedTags(slot)["static3d"], f"{slot.capitalize()} slices 3D")}</item>'
+    titles = titles or SLOT_DEFAULT_TITLES
+    views = "".join(f'<item splitSize="500">{_threeDXml(gatedTags(slot)["static3d"], f"{titles[slot]} slices 3D")}</item>'
                     for slot in slots)
     return ('<layout type="vertical" split="true">'
             '<item splitSize="500"><layout type="horizontal" split="true">'
@@ -344,7 +349,7 @@ def _mainViewportAttributes():
     return ""
 
 
-def gatedLayoutXml(slots, kind, mainViewport=None):
+def gatedLayoutXml(slots, kind, mainViewport=None, titles=None):
     """Gated Review layout of the studies (("stress",), ("rest",) or ("stress", "rest")):
     full    the cine slice rows on the left, the plots on the right;
     slices  only the slice rows;
@@ -352,11 +357,12 @@ def gatedLayoutXml(slots, kind, mainViewport=None):
     dual    the slice rows on the main window and the plots in a floating window (a dock widget, as in
             Slicer's own dual monitor layouts), placed on the second monitor by placeMonitor2Window;
     dualFull  the same with all slices.
+    titles: {slot: label} of the 3D views (the roles of Study 1 / Study 2), default Stress / Rest.
     full and dual show three slices per axis: SA beside a static 3D wall with the slice planes, HLA and VLA
     below (_representativeSlicesXml)."""
     slots = tuple(slots)
-    plots = _gatedPlotsXml(slots, gatedPlotKinds(slots, kind))
-    slices = _representativeSlicesXml(slots) if kind in REPRESENTATIVE_LAYOUT_KINDS else _mosaicXml()
+    plots = _gatedPlotsXml(slots, gatedPlotKinds(slots, kind), titles)
+    slices = _representativeSlicesXml(slots, titles) if kind in REPRESENTATIVE_LAYOUT_KINDS else _mosaicXml()
     if kind == "slices":
         return f'<layout type="horizontal"><item>{_mosaicXml()}</item></layout>'
     if kind == "plots":
@@ -571,6 +577,35 @@ class CameraLink:
             logging.debug("MPI: could not link the 3D cameras", exc_info=True)
         finally:
             self.busy = False
+
+
+_titleActors = {}   # view tag -> (renderer, vtkCornerAnnotation) shown by setViewTitle
+
+
+def setViewTitle(tag, text, color=(1.0, 0.95, 0.6)):
+    """Text in the upper left corner of a slice or 3D view (the study's role and volume name); "" removes it."""
+    layoutManager = slicer.app.layoutManager()
+    widget = layoutManager.sliceWidget(tag) if layoutManager else None
+    view = widget.sliceView() if widget else None
+    if view is None:
+        widget = threeDWidgetByTag(tag) if layoutManager else None
+        view = widget.threeDView() if widget else None
+    old = _titleActors.pop(tag, None)
+    if old is not None:
+        old[0].RemoveViewProp(old[1])
+    renderer = view.renderWindow().GetRenderers().GetFirstRenderer() if view is not None else None
+    if renderer is not None and text:
+        actor = vtk.vtkCornerAnnotation()
+        actor.SetText(vtk.vtkCornerAnnotation.UpperLeft, text)
+        actor.SetMinimumFontSize(9)
+        actor.SetMaximumFontSize(14)
+        actor.GetTextProperty().SetColor(*color)
+        actor.GetTextProperty().SetBold(True)
+        actor.PickableOff()
+        renderer.AddViewProp(actor)
+        _titleActors[tag] = (renderer, actor)
+    if view is not None:
+        view.scheduleRender()
 
 
 def showVolumeInView(tag, volumeNode):

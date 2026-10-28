@@ -225,6 +225,44 @@ def stressRestStudies():
     return _defaultStudyPair()
 
 
+SLOT_FALLBACK_TITLES = {"stress": "Study 1", "rest": "Study 2"}
+
+
+def roleTitles(roles):
+    """{slot: label} of Study 1 / Study 2 from their roles ({slot: role or None}): the role itself
+    ("Stress", "Rest", "Viability", ...), "Study 1" / "Study 2" without a study, and numbered when
+    both studies have the same role ("Other 1", "Other 2")."""
+    titles = {slot: roles.get(slot) or SLOT_FALLBACK_TITLES[slot] for slot in STUDY_SLOTS}
+    if all(roles.get(slot) for slot in STUDY_SLOTS) and titles["stress"] == titles["rest"]:
+        titles = {slot: f"{titles[slot]} {index + 1}" for index, slot in enumerate(STUDY_SLOTS)}
+    return titles
+
+
+def studyRoleTitle(node):
+    """Label of a study from its role in Data roles ("" without a study); see roleTitles."""
+    if node is None:
+        return ""
+    role = studiesLib.studyRole(node)[0]
+    return "" if role == studiesLib.EXCLUDED_ROLE else role
+
+
+def slotTitles(pair=None):
+    """{"stress": label, "rest": label} of Study 1 / Study 2 (pair: {slot: node}, default
+    stressRestStudies()) for views, plots and reports, e.g. Rest / Viability for a PET rest + FDG exam."""
+    if pair is None:
+        pair = stressRestStudies()
+    return roleTitles({slot: studyRoleTitle(pair.get(slot)) for slot in STUDY_SLOTS})
+
+
+def isStressRest(pair=None):
+    """True when Study 1 is a Stress and Study 2 a Rest (or Redistribution) study: the stress-rest
+    readouts (ischemia difference, TID) apply."""
+    if pair is None:
+        pair = stressRestStudies()
+    roles = {slot: studyRoleTitle(pair.get(slot)) for slot in STUDY_SLOTS}
+    return roles["stress"] in STUDY_SLOT_ROLES["stress"] and roles["rest"] in STUDY_SLOT_ROLES["rest"]
+
+
 def setStudyPair(stress, rest):
     """Pick Study 1 (stress) and Study 2 (rest) by hand; None for none. (None, None) and a later
     resetStudyPair() go back to the roles."""

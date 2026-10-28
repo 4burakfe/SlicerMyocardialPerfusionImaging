@@ -9,15 +9,19 @@ Everything is stored as node attributes, so it is saved with the scene and survi
 
 Recognition
     gated     a sequence of scalar volumes with 4 to 32 items of identical geometry. Sequences from
-              the DICOM SPECT Recon extension (SPECTRecon.Gate on their items) and from the gated PET
-              DICOM plugin (GatedPET.Gate) are always recognised.
+              the DICOM SPECT Recon extension (SPECTRecon.Gate on their items) and from the DICOM Gated /
+              Dynamic PET extension (GatedPET.Gate) are always recognised.
               A MultiVolume (e.g. gated PET loaded by the MultiVolume importer: one volume with a frame
               per gate) is copied once into such a sequence (convertMultiVolumes), placed next to it.
     pairing   a gated sequence goes with the static volume that has the same reconstruction
               (SPECTRecon.AcquisitionStart), else the same subject hierarchy study folder and the
               longest common name, else the same grid.
     role      guessed from the volume / series / study names (English and Turkish keywords); the
-              user confirms or changes it in the Studies table.
+              user confirms or changes it in the Studies table. When the PET tracer is known
+              (Radiopharmaceutical / Radionuclide attributes of the DICOM Gated / Dynamic PET extension,
+              else the DICOM header) it
+              comes first: FDG is Viability; a perfusion tracer (O-15 water, N-13 ammonia, Rb-82,
+              F-18 flurpiridaz, Cu-62) is Stress or Rest from the names, never Viability.
 The pure functions at the top have no Slicer dependency and are unit tested outside Slicer.
 """
 
@@ -45,25 +49,102 @@ _ROLE_PATTERNS = [
 ]
 _GATED_PATTERN = r"gated|\bgate|\b[sr]gate|gspect|\bg-?spect|ekg|ecg"
 
+# PET tracers, matched on the lower-case text with spaces, ^, -, _ and parentheses removed
+# (DICOM code meanings look like "Fluorodeoxyglucose F^18^" or "^82^Rubidium")
+TRACER_METABOLIC = "metabolic"
+TRACER_PERFUSION = "perfusion"
+_TRACER_PATTERNS = [
+    (TRACER_METABOLIC, r"fdg|fluorodeoxyglucose|deoxyglucose"),
+    (TRACER_PERFUSION, r"rubidium|rb82|82rb|ammonia|nh3|n13|13n|nitrogen13|13nitrogen|o15|15o|oxygen15|15oxygen"
+                       r"|h2o|water|flurpiridaz|cu62|62cu|copper62|62copper|ptsm"),
+]
+# Written by the DICOM Gated / Dynamic PET extension (one prefix per kind of series)
+TRACER_ATTRIBUTES = tuple(prefix + name for prefix in ("GatedPET.", "StaticPET.", "DynamicPET.")
+                          for name in ("Radiopharmaceutical", "Radionuclide"))
 
-def guessRole(*texts):
-    """Role from free-text names; UNKNOWN_ROLE if none matches."""
+
+def tracerKind(*texts):
+    """TRACER_METABOLIC (FDG), TRACER_PERFUSION (PET perfusion tracers) or "" from tracer names."""
+    text = re.sub(r"[\s^_\-()]+", "", " ".join(t for t in texts if t).lower())
+    for kind, pattern in _TRACER_PATTERNS:
+        if text and re.search(pattern, text):
+            return kind
+    return ""
+
+
+def guessRole(*texts, tracer=""):
+    """Role from free-text names, and from the tracer when known; UNKNOWN_ROLE if none matches."""
+    kind = tracerKind(tracer)
+    if kind == TRACER_METABOLIC:
+        return "Viability"
     text = " ".join(t for t in texts if t).lower()
     text = re.sub(r"[_\-./]+", " ", text)
     for role, pattern in _ROLE_PATTERNS:
+        if kind == TRACER_PERFUSION and role not in ("Stress", "Rest"):
+            continue   # e.g. "fdg" or "delay" in the names of a rubidium study
         if re.search(pattern, text):
             return role
     return UNKNOWN_ROLE
 
 
+def tracer(node):
+    """Tracer text of a volume (radiopharmaceutical and radionuclide): its PET attributes, else the
+    Radiopharmaceutical Information Sequence of its first DICOM file; "" when unknown."""
+    if node is None:
+        return ""
+    text = " ".join(node.GetAttribute(name) or "" for name in TRACER_ATTRIBUTES).strip()
+    if text:
+        return text
+    uids = (node.GetAttribute("DICOM.instanceUIDs") or "").split()
+    if not uids:
+        return ""
+    if uids[0] not in _TRACER_CACHE:
+        _TRACER_CACHE[uids[0]] = _tracerFromDicom(uids[0])
+    return _TRACER_CACHE[uids[0]]
+
+
+_TRACER_CACHE = {}   # first instance UID -> tracer text (the header is read once)
+
+
+def _tracerFromDicom(uid):
+    slicer = _slicer()
+    try:
+        fileName = slicer.dicomDatabase.fileForInstance(uid) if slicer.dicomDatabase else ""
+        if not fileName:
+            return ""
+        import pydicom
+        radio = getattr(pydicom.dcmread(fileName, stop_before_pixels=True),
+                        "RadiopharmaceuticalInformationSequence", None)
+        return radiopharmaceuticalText(radio[0]) if radio else ""
+    except Exception:
+        return ""
+
+
+def radiopharmaceuticalText(item):
+    """Radiopharmaceutical (its text, else code meaning) and radionuclide code meaning of one item of the
+    Radiopharmaceutical Information Sequence (0054,0016), as one text."""
+    def codeMeaning(keyword):
+        sequence = getattr(item, keyword, None)
+        if not sequence:
+            return ""
+        return str(getattr(sequence[0], "CodeMeaning", "") or getattr(sequence[0], "CodeValue", "") or "").strip()
+    try:
+        name = str(getattr(item, "Radiopharmaceutical", "") or "").strip() or \
+            codeMeaning("RadiopharmaceuticalCodeSequence")
+        return " ".join(v for v in (name, codeMeaning("RadionuclideCodeSequence")) if v)
+    except Exception:
+        return ""
+
+
 def studyRole(node):
-    """(role, guessed) of a static volume: the stored role, else a guess from its names."""
+    """(role, guessed) of a static volume: the stored role, else a guess from its names and tracer."""
     stored = node.GetAttribute(ROLE_ATTRIBUTE) if node is not None else None
     if stored in ROLES:
         return stored, False
     if node is None:
         return UNKNOWN_ROLE, True
-    return guessRole(node.GetName(), _seriesDescription(node), _shParentAndStudyName(node)[1]), True
+    return guessRole(node.GetName(), _seriesDescription(node), _shParentAndStudyName(node)[1],
+                     tracer=tracer(node)), True
 
 
 def isExcluded(node):
@@ -462,7 +543,8 @@ def scanStudies():
             role, guessed = stored, False
         else:
             role = guessRole(node.GetName(), description["series"], description["study"],
-                             sequence.GetName() if sequence else "")
+                             sequence.GetName() if sequence else "",
+                             tracer=tracer(node) or (tracer(sequence.GetNthDataNode(0)) if sequence else ""))
             guessed = True
         studies.append(Study(node, sequence, role, guessed, nGates))
 
@@ -471,7 +553,8 @@ def scanStudies():
         if seq.GetID() in used:
             continue
         stored = seq.GetAttribute(ROLE_ATTRIBUTE)
-        role = stored if stored in ROLES else guessRole(seq.GetName(), _seriesDescription(first))
+        role = stored if stored in ROLES else guessRole(seq.GetName(), _seriesDescription(first),
+                                                        tracer=tracer(first))
         studies.append(Study(None, seq, role, stored not in ROLES, n))
     return studies
 

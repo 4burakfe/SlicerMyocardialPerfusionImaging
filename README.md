@@ -93,24 +93,23 @@ in Myocardium instead of 12 mm for SPECT.
 
 ### Gated PET from DICOM
 
-Slicer's PET SUV and MultiVolume plugins often stack the images of an ECG gated PET series into one
-volume or fail to split it. The extension adds a DICOM plugin for gated PET (Modality PT with Series Type
-`GATED\IMAGE` or Number of Time Slots above 1, e.g. GE Discovery cardiac gated PET):
+Gated PET is loaded by the separate **DICOM Gated / Dynamic PET** extension
+([SlicerDICOMGatedDynamicPET](https://github.com/4burakfe/SlicerDICOMGatedDynamicPET)), which also loads
+dynamic and static PET. Install it next to Tarvos. For a gated series it gives:
 
-- The series shows up in the DICOM browser as **"<series> gated SUVbw"** (selected) and
-  **"<series> gated Bq/ml"**. Load gives a sequence of gates (index *Gate*) with a browser and a
-  *(current gate)* volume, in the series' patient/study folder, with one window for all gates.
-- Images are split into gates by Image Index (0054,1330), else Trigger Time, else repeated slice
-  positions, and sorted along the slice normal; every image keeps its own rescale slope.
-- SUVbw follows the QIBA vendor-neutral method: weight, injected dose decayed from the injection time to
-  the scan start (series time, or GE's scan start when the series time is later than the acquisition;
-  no decay for Decay Correction ADMIN). Philips counts images use the Philips SUV scale factor. When SUV
-  cannot be computed (no weight, dose or times), only the Bq/ml loadable is offered and the reason is in
-  its tooltip. The inputs used are stored on every gate (`GatedPET.*` attributes).
-- The ECG gating fields of the header (accepted R-R window, beats, heart rate) are stored with the same
-  names as the DICOM SPECT Recon gating attributes, so Gated QC shows them.
-- Each gate of a gated PET is a full activity image, so *Create static from gates* averages PET gates
-  instead of summing them.
+- **"<series> mean SUVbw"**: the static image, mean of the gates (each gate is a full activity image),
+  already paired with the gates, so Data roles lists one study;
+- **"<series> gated SUVbw"**: the sequence of gates with a browser and a *(current gate)* volume;
+- the ECG gating fields of the header, named like the DICOM SPECT Recon gating attributes, so Gated QC
+  shows them;
+- the radiopharmaceutical and radionuclide (`GatedPET.Radiopharmaceutical`, `GatedPET.Radionuclide`; also
+  `StaticPET.*` / `DynamicPET.*` for other PET series). Data roles uses them to guess the role: FDG is
+  Viability; a perfusion tracer (O-15 water, N-13 ammonia, Rb-82, F-18 flurpiridaz, Cu-62) is Stress or Rest
+  from the series and study names (Other when the names say neither). For PET loaded by another plugin the
+  tracer is read from the DICOM header.
+
+Gated PET loaded another way (e.g. as a MultiVolume) still works: Data roles makes a sequence of it, and
+*Create static from gates* averages PET gates instead of summing them.
 
 ## The interface: hub and workflow toolbar
 
@@ -169,7 +168,8 @@ swaps them and *By role* picks them from the roles again.
 - **Studies.** Every static (or summed-gate) SPECT or PET volume in the scene, with its role (Stress,
   Rest, Redistribution, Viability, Other, or None to leave it out) and its gated sequence. Roles in
   italics are guesses from the volume, series and study names; picking a role confirms it. The selected
-  row is the active study of all steps.
+  row is the active study of all steps. For PET the tracer comes first (see Gated PET from DICOM); it is
+  read from the `GatedPET.*` attributes, else from the DICOM header of the volume.
 - **Gated sequences** are recognised as sequences of 4 to 32 volumes with the same grid (DICOM SPECT Recon
   and gated PET plugin gates always), and paired with the static study from the same reconstruction, else the same subject
   hierarchy study and the longest common name, else the same grid. The pairing can be changed per row.
@@ -502,12 +502,10 @@ MyocardialPerfusionSPECT/
   MPIReview.py                       4. Perfusion (hidden)
   MPIGatedQC.py                      5. Gated QC: per-frame segmentation, counts, gating checks (hidden)
   MPIGated.py                        6. Gated Review (hidden)
-  DICOMGatedPETPlugin.py             DICOM plugin: gated PET series as a sequence of gates in SUVbw / Bq/ml (hidden)
   MyocardialPerfusionSPECTLib/
     geometry.py                      cardiac frame vectors, matrices, ellipsoid masks
     myocardium.py                    LV wall fitting (rays, mid-wall, thickness, valve plane; per gate frame), no Slicer imports
     gating.py                        ECG gating information and per-frame count checks, no Slicer imports
-    gatedpet.py                      gated PET DICOM: gate ordering, geometry, SUV, gating fields, no Slicer imports
     resampling.py                    B-spline / sinc / linear reslicing, in-plane zoom
     views.py                         layouts and view helpers
     display.py                       colour maps, the slice panel, the polar map panel and the Gated QC charts
