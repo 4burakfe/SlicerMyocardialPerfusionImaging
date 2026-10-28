@@ -56,8 +56,8 @@ DEFAULTS = {
     "capRows": 12,             # rows of the apical cap (90 deg / capRows apart)
     "step": 1.0,               # mm between samples along a ray
     "iterations": 3,
-    "fit": "mesh",             # surface fit through the traced rays that also draws the untraced ones (WALL_FITS):
-                               # "mesh", "bspline", "legacy" as the gate frames, or "ellipsoid": the shape model
+    "fit": "bspline",          # surface fit through the traced rays that also draws the untraced ones (WALL_FITS):
+                               # "bspline", "mesh", "legacy" as the gate frames, or "ellipsoid": the shape model
                                # and Gaussian smoothing (the settings below marked "ellipsoid")
     "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
     "smoothing": 1.25,         # "ellipsoid": Gaussian sigma of the surface smoothing, in grid samples (0 = none)
@@ -414,7 +414,7 @@ GATE_DEFAULTS = {
     "maxValveShift": 25.0,     # mm, "static": the valve plane of a frame stays this close to the static one
     "segmentation": "static",  # "static": every frame's wall tracked from the static wall (its displacement is fitted),
                                # "own": every frame detected from scratch on the static rays (its wall is fitted)
-    "fit": "mesh",             # surface fit of the traced rays that also draws the untraced ones (GATE_FITS)
+    "fit": "bspline",          # surface fit of the traced rays that also draws the untraced ones (GATE_FITS)
     "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
     "myocardialVolume": "own", # GATE_VOLUMES: "own" every frame's wall thickness from its own profile widths,
                                # "ed" / "es" every frame's thickness scaled to the myocardial volume of that frame

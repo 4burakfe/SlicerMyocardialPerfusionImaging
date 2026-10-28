@@ -416,14 +416,15 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             "the frame")
         advancedForm.addRow("Valve plane over the cycle:", self.valveCycleCombo)
         self.fitCombo = qt.QComboBox()
-        for text, value in wallLib.GATE_FITS:
+        for text, value in (studiesLib.AUTO_FIT,) + wallLib.GATE_FITS:
             self.fitCombo.addItem(text, value)
-        self.fitCombo.setCurrentIndex(max(0, self.fitCombo.findData(wallLib.GATE_DEFAULTS["fit"])))
+        self.fitCombo.setCurrentIndex(max(0, self.fitCombo.findData("auto")))
         self.fitCombo.toolTip = (
             "Surface fit through the rays whose wall a frame shows (above its blood pool), which draws the rays "
             "it does not show (a defect) and smooths the others; the wall thickness is fitted the same way. "
-            "Deformable mesh (default): every ray tied to its neighbours around and along the axis, so it follows "
-            "the walls closely and bridges a defect straighter. B-spline: a smooth spline surface with a bending "
+            "Automatic (default): deformable mesh for a PET study, B-spline for SPECT (Advanced parameters, Wall fit "
+            "by modality). Deformable mesh: every ray tied to its neighbours around and along the axis, so it "
+            "follows the walls closely and bridges a defect straighter. B-spline: a smooth spline surface with a bending "
             "penalty, a defect continues the curve of the walls around it. Legacy: the change between neighbouring rays is limited (Brigger "
             "1999), ring by ring and along the axis. Their stiffness is in Advanced parameters")
         advancedForm.addRow("Fit:", self.fitCombo)
@@ -650,9 +651,10 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         for widget in (self.wallShiftSpin, self.valveShiftSpin, self.valveCycleCombo):
             widget.enabled = static
 
-    def params(self):
+    def params(self, study=None):
+        """Frame fit settings; Fit Automatic resolved by the study's modality (studies.wallFit)."""
         return {"maxWallShift": float(self.wallShiftSpin.value), "maxValveShift": float(self.valveShiftSpin.value),
-                "fit": self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.GATE_DEFAULTS["fit"],
+                "fit": studiesLib.wallFit(study, self.fitCombo.itemData(self.fitCombo.currentIndex) or "auto"),
                 "fitPull": float(self.fitPullSlider.value), "segmentation": self.segmentation(),
                 "myocardialVolume": (self.volumeCombo.itemData(self.volumeCombo.currentIndex)
                                      or wallLib.GATE_DEFAULTS["myocardialVolume"]),
@@ -672,11 +674,11 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             raise ValueError("Detect the myocardium of this study first (Myocardium step).")
         key = (study.GetID(), sequence.GetID(), sequence.GetNumberOfDataNodes(), id(staticResult),
                tuple(sorted((k, n.GetID(), n.GetAttribute("MPI.Mask") or "") for k, n in outputs.items())),
-               tuple(sorted(self.params().items())))
+               tuple(sorted(self.params(study).items())))
         cached = self.data.get(slot)
         if cached and cached[0] == key and not rebuild:
             return cached[1]
-        data = GatedStudy(study, sequence).build(staticResult, frame, outputs, self.params())
+        data = GatedStudy(study, sequence).build(staticResult, frame, outputs, self.params(study))
         data.save()
         self.data[slot] = (key, data)
         self.tileCache.clear()

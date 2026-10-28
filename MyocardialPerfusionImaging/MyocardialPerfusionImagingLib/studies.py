@@ -264,6 +264,15 @@ def _geometry(volumeNode):
 
 EMISSION_MODALITIES = ("NM", "PT")
 SYSTEM_RESOLUTION_MM = {"NM": 12.0, "PT": 7.0}   # default FWHM at the heart, by modality
+WALL_FIT = {"NM": "bspline", "PT": "mesh"}       # surface fit of the wall with fit "auto", by modality
+AUTO_FIT = ("Automatic: mesh for PET, B-spline for SPECT", "auto")
+
+
+def wallFit(node, fit="auto"):
+    """Surface fit for a study's wall (myocardium.WALL_FITS / GATE_FITS): fit itself, or with "auto" the one
+    of the study's modality (WALL_FIT: the mesh follows PET's sharper walls closely, the B-spline smooths
+    SPECT's), B-spline when the modality is not known."""
+    return WALL_FIT.get(modality(node), "bspline") if fit == "auto" else fit
 
 
 def modality(node):

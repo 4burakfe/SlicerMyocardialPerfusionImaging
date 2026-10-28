@@ -442,15 +442,16 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         form.addRow("Rays around the axis:", self.anglesSpin)
 
         self.fitCombo = qt.QComboBox()
-        for text, value in wallLib.WALL_FITS:
+        for text, value in (studiesLib.AUTO_FIT,) + wallLib.WALL_FITS:
             self.fitCombo.addItem(text, value)
-        self.fitCombo.setCurrentIndex(max(0, self.fitCombo.findData(defaults["fit"])))
+        self.fitCombo.setCurrentIndex(max(0, self.fitCombo.findData("auto")))
         self.fitCombo.toolTip = (
             "Surface fit through the rays whose wall stands out of the blood pool, which draws the others (a "
-            "defect) and smooths them, as in Gated QC: deformable mesh (default, every ray tied to its neighbours: "
-            "follows the walls closely, bridges a defect straighter), B-spline (a bending penalty: a defect continues the "
-            "curve of the walls around it, wall features shorter than 15 mm are smoothed out) "
-            "or legacy (limited jump between neighbouring rays). With Shape model through defects (Advanced "
+            "defect) and smooths them, as in Gated QC. Automatic (default): deformable mesh for PET, B-spline for SPECT (Advanced "
+            "parameters, Wall fit by modality). Deformable mesh: every ray tied to its neighbours, follows the "
+            "walls closely, bridges a defect straighter. B-spline: a bending penalty, a defect continues the "
+            "curve of the walls around it, wall features shorter than 15 mm are smoothed out. Legacy "
+            "(limited jump between neighbouring rays). With Shape model through defects (Advanced "
             "parameters, on by default) the fit is of the walls' deviation from an ellipsoid fitted to the whole "
             "LV, so a defect keeps its curve (a prolate apex behind an apical defect). Ellipsoid (previous): the "
             "shape model with Gaussian smoothing, set by Surface smoothing")
@@ -881,7 +882,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def updateFitControls(self):
         """Surface smoothing belongs to the ellipsoid fit, the pull to the surface fits, the base threshold to the
         fixed-share base detection."""
-        ellipsoid = (self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.DEFAULTS["fit"]) == "ellipsoid"
+        ellipsoid = self.wallFit() == "ellipsoid"
         self.smoothingSlider.enabled = ellipsoid
         self.fitPullSlider.enabled = not ellipsoid
         self.baseSlider.enabled = self.baseMethod() == "fraction"
@@ -889,9 +890,14 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def baseMethod(self):
         return self.baseMethodCombo.itemData(self.baseMethodCombo.currentIndex) or wallLib.DEFAULTS["baseMethod"]
 
-    def parameters(self):
+    def wallFit(self, study=None):
+        """The Fit choice, Automatic resolved by the modality of the study (default: the active one)."""
+        return studiesLib.wallFit(study if study is not None else self.studyNode,
+                                  self.fitCombo.itemData(self.fitCombo.currentIndex) or "auto")
+
+    def parameters(self, study=None):
         return {"angles": int(self.anglesSpin.value), "smoothing": float(self.smoothingSlider.value),
-                "fit": self.fitCombo.itemData(self.fitCombo.currentIndex) or wallLib.DEFAULTS["fit"],
+                "fit": self.wallFit(study),
                 "fitPull": float(self.fitPullSlider.value),
                 "baseMethod": self.baseMethod(),
                 "baseFraction": float(self.baseSlider.value) / 100.0,
@@ -925,7 +931,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Fit the wall of a study with the current parameters (another study than the active one:
         its own modality's resolution and no valve adjustment) and store the result."""
         frame = cardiacFrame(study)
-        params = self.parameters()
+        params = self.parameters(study)
         if study is not self.studyNode:
             params["resolution"] = studiesLib.SYSTEM_RESOLUTION_MM.get(studiesLib.modality(study), params["resolution"])
             params["valveOffset"] = 0.0
@@ -1184,7 +1190,7 @@ class MPIMyocardiumTest(ScriptedLoadableModuleTest):
 
         def sample(world):
             return sampleTrilinear(array, np.asarray(world, dtype=float) / spacing)
-        for fit in ("ellipsoid", "bspline", "legacy", "mesh"):      # the default last, for the message
+        for fit in ("ellipsoid", "mesh", "legacy", "bspline"):      # the default last, for the message
             result = wallLib.fitWall(sample, center, u, w, 55.0, {"resolution": 8.0, "fit": fit})
             apexMid = result["centerShift"] + float(np.median(result["mid"][-1]))
             self.assertAlmostEqual(apexMid, z0 + c, delta=4.0, msg=fit)
