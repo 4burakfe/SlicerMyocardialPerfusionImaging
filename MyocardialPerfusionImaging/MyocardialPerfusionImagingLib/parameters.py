@@ -135,10 +135,10 @@ STEP_PARAMETERS = {
         P("thicknessSmoothing", "Thickness map smoothing", 3.0, f"{MYO}:DEFAULTS.thicknessSmoothing", 0.0, 8.0, 0.25,
           2, " samples", "Fit: Ellipsoid only. Gaussian sigma of the wall thickness map (the surface fits fit the "
                          "thickness as the wall, with the Gated QC fit parameters)", "Wall fit"),
-        P("thicknessModel", "Wall borders", "width", f"{MYO}:DEFAULTS.thicknessModel",
-          tooltip="Surface fits and Gated QC: the endo- and epicardium where the count profile falls half way to the "
-                  "static image's blood pool and to the counts outside (no resolution model), or the profile width "
-                  "read as a slab blurred at the system resolution, leaning to the thickness prior",
+        P("thicknessModel", "Wall borders", "slab", f"{MYO}:DEFAULTS.thicknessModel",
+          tooltip="Surface fits and Gated QC: the profile width read as a slab blurred at the system resolution, "
+                  "leaning to the thickness prior (default), or the endo- and epicardium where the count profile falls "
+                  "half way to the static image's blood pool and to the counts outside (no resolution model)",
           group="Wall fit", choices=(("Half way to blood pool / outside", "width"),
                                      ("Blurred slab with a prior", "slab"))),
         P("cavityGap", "Blood pool gap from the endocardium", 5.0, f"{MYO}:CAVITY_GAP_MM", 0.0, 20.0, 0.5, 1, " mm",
@@ -204,7 +204,7 @@ STEP_PARAMETERS = {
           "Base rim Saddle: largest rise or fall of the rim against the tilted plane", "Valve plane"),
         P("maxBaseNarrowing", "Steepest basal narrowing", 35.0, f"{MYO}:DEFAULTS.maxBaseNarrowing", 0.0, 80.0, 1.0, 0,
           " deg", "Steepest the wall may turn toward the axis on its way to the base", "Valve plane"),
-        P("resolutionNM", "System resolution, SPECT", 12.0, f"{STUDIES}:SYSTEM_RESOLUTION_MM.NM", 3.0, 30.0, 0.5, 1,
+        P("resolutionNM", "System resolution, SPECT", 15.0, f"{STUDIES}:SYSTEM_RESOLUTION_MM.NM", 3.0, 30.0, 0.5, 1,
           " mm", "Resolution (FWHM) set when a SPECT study is chosen", "System resolution"),
         P("resolutionPT", "System resolution, PET", 7.0, f"{STUDIES}:SYSTEM_RESOLUTION_MM.PT", 3.0, 30.0, 0.5, 1,
           " mm", "Resolution (FWHM) set when a PET study is chosen", "System resolution"),

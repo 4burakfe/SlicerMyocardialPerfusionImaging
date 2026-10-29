@@ -263,7 +263,7 @@ def _geometry(volumeNode):
 
 
 EMISSION_MODALITIES = ("NM", "PT")
-SYSTEM_RESOLUTION_MM = {"NM": 12.0, "PT": 7.0}   # default FWHM at the heart, by modality
+SYSTEM_RESOLUTION_MM = {"NM": 15.0, "PT": 7.0}   # default FWHM at the heart, by modality
 WALL_FIT = {"NM": "bspline", "PT": "mesh"}       # surface fit of the wall with fit "auto", by modality
 AUTO_FIT = ("Automatic: mesh for PET, B-spline for SPECT", "auto")
 

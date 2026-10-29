@@ -29,10 +29,10 @@ labelling:
    valveShape "saddle" (default), may also rise and fall twice around the LV, as the mitral annulus does.
    Every column is cut at one height, where its mid-wall meets the rim, so the endo- and epicardium end
    together. The rim can be moved along the axis and tilted afterwards (valve offset and tilt).
-4. Endo- and epicardium. With the surface fits (thicknessModel "width") where the count profile falls
+4. Endo- and epicardium. With the surface fits and thicknessModel "width" where the count profile falls
    half way from the wall peak to the blood pool (_poolLevel: the cavity sampled CAVITY_GAP_MM inside
    the endocardium) and to the lowest counts outside, each half width fitted over the wall, with no
-   model of the system resolution; with "slab" the mid-wall -/+ half a thickness read from the width as
+   model of the system resolution; with "slab" (the default) the mid-wall -/+ half a thickness read from the width as
    a slab of uniform uptake blurred at the system resolution, leaning to a prior thickness where the
    blur hides it (slabThickness). The ellipsoid fit removes the resolution from the width in quadrature.
 
@@ -59,7 +59,7 @@ DEFAULTS = {
     "fit": "bspline",          # surface fit through the traced rays that also draws the untraced ones (WALL_FITS):
                                # "bspline", "mesh", "legacy" as the gate frames, or "ellipsoid": the shape model
                                # and Gaussian smoothing (the settings below marked "ellipsoid")
-    "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
+    "fitPull": 0.6,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
     "smoothing": 1.25,         # "ellipsoid": Gaussian sigma of the surface smoothing, in grid samples (0 = none)
     "thicknessSmoothing": 3.0, # "ellipsoid": Gaussian sigma of the wall thickness map, in grid samples
     "shapeModel": True,        # "ellipsoid": rays without a wall peak (defects) follow an ellipsoid model of the whole LV
@@ -73,8 +73,8 @@ DEFAULTS = {
     "valveShape": "saddle",    # VALVE_SHAPES: "saddle" lets the base rim rise and fall twice around the LV on top of
                                # the plane's tilt (up to SADDLE_MAX_MM), "plane" keeps it flat
     "maxBaseNarrowing": 35.0,  # deg, steepest the wall may turn toward the axis on its way to the base
-    "resolution": 12.0,        # system resolution (FWHM, mm) removed from the profile width
-    "thicknessModel": "width", # surface fits and gate frames (THICKNESS_MODELS): "width" puts the endo- and epicardium
+    "resolution": 15.0,        # system resolution (FWHM, mm) removed from the profile width
+    "thicknessModel": "slab",  # surface fits and gate frames (THICKNESS_MODELS): "width" puts the endo- and epicardium
                                # where the profile falls half way to the blood pool / the counts outside, "slab"
                                # reads the width as a slab blurred at the resolution, leaning to a prior thickness
     "minThickness": 6.0,       # mm

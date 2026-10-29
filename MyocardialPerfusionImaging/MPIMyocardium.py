@@ -509,7 +509,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.resolutionSpin.setSuffix(" mm")
         self.resolutionSpin.setValue(defaults["resolution"])
         self.resolutionSpin.toolTip = ("System resolution (FWHM) at the heart, removed from the width of the count "
-                                       "profile to estimate the wall thickness (set to 12 mm for SPECT and 7 mm for "
+                                       "profile to estimate the wall thickness (set to 15 mm for SPECT and 7 mm for "
                                        "PET when a study is chosen)")
         form.addRow("System resolution:", self.resolutionSpin)
 
