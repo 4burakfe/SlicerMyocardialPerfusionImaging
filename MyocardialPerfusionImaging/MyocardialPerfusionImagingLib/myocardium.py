@@ -416,7 +416,8 @@ GATE_DEFAULTS = {
                                # "own": every frame detected from scratch on the static rays (its wall is fitted)
     "fit": "bspline",          # surface fit of the traced rays that also draws the untraced ones (GATE_FITS)
     "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
-    "myocardialVolume": "own", # GATE_VOLUMES: "own" every frame's wall thickness from its own profile widths,
+    "myocardialVolume": "counts",  # GATE_VOLUMES: "counts" every frame's thickness scaled until its myocardium holds the
+                               # median frame's counts, "own" every frame's wall thickness from its own profile widths,
                                # "ed" / "es" every frame's thickness scaled to the myocardial volume of that frame
     "valveCycle": "smooth",    # GATE_VALVE_CYCLES, "static": "smooth" the frames' base rim heights follow a smooth
                                # curve over the cycle (smoothValveHeights), "own" every frame's own height
@@ -426,7 +427,8 @@ GATE_SEGMENTATIONS = (("Track the static wall", "static"),
 GATE_FITS = (("B-spline surface, bending penalty", "bspline"),
              ("Deformable mesh, every ray tied to its neighbours", "mesh"),
              ("Legacy: limited jump between neighbouring rays", "legacy"))
-GATE_VOLUMES = (("Each frame's own (from its profile widths)", "own"),
+GATE_VOLUMES = (("Constant myocardial counts (the median frame's)", "counts"),
+                ("Each frame's own (from its profile widths)", "own"),
                 ("Constant, at the end-diastolic volume (QGS-like)", "ed"),
                 ("Constant, at the end-systolic volume", "es"))
 GATE_VALVE_CYCLES = (("Smooth over the cycle", "smooth"),
@@ -547,7 +549,7 @@ def fitGate(sample, reference, params=None):
     result = {"grid": grid, "mid": mid, "peak": peak, "baseZ": plane[0], "detectedBaseZ": plane[0],
               "valvePlane": plane, "basePoints": basePoints, "rowCounts": np.median(peak[:grid.nCyl], axis=1),
               "gateWeight": weight, "profileFwhm": inner + outer, "profileInner": inner, "profileOuter": outer,
-              "profileReach": reach, "poolLevel": pool,
+              "profileReach": reach, "poolLevel": pool, "profiles": profiles,
               "segmentation": g["segmentation"], "fit": g["fit"], "fitPull": float(g["fitPull"])}
     return _withThickness(result, p["resolution"])
 
@@ -747,6 +749,25 @@ def myocardialVolumeMl(result):
     return _rayVolumes(result, np.asarray(result["endo"], dtype=float), np.asarray(result["epi"], dtype=float), 1)
 
 
+def _myocardialCounts(result, endo, epi):
+    """Counts between endo- and epicardium below the valve plane, from the frame's ray profiles ("profiles"):
+    every sample weighted by the volume it stands for (rings along the cylinder rows, shells over the apical
+    cap) and by the share of its step inside the wall."""
+    grid, t = result["grid"], result["grid"].t
+    step = float(t[1] - t[0])
+    lo = np.clip(endo[..., None], t - 0.5 * step, t + 0.5 * step)
+    hi = np.clip(epi[..., None], t - 0.5 * step, t + 0.5 * step)
+    share = np.maximum(hi - lo, 0.0)
+    dTheta = 2.0 * math.pi / grid.nTheta
+    element = np.empty((grid.nRows, 1, len(t)))
+    element[:grid.nCyl] = t[None, None, :] * dTheta * grid.dz
+    element[grid.nCyl:] = t[None, None, :] ** 2 * (np.sin(grid.phi) * grid.dphi * dTheta)[:, None, None]
+    counts = (np.asarray(result["profiles"]) * share * element).sum(axis=2)
+    inside = ~_beyondBase(grid, result["mid"], result["valvePlane"])
+    inside[grid.nCyl:] = True
+    return float(counts[inside].sum())
+
+
 def cavityVolumeMl(result):
     """LV cavity volume (ml) of a wall fit: inside the endocardium, below the valve plane."""
     return _rayVolumes(result, None, np.asarray(result["endo"], dtype=float), 0)
@@ -759,16 +780,29 @@ def constantVolumeGates(results, reference="ed"):
     keeps its mid-wall and the shape of its thickness map (from its own profile widths); its endo- and
     epicardial half widths are scaled by one factor, found by bisection, until its myocardial volume is the
     reference's. A wall that moves inward then thickens, so the thickness, the cavity and the EF follow from
-    the motion of the mid-wall. Any other reference returns the frames as they are."""
+    the motion of the mid-wall. reference "counts": every frame's half widths are scaled until its myocardium
+    holds the median frame's counts (_myocardialCounts, from its ray profiles): every frame has the same
+    tracer in its myocardium, so a frame whose wall was drawn too thin (an end-systolic cavity filled by the
+    walls' blur puts the inner edge next to the peak) shows too few counts and is widened, a frame drawn too
+    thick narrowed. Any other reference returns the frames as they are."""
     known = [(cavityVolumeMl(r), i) for i, r in enumerate(results) if r is not None]
-    if reference not in ("ed", "es") or len(known) < 2:
+    if reference == "counts":
+        known = [(c, i) for c, i in known if "profiles" in results[i]]
+    if reference not in ("ed", "es", "counts") or len(known) < 2:
         return list(results)
-    index = (max(known) if reference == "ed" else min(known))[1]
-    target = myocardialVolumeMl(results[index])
+    if reference == "counts":
+        index = None
+        measure = lambda result, endo, epi: _myocardialCounts(result, endo, epi)
+        target = float(np.median([_myocardialCounts(results[i], np.asarray(results[i]["endo"], dtype=float),
+                                                    np.asarray(results[i]["epi"], dtype=float)) for _, i in known]))
+    else:
+        index = (max(known) if reference == "ed" else min(known))[1]
+        measure = lambda result, endo, epi: _rayVolumes(result, endo, epi, 1)
+        target = myocardialVolumeMl(results[index])
     adjusted = []
     for i, result in enumerate(results):
-        if result is None:
-            adjusted.append(None)
+        if result is None or (reference == "counts" and "profiles" not in result):
+            adjusted.append(result)
             continue
         if i == index:
             adjusted.append(dict(result, myocardialVolume=reference, thicknessScale=1.0))
@@ -784,8 +818,7 @@ def constantVolumeGates(results, reference="ed"):
             return endo, epi
 
         def volume(scale):
-            endo, epi = surfaces(scale)
-            return _rayVolumes(result, endo, epi, 1)
+            return measure(result, *surfaces(scale))
         low, high = 0.2, 5.0
         if volume(low) >= target:
             scale = low
@@ -2192,7 +2225,8 @@ def _wallHalfWidths(profiles, t, position, peak, reach, pool=None):
     """(toward the cavity, away from it): distances from the mid-wall to where the profile falls half way
     from the peak to each side's floor (_profileWidth, within reach). With pool (the blood pool's counts,
     _poolLevel) the cavity side is measured against it instead, searched up to the axis; a ray whose
-    profile does not fall that far (a cavity filled by the walls' blur) keeps its own floor."""
+    profile does not fall that far (a cavity filled by the walls' blur, whose own floor would put the edge
+    next to the peak and thin the end-systolic wall) takes the outer side's half width."""
     d = t[None, None, :] - position[..., None]
     window = np.abs(d) <= reach
 
@@ -2204,7 +2238,7 @@ def _wallHalfWidths(profiles, t, position, peak, reach, pool=None):
         far = float(t[-1])
         toPool, _ = _halfWidths(profiles, t, position, peak, far, np.minimum(pool, peak), peak, sides=(-1.0,))
         found = (toPool < far - 1e-6) & (toPool <= position)
-        toInner = np.where(found, toPool, toInner)
+        toInner = np.where(found, toPool, np.minimum(toOuter, position))
     return toInner, toOuter
 
 

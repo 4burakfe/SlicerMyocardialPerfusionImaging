@@ -360,6 +360,21 @@ For the gated study of Study 1 or Study 2:
   the same way, leaning to a prior of 10 +- 3 mm where the blur hides it, and puts the endo- and
   epicardium half a thickness either side of the mid-wall: 8.4 and 15.8 mm in the same phantom (10.0 and
   10.7 before, with each frame's own blood pool). The thickening map is count-based and does not use these widths.
+  A ray whose profile does not fall half way to the static pool (an end-systolic cavity filled by the
+  walls' blur) takes its outer half width on the cavity side too; with its own floor the inner edge sat
+  next to the peak.
+- **Myocardial volume** (Advanced): with **Constant myocardial counts** (the default) every frame's half
+  widths are then scaled, by one factor per frame, until its myocardium holds the counts of the median
+  frame. Every frame has the same tracer in its myocardium (*Counts per frame*: the image counts stay
+  within a few %), so a frame drawn too thin, typically end-systole with a small cavity, shows too few
+  counts in its myocardium (59 % of the mean in one stress study) and is widened, one drawn too thick
+  narrowed. The blood pool cannot fix this: the static image is the sum over the cycle, its cavity filled
+  by the moving walls as an end-systolic cavity is by their blur, so neither its pool nor a frame's own is
+  the true one. In a small gated phantom (8 frames, 15 mm blur, ED 10 mm wall around a 22 mm cavity, ES
+  14 mm around 9 mm, Poisson noise) each frame's own widths read 7.6 mm at ED and 10.3 at ES, the
+  myocardium counts 76-124 % of the mean; with constant counts 9.6 and 13.8, ES the thickest frame (at
+  18 mm blur 8.4 and 13.9, 10.1 and 10.9 before). *Each frame's own* keeps the widths as measured;
+  *Constant at the end-diastolic / end-systolic volume* holds the myocardial volume of that frame (QGS).
 - **Frames on screen.** Every frame is resliced to the SA / HLA / VLA grids of Processing and shown in
   three rows, one tile per frame, all at the same slice (the mouse wheel over a row scrolls), with its
   contours and one color scale for all frames (or each frame on its own).

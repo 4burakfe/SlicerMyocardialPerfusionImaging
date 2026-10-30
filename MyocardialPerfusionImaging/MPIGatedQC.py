@@ -8,8 +8,8 @@ Quality control of the gated study of Study 1 (stress) or Study 2 (rest) before 
     frame from scratch; a surface fit, B-spline, deformable mesh or the legacy jump-limited path, runs
     through the rays whose wall the frame shows and draws the others; every frame's thickness from its
     own profile widths, a blurred slab leaning to a prior where the blur hides it, fitted the same way; or,
-    as QGS does, every frame's thickness scaled to the myocardial volume of the ED or ES frame,
-    constantVolumeGates; when tracked, every frame keeps the static base rim's shape at its own height,
+    by default every frame's thickness scaled until its myocardium holds the median frame's counts, or,
+    as QGS does, to the myocardial volume of the ED or ES frame, constantVolumeGates; when tracked, every frame keeps the static base rim's shape at its own height,
     smoothed over the cycle by default, smoothValveHeights);
   - every frame is resliced to the SA / HLA / VLA grids made in Processing and shown as three rows with
     one tile per frame, all frames at the same slice (mouse wheel over a row scrolls it), with the
@@ -442,8 +442,10 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.volumeCombo.setCurrentIndex(
             max(0, self.volumeCombo.findData(wallLib.GATE_DEFAULTS["myocardialVolume"])))
         self.volumeCombo.toolTip = (
-            "Myocardial volume of the frames. Each frame's own (default): every frame's wall thickness from its own "
-            "count profile widths, so the myocardial volume may change over the cycle. Constant at the end-diastolic "
+            "Myocardial volume of the frames. Constant myocardial counts (default): every frame's wall thickness from "
+            "its own count profile widths, scaled by one factor until its myocardium holds the median frame's counts "
+            "(the same tracer in every frame: a frame drawn too thin, often end-systole, is widened). Each frame's own: "
+            "the widths as measured, so the myocardial volume may change over the cycle. Constant at the end-diastolic "
             "volume (QGS-like, Germano et al., J Nucl Med 1995): every frame keeps its mid-wall and the shape of its "
             "thickness map, scaled to the myocardial volume of the frame with the largest cavity, so a wall that "
             "moves inward thickens and the endocardium moves further in than the mid-wall (smaller ESV, higher EF). "
@@ -951,6 +953,7 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.test_PoolFloor()
         self.test_SlabThickness()
         self.test_EndSystolicWall()
+        self.test_ConstantCounts()
         self.test_MaskedSampler()
 
     def test_GatingText(self):
@@ -1130,6 +1133,49 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
             endo = [float(np.median(wall["endo"][rows])) for wall in walls]
             self.assertLess(endo[1], endo[0] - 8.0, (model, endo))
         self.delayDisplay("End-systolic wall test passed")
+
+    def test_ConstantCounts(self):
+        """A small gated LV blurred at 15 mm (ED 10 mm wall around a 22 mm cavity, ES 14 mm around 9 mm, the
+        same counts in every frame): drawn from its own profiles the frames' myocardia hold counts some 25 %
+        apart (with noise the end-systolic one the fewest: its wall drawn too thin); with myocardialVolume
+        "counts" every frame holds the median frame's counts and the end-systolic wall is the thickest."""
+        n, spacing = 64, 2.0
+        center = np.array([n * spacing / 2.0] * 3)
+        u, w = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])
+        ii = np.arange(n) * spacing
+        p = np.stack(np.meshgrid(ii, ii, ii, indexing="ij"), -1)[..., ::-1] - center   # array [k, j, i]
+        z, rho = p[..., 2], np.hypot(p[..., 0], p[..., 1])
+        frequency = np.fft.fftfreq(n, spacing)
+        f2 = frequency[:, None, None] ** 2 + frequency[None, :, None] ** 2 + frequency[None, None, :] ** 2
+        blur = np.exp(-2.0 * (math.pi * 15.0 / 2.3548) ** 2 * f2)
+
+        def ventricle(radius, length, thickness):
+            def inside(a, c):
+                return (np.where(z > 0, (rho / a) ** 2 + (z / c) ** 2, (rho / a) ** 2) <= 1.0) & (z >= -25.0)
+            epi, endo = inside(radius + thickness, length + thickness), inside(radius, length)
+            image = np.where(epi & ~endo, 1.0, 0.0) + np.where(endo, 0.1, 0.0)
+            image = np.real(np.fft.ifftn(np.fft.fftn(image) * blur))
+            return (image / image.sum() * 1e6).astype(np.float32)
+
+        def sampleOf(array):
+            return lambda pts: sampleTrilinear(array, np.asarray(pts) / spacing)
+        ed, es = np.array([22.0, 35.0, 10.0]), np.array([9.0, 22.0, 14.0])
+        frames = [ventricle(*(ed + (es - ed) * f)) for f in 0.5 - 0.5 * np.cos(2.0 * math.pi * np.arange(8) / 8)]
+        with _defaults(resolution=15.0, thicknessModel="slab"):
+            static = wallLib.fitWall(sampleOf(sum(frames) / len(frames)), center, u, w, 55.0)
+        rows = slice(static["grid"].nCyl // 3, static["grid"].nCyl)
+        own = [wallLib.fitGate(sampleOf(frame), static) for frame in frames]
+
+        def counts(results):
+            values = [wallLib._myocardialCounts(r, r["endo"], r["epi"]) for r in results]
+            return np.array(values) / np.median(values)
+        self.assertGreater(float(np.ptp(counts(own))), 0.15, counts(own))
+        fixed = wallLib.constantVolumeGates(own, "counts")
+        self.assertTrue(np.allclose(counts(fixed), 1.0, atol=0.02), counts(fixed))
+        thickness = [float(np.median(r["thickness"][rows])) for r in fixed]
+        self.assertEqual(int(np.argmax(thickness)), 4, thickness)
+        self.assertGreater(thickness[4], thickness[0] + 2.0, thickness)
+        self.delayDisplay("Constant counts test passed")
 
     def test_SlabThickness(self):
         """A wall's thickness from its profile width, measured as the walls are (_profileWidth, within reach of
