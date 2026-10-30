@@ -19,6 +19,10 @@ import re
 import traceback
 import unicodedata
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 NAME_ATTRIBUTE = "MPI.CaseName"
 ID_ATTRIBUTE = "MPI.CaseID"
 SOURCE_ATTRIBUTE = "MPI.CaseSource"

@@ -17,6 +17,10 @@ import math
 
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 PREFIX = "SPECTRecon."
 PREFIXES = (PREFIX, "GatedPET.")   # gated PET: same keys, written by the DICOMGatedDynamicPET extension
 COUNT_BAND_PERCENT = 10.0      # a frame whose counts differ more from the mean is flagged

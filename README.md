@@ -241,9 +241,16 @@ How it works:
   defects* (Advanced parameters, Defects) turns it off.
 - The wall thickness comes from the profile width corrected for the system resolution, and the endo-
   and epicardium are placed half a thickness on either side.
-- At every angle the wall ends where its counts fall below 55 % of that angle's wall counts, or where
-  the cavity fills up (the rays run into the atria). The valve plane is fitted through these ends, so it
-  can be oblique to the long axis; sliders shift and tilt it.
+- At every angle the wall ends where its counts fall below a threshold, or where the cavity fills up
+  (the rays run into the atria). *Base detection* sets the threshold: a preliminary segment (30 % of each
+  angle's wall counts) gives the blood pool and the wall counts, and the wall ends half way between the
+  two (*Adaptive, global*: the whole myocardium's counts, the default; *Adaptive*: each angle's own basal
+  wall, so a basal-only defect is followed to the valve plane); *Fixed share* ends it at *Base threshold*
+  of each angle's wall counts. With *Base: go on past a defect gap* (Advanced parameters, Valve plane, off
+  by default) a wall that falls off and comes back within 15 mm toward the base (a defect between the
+  mid-ventricle and a basal wall still alive) goes on to the end of the basal wall, only where the cavity
+  has not filled and the wall comes back in the cone it could have followed. The valve plane is fitted
+  through these ends, so it can be oblique to the long axis; sliders shift and tilt it.
 - Only the long axis and its direction are taken from Processing. After a first fit the ray center is
   moved along the axis between the valve plane and the apex (toward the apex when a steep valve plane
   needs room) and the wall is fitted again, so the result does not depend on where the LV center was

@@ -32,7 +32,7 @@ labelling:
 4. Endo- and epicardium. With the surface fits and thicknessModel "width" where the count profile falls
    half way from the wall peak to the blood pool (_poolLevel: the cavity sampled CAVITY_GAP_MM inside
    the endocardium) and to the lowest counts outside, each half width fitted over the wall, with no
-   model of the system resolution; with "slab" (the default) the mid-wall -/+ half a thickness read from the width as
+   model of the system resolution; with "slab" the mid-wall -/+ half a thickness read from the width as
    a slab of uniform uptake blurred at the system resolution, leaning to a prior thickness where the
    blur hides it (slabThickness). The ellipsoid fit removes the resolution from the width in quadrature.
 
@@ -50,6 +50,10 @@ import math
 
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 DEFAULTS = {
     "angles": 60,              # rays around the long axis
     "rowSpacing": 2.0,         # mm between cylinder rows
@@ -67,22 +71,193 @@ DEFAULTS = {
                                # the blood pool, "adaptive" half way between its column's basal counts and the blood
                                # pool, "fraction" at baseFraction of its column's wall counts (_fitValvePlane)
     "baseFraction": 0.55,      # "fraction": wall ends where its counts fall below this fraction of its column's wall counts
-    "basePrelimFraction": 0.50,  # "adaptive": the same for the preliminary segment the blood pool and basal wall come from
+    "basePrelimFraction": 0.30,  # "adaptive": the same for the preliminary segment the blood pool and basal wall come from
+    "baseGap": False,          # base: a wall that falls off and comes back within BASE_GAP_MM toward the base goes on
+                               # (a defect between the mid-ventricle and a basal wall still alive, _wallResumes)
     "baseEdgeFraction": 0.50,  # "adaptive": the wall ends this far from its basal counts down to the blood pool
     "maxValveTilt": 40.0,      # deg, largest tilt of the valve plane against the short-axis plane
     "valveShape": "saddle",    # VALVE_SHAPES: "saddle" lets the base rim rise and fall twice around the LV on top of
                                # the plane's tilt (up to SADDLE_MAX_MM), "plane" keeps it flat
     "maxBaseNarrowing": 35.0,  # deg, steepest the wall may turn toward the axis on its way to the base
     "resolution": 15.0,        # system resolution (FWHM, mm) removed from the profile width
-    "thicknessModel": "slab",  # surface fits and gate frames (THICKNESS_MODELS): "width" puts the endo- and epicardium
+    "thicknessModel": "gradienttable",  # surface fits and gate frames (THICKNESS_MODELS): "width" puts the endo- and epicardium
                                # where the profile falls half way to the blood pool / the counts outside, "slab"
                                # reads the width as a slab blurred at the resolution, leaning to a prior thickness
+                               # (the width against the side floors), "meanfloor" reads it so with the
+                               # width against one floor for both sides, half the ray's own, half the wall's mean,
+                               # "gradient" puts them at the profile's steepest slopes, "gradienttable" reads the width
+                               # between those slopes as a blurred slab, leaning to the prior (the default)
     "minThickness": 6.0,       # mm
     "maxThickness": 18.0,      # mm
     "valveOffset": 0.0,        # mm, + moves the valve plane toward the apex
     "valveTiltAnterior": 0.0,  # deg added to the detected tilt, + moves the anterior edge toward the apex
     "valveTiltSeptal": 0.0,    # deg added to the detected tilt, + moves the septal edge toward the apex
 }
+GATE_DEFAULTS = {
+    "maxWallShift": 25.0,      # mm, "static": the mid-wall of a frame is searched this far from the static mid-wall
+    "maxValveShift": 25.0,     # mm, "static": the valve plane of a frame stays this close to the static one
+    "segmentation": "static",  # "static": every frame's wall tracked from the static wall (its displacement is fitted),
+                               # "own": every frame detected from scratch on the static rays (its wall is fitted)
+    "fit": "bspline",          # surface fit of the traced rays that also draws the untraced ones (GATE_FITS)
+    "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
+    "myocardialVolume": "own",  # GATE_VOLUMES: "counts" every frame's thickness scaled until its myocardium holds the
+                               # median frame's counts, "own" every frame's wall thickness from its own profile widths,
+                               # "ed" / "es" every frame's thickness scaled to the myocardial volume of that frame
+    "valveCycle": "smooth",    # GATE_VALVE_CYCLES, "static": "smooth" the frames' base rim heights follow a smooth
+                               # curve over the cycle (smoothValveHeights), "own" every frame's own height
+}
+GATE_SEGMENTATIONS = (("Track the static wall", "static"),
+                      ("Each frame from scratch", "own"))
+GATE_FITS = (("B-spline surface, bending penalty", "bspline"),
+             ("Deformable mesh, every ray tied to its neighbours", "mesh"),
+             ("Legacy: limited jump between neighbouring rays", "legacy"))
+GATE_VOLUMES = (("Constant myocardial counts (the median frame's)", "counts"),
+                ("Each frame's own (from its profile widths)", "own"),
+                ("Constant, at the end-diastolic volume (QGS-like)", "ed"),
+                ("Constant, at the end-systolic volume", "es"))
+GATE_VALVE_CYCLES = (("Smooth over the cycle", "smooth"),
+                     ("Each frame's own", "own"))
+VALVE_CYCLE_HARMONICS = 2   # smoothValveHeights: harmonics of the cardiac cycle the base rim height may follow
+WALL_FITS = GATE_FITS + (("Ellipsoid shape model, Gaussian smoothing (previous)", "ellipsoid"),)
+SPLINE_KNOT_MM = 8.0       # B-spline fit: knot spacing over the wall (mm)
+SPLINE_LENGTH_MM = 15.0    # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
+MESH_LENGTH_MM = 4.0       # mesh fit: tension length, wall features shorter than this are smoothed out (mm)
+LEGACY_MAX_SLOPE = 0.6     # legacy fit: largest change between neighbouring rays, mm per mm of wall
+THICKNESS_PRIOR_MM = 10.0    # slabThickness: wall thickness a profile leans to where the blur hides its own ...
+THICKNESS_PRIOR_SIGMA = 3.0  # ... with this spread (mm)
+THICKNESS_MODELS = (("Half way to the blood pool and to the counts outside", "width"),
+                    ("Full width at half the peak, no floor on either side", "fwhm"),
+                    ("Half way to the mean floor (local + global), blur-corrected", "meanfloor"),
+                    ("Steepest slope on each side, no correction", "gradient"),
+                    ("Steepest slope on each side, blur-corrected with a thickness prior", "gradienttable"),
+                    ("Blurred slab at the system resolution, with a thickness prior", "slab"))
+GRADIENT_SMOOTHING_MM = 2.0  # _gradientHalfWidths: Gaussian sigma along the ray before the slope is taken (mm)
+GRADIENT_REACH = 1.5         # ... the slope is searched this many times the profile reach from the mid-wall
+CAVITY_GAP_MM = 5.0          # _poolLevel: the blood pool is sampled this far inside the endocardium ...
+POOL_MIN_RAYS = 0.5          # ... where at least this share of the rays has 3 mm of cavity there (else without the gap)
+WIDTH_SIGMA_MM = 0.75        # slabThickness: uncertainty of a measured profile width (mm)
+BASE_METHODS = (("Adaptive, global: half way from the whole myocardium's counts to the blood pool", "global"),
+                ("Adaptive: half way from the basal wall to the blood pool", "adaptive"),
+                ("Fixed share of each angle's wall counts", "fraction"),
+                ("Gradient: the steepest fall of each angle's wall counts near a preliminary plane", "gradient"))
+VALVE_SHAPES = (("Saddle: a tilted plane that may rise and fall twice around the LV", "saddle"),
+                ("Plane", "plane"))
+SADDLE_MAX_MM = 8.0        # "saddle" base rim: largest rise / fall of the rim against the tilted plane (mm)
+SADDLE_RIDGE = 0.1         # "saddle" base rim: cost of the saddle in the fit, as a share of the wall ends' weights
+BASE_BAND_MM = 12.0        # "adaptive" base: the basal wall counts are taken this far apical of the preliminary plane
+BASE_SEARCH_MM = 16.0      # "adaptive" base: each column is searched toward the base from this far apical of it
+BASE_GRADIENT_PAST_MM = 10.0  # "gradient" base: the steepest fall is searched this far basal of the preliminary plane
+BASE_MIN_CONTRAST = 0.25   # "adaptive" base: basal wall counts taken at least this share of the way from blood pool to wall
+BASE_GAP_MM = 15.0         # baseGap: a wall that falls off and comes back within this far toward the base (a defect between
+                           # the mid-ventricle and a basal wall still alive) goes on (_wallResumes)
+BASE_GAP_WIDEN_DEG = 30.0  # ... only in a cone: the wall may come back at most this much further out from the axis ...
+BASE_GAP_SLACK_MM = 4.0    # ... or maxBaseNarrowing closer to it, give or take this (mm)
+FIT_OUTLIER = 3.0          # rays further than this many robust misfits from the first fit lose their weight
+SHAPE_PRIOR_WEIGHT = 0.03  # weight of the shape model against the rays' own peaks (weights 0..1) in the wall fit
+SHAPE_RESIDUAL_SIGMA = 3.0 # grid samples: width of the field that carries the model's misfit into a defect
+SHAPE_BASAL_WEIGHT = 0.25 # weight of the walls on the basal side of the grid center in the model fit
+SHAPE_CENTER_SIGMA = 15.0  # mm: how far the shape model's ellipsoid center may stray from the valve plane ...
+SHAPE_CENTER_PRIOR = 0.05  # ... and the weight of that prior (share of all wall weights)
+SHAPE_MAX_TILT = 25.0      # deg: how far the shape model's long axis may turn away from the LV axis ...
+SHAPE_TILT_SIGMA = 15.0    # ... and the width of the prior that keeps it close (same weight as the center's)
+SHAPE_TILT_CAP = 0.25      # share of the apical cap fitted from which any better-fitting tilt is kept ...
+SHAPE_TILT_GAIN = 0.25     # ... below it, only one that lowers the model's misfit by this share
+VISIBILITY_REFERENCE = 50.0  # percentile of the walls' counts above the cavity that counts as the typical wall
+SHAPE_DIM = 0.45          # walls dimmer than this share of the bright walls (counts) count as defect for the model ...
+SHAPE_BORDER_SIGMA = 2.0  # ... and the walls within about this many grid samples of them are left out of its fit
+SHAPE_FADE = 0.1           # how fast that misfit fades inside a defect (share of the typical local weight)
+TRACE_RATIO_LOW = 1.25      # wall / blood pool counts (static image) up to which a ray's wall is untraceable (scar) ...
+TRACE_RATIO_HIGH = 1.75     # ... and from which it is traced as wall; in between it is partly trusted
+TRACE_POOL_FLOOR = 0.05     # share of the bright walls' counts below which the blood pool is not taken lower
+THICKENING_SMOOTHING = 2.5        # thickeningMap: smoothing of the % map (map cells)
+THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES count maps
+MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
+PHASE_COHERENCE_SMOOTHING = 3.0   # phaseCoherenceMap: neighbourhood (Gaussian sigma, map cells) the phases are pooled over
+PHASE_COHERENCE_LOW = 50.0        # %: coherence below which the overlay hatches the thickening map
+MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
+                     ("Floating: each frame's LV center and epicardial apex", "floating"),
+                     ("Floating: each frame's myocardium mass center", "mass"),
+                     ("Floating: each frame's base center", "base"))
+MOTION_APEX_ROWS = 2              # motionMap "floating": cap rows nearest the axis that place the epicardial apex
+REGIONAL_EF_SMOOTHING = 2.0       # regionalEFMap: smoothing of the % map (map cells)
+REGIONAL_EF_CUTS = (("Wedges from the long axis, cones from the LV center at the apex", "axis"),
+                    ("Cones from each frame's base center", "base"))   # regionalEFMap: how the cavity is cut
+THICKENING_SOURCES = (("Wall counts (partial volume)", "counts"),
+                      ("Wall thickness, endo- to epicardium", "geometry"))
+LABEL_MYOCARDIUM = 1
+LABEL_CAVITY = 2
+# Ring edges of the 17-segment model as a fraction of the bullseye radius (apex at 0, valve plane
+# at 1): apex cap (17), apical (13-16), mid (7-12), basal (1-6)
+POLAR_RING_EDGES = (0.0, 0.2, 0.47, 0.73, 1.0)
+SEGMENT_NAMES = (
+    "basal anterior", "basal anteroseptal", "basal inferoseptal", "basal inferior", "basal inferolateral",
+    "basal anterolateral", "mid anterior", "mid anteroseptal", "mid inferoseptal", "mid inferior",
+    "mid inferolateral", "mid anterolateral", "apical anterior", "apical septal", "apical inferior",
+    "apical lateral", "apex")
+DIAMETER_LEVEL = 0.8       # lvDiameterMm: bullseye radius of the level (0 apex .. 1 valve plane), basal-mid like echo
+DIAMETER_ANGLES = (60.0, 240.0)   # lvDiameterMm: anteroseptal and inferolateral (the parasternal long-axis line)
+VESSELS = ("LAD", "RCA", "LCX")
+VESSEL_SEGMENTS = {   # coronary territories of the 17 segments (AHA 2002 standard assignment)
+    "LAD": (1, 2, 7, 8, 13, 14, 17),
+    "RCA": (3, 4, 9, 10, 15),
+    "LCX": (5, 6, 11, 12, 16),
+}
+OVERLAYS = ("vessels", "segments")   # region overlays of the polar maps and 3D views
+# where the values are written on the bullseye: (radius, angle from anterior toward the septum, deg)
+SEGMENT_LABEL_PLACES = tuple(
+    [(0.5 * (POLAR_RING_EDGES[3] + POLAR_RING_EDGES[4]), 60.0 * k) for k in range(6)]
+    + [(0.5 * (POLAR_RING_EDGES[2] + POLAR_RING_EDGES[3]), 60.0 * k) for k in range(6)]
+    + [(0.5 * (POLAR_RING_EDGES[1] + POLAR_RING_EDGES[2]), 90.0 * k) for k in range(4)] + [(0.0, 0.0)])
+VESSEL_LABEL_PLACES = ((0.6, 35.0), (0.6, 160.0), (0.6, 270.0))   # LAD anteroseptal, RCA inferior, LCX lateral
+WALLS = ("Apex", "Anterior", "Septal", "Inferior", "Lateral")
+# The five walls are drawn on the bullseye itself, not grouped from the 17 segments: the apex is the disk
+# inside APEX_RADIUS (the size of segment 17), and the rest is cut into four quarters by an X, each
+# centred on its wall (anterior up, septal left, inferior down, lateral right), borders at 45, 135, 225
+# and 315 deg.
+APEX_RADIUS = POLAR_RING_EDGES[1]
+WALL_CENTERS_DEG = (0.0, 90.0, 180.0, 270.0)        # anterior, septal, inferior, lateral
+WALL_LABEL_PLACES = ((0.0, 0.0),) + tuple((0.5 * (APEX_RADIUS + 1.0), c) for c in WALL_CENTERS_DEG)
+# how a polar map is painted: per pixel, or the mean of each of the 17 segments, the five walls or the territories
+REGION_VIEWS = ("pixels", "segments", "walls", "vessels")
+REGION_OVERLAYS = ("vessels", "segments", "walls")   # the segmentations a polar map can show (borders and values)
+WALL_LABELS = (   # (text, angle around the axis from anterior toward the septum, deg)
+    ("Anterior", 0.0), ("Septal", 90.0), ("Inferior", 180.0), ("Lateral", 270.0))
+SLAB_T = np.arange(0.0, 40.01, 0.5)   # slab widths of the slabThickness table (mm)
+POLE_SPACING_MM = 3.0   # smoothing width around the axis is set by the spacing of the rays at the equator
+# Peak search along the rays (share of the wall's distance from the LV center, t0)
+PEAK_SEARCH_MIN_MM = 8.0         # t0 is taken at least this far from the center
+PEAK_SEARCH_LOW = 0.45           # the peak is searched from this share of t0 ...
+PEAK_SEARCH_HIGH = 1.7           # ... to this share of it
+PEAK_HALF_SHARE = 0.35           # half width of the wall's search band and of the profile reach: this share of t0 ...
+PEAK_HALF_MIN_MM = 6.0           # ... and at least this (mm)
+PEAK_TOLERANCE_SHARE = 0.3       # a ray's peak this share of t0 off its neighbours loses its weight
+PROFILE_REACH_FACTOR = 1.6       # how far a wall profile is read from the mid-wall: this times that half width
+WALL_SMOOTHING_SHARE = 0.75      # ellipsoid fit: the last round smooths with this share of Smoothing
+APEX_MARGIN_MM = 8.0             # the grid center stays this far from the apex ...
+CENTER_SHIFT_SHARE = 0.3         # ... and moves at most this share of the radius along the axis
+# Gate frames
+GATE_TOLERANCE_SHIFT_SHARE = 0.5   # tracked frames: tolerance between neighbouring peaks, this share of maxWallShift ...
+GATE_TOLERANCE_RADIUS_SHARE = 0.25 # ... or of the wall's radius ...
+GATE_TOLERANCE_MIN_MM = 5.0        # ... at least this (mm)
+STATIC_RELIABLE_LEVEL = 0.99       # _gatePool: rays at least this reliable set the scale of a frame's blood pool
+THICKNESS_SCALE_LOW = 0.2          # constantVolumeGates: range of the factor on the half widths
+THICKNESS_SCALE_HIGH = 5.0
+# Valve plane
+BASE_MID_ROWS_LOW_MM = -12.0       # rows of the mid-ventricle that give a column's cavity contrast (mm from the center)
+BASE_MID_ROWS_HIGH_MM = -2.0
+BASE_MIN_REFERENCE_SHARE = 0.4     # a column's wall counts are taken at least this share of the whole wall's
+VALVE_TILT_LIMIT_RAD = 1.2         # valve tilt sliders: largest tilt of the base rim (radians)
+# Maps
+THICKENING_MAP_LOW = -100.0        # thickening maps: range kept before smoothing (%)
+THICKENING_MAP_HIGH = 200.0
+MOTION_MAP_LIMIT_MM = 30.0         # motion map: range kept before smoothing (+- mm)
+NEAR_POLE_SPACING_MM = 1.5         # rows whose rays are closer than this are treated as one around the axis
+# Shape model
+SHAPE_BORDER_DIM_SHARE = 0.1       # _clearWalls: a ray with more than this share of dim rays around it is left out
+SHAPE_FADE_FLOOR = 0.2             # the fade of the model's misfit stops at this share of SHAPE_FADE
+SHAPE_RESIDUAL_KERNEL_SIGMA = 0.75 # smoothing of that misfit (grid samples)
+# Reporting
+MYOCARDIUM_DENSITY_G_PER_ML = 1.05 # myocardial mass from its volume
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +359,7 @@ def fitWall(sample, center, u, w, radius, params=None):
     # the middle of the LV, or further toward the apex when the steep side of the valve plane needs
     # it, but the cap keeps at least 8 mm of cavity in front of the apical endocardium
     shift = max(0.5 * (a + apex), a + max(rise, 0.0) + 3.0 * grid.dz)
-    shift = float(np.clip(min(shift, apex - 8.0), -0.3 * radius, 0.3 * radius))
+    shift = float(np.clip(min(shift, apex - APEX_MARGIN_MM), -CENTER_SHIFT_SHARE * radius, CENTER_SHIFT_SHARE * radius))
     if abs(shift) >= 2.0:
         try:
             result = _fitOnGrid(sample, WallGrid(center + shift * u, u, w, radius, params,
@@ -218,24 +393,24 @@ def _fitOnGrid(sample, grid, profiles=None):
     mean = profiles.mean(axis=(0, 1))
     usable = grid.t >= 3.0
     t0 = float(grid.t[usable][np.argmax(mean[usable])])
-    t0 = max(t0, 8.0)
-    lo = np.full((grid.nRows, grid.nTheta), 0.45 * t0)
-    hi = np.full((grid.nRows, grid.nTheta), min(1.7 * t0, grid.t[-1]))
+    t0 = max(t0, PEAK_SEARCH_MIN_MM)
+    lo = np.full((grid.nRows, grid.nTheta), PEAK_SEARCH_LOW * t0)
+    hi = np.full((grid.nRows, grid.nTheta), min(PEAK_SEARCH_HIGH * t0, grid.t[-1]))
 
-    half = max(6.0, 0.35 * t0)
+    half = max(PEAK_HALF_MIN_MM, PEAK_HALF_SHARE * t0)
     window = _angleWindow(grid, 9)
     for _ in range(int(p["iterations"])):
         peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
         cavity = _cavityLevel(profiles, grid.t, peakT)
-        weight, reference = _peakWeights(grid, peakT, peakValue, lo, hi, window, 0.3 * t0, cavity)
-        surface, weight = _wallSurface(grid, profiles, peakT, weight, reference, p, p["smoothing"], 0.3 * t0,
+        weight, reference = _peakWeights(grid, peakT, peakValue, lo, hi, window, PEAK_TOLERANCE_SHARE * t0, cavity)
+        surface, weight = _wallSurface(grid, profiles, peakT, weight, reference, p, p["smoothing"], PEAK_TOLERANCE_SHARE * t0,
                                        counts=peakValue)
         lo = np.maximum(surface - half, 1.0)
         hi = np.minimum(surface + half, grid.t[-1])
     peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
     cavity = _cavityLevel(profiles, grid.t, peakT)
-    weight, reference = _peakWeights(grid, peakT, peakValue, lo, hi, window, 0.3 * t0, cavity)
-    mid, weight = _wallSurface(grid, profiles, peakT, weight, reference, p, 0.75 * p["smoothing"], 0.3 * t0,
+    weight, reference = _peakWeights(grid, peakT, peakValue, lo, hi, window, PEAK_TOLERANCE_SHARE * t0, cavity)
+    mid, weight = _wallSurface(grid, profiles, peakT, weight, reference, p, WALL_SMOOTHING_SHARE * p["smoothing"], PEAK_TOLERANCE_SHARE * t0,
                                p["smoothing"], peakValue)
     peak = _interp(profiles, grid.t, mid)
 
@@ -248,7 +423,7 @@ def _fitOnGrid(sample, grid, profiles=None):
     peak = _interp(profiles, grid.t, mid)
 
     # 4. thickness from the profile width
-    fwhm = _fwhm(profiles, grid.t, mid, peak, 1.6 * half)
+    fwhm = _fwhm(profiles, grid.t, mid, peak, PROFILE_REACH_FACTOR * half)
     resolution = float(p["resolution"])
     physical = np.sqrt(np.maximum(fwhm ** 2 - resolution ** 2, 0.0))
     if p.get("shapeModel", True):
@@ -278,10 +453,11 @@ def _fitOnGridSurface(grid, profiles):
     beyond = _beyondBase(grid, mid, plane)
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
-    reach = 1.6 * max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
+    reach = PROFILE_REACH_FACTOR * max(PEAK_HALF_MIN_MM, PEAK_HALF_SHARE * float(np.median(mid[:grid.nCyl])))
     inner, outer = _wallHalfWidths(profiles, grid.t, mid, peak, reach)       # each side against its own floor
     pool = _poolLevel(profiles, grid.t, mid - inner)
-    inner, outer = _wallHalfWidths(profiles, grid.t, mid, peak, reach, pool)  # the cavity side against the pool
+    inner, outer = _wallHalfWidths(profiles, grid.t, mid, peak, reach, pool,  # the cavity side against the pool
+                                   p.get("thicknessModel"), _clearWalls(weight, peak) & ~beyond)
     result = {"grid": grid, "mid": mid, "peak": peak, "gateWeight": weight, "valvePlane": plane,
               "profileInner": inner, "profileOuter": outer, "profileReach": reach,
               "fit": p["fit"], "fitPull": p["fitPull"]}
@@ -335,7 +511,7 @@ def _gatePool(reference, profiles, peakValue=None):
     if reference.get("profileSum", 0.0) > 0:
         scale = _profileCounts(reference["grid"], profiles) / float(reference["profileSum"])
     else:
-        seen = _staticReliability(reference) > 0.99
+        seen = _staticReliability(reference) > STATIC_RELIABLE_LEVEL
         refPeak = np.asarray(reference["peak"], dtype=float)
         peakValue = _interp(profiles, reference["grid"].t, reference["mid"]) if peakValue is None else peakValue
         scale = float(np.median(peakValue[seen])) / max(float(np.median(refPeak[seen])), 1e-9) if np.any(seen) else 1.0
@@ -409,83 +585,6 @@ def _wallSurface(grid, profiles, peakT, weight, reference, p, sigma, tolerance, 
 # ---------------------------------------------------------------------------
 # Gated frames
 # ---------------------------------------------------------------------------
-GATE_DEFAULTS = {
-    "maxWallShift": 25.0,      # mm, "static": the mid-wall of a frame is searched this far from the static mid-wall
-    "maxValveShift": 25.0,     # mm, "static": the valve plane of a frame stays this close to the static one
-    "segmentation": "static",  # "static": every frame's wall tracked from the static wall (its displacement is fitted),
-                               # "own": every frame detected from scratch on the static rays (its wall is fitted)
-    "fit": "bspline",          # surface fit of the traced rays that also draws the untraced ones (GATE_FITS)
-    "fitPull": 0.8,            # 0..1: how far a traced ray is pulled from its own peak to the fit (1: the fit)
-    "myocardialVolume": "own", # GATE_VOLUMES: "own" every frame's wall thickness from its own profile widths,
-                               # "ed" / "es" every frame's thickness scaled to the myocardial volume of that frame
-    "valveCycle": "smooth",    # GATE_VALVE_CYCLES, "static": "smooth" the frames' base rim heights follow a smooth
-                               # curve over the cycle (smoothValveHeights), "own" every frame's own height
-}
-GATE_SEGMENTATIONS = (("Track the static wall", "static"),
-                      ("Each frame from scratch", "own"))
-GATE_FITS = (("B-spline surface, bending penalty", "bspline"),
-             ("Deformable mesh, every ray tied to its neighbours", "mesh"),
-             ("Legacy: limited jump between neighbouring rays", "legacy"))
-GATE_VOLUMES = (("Each frame's own (from its profile widths)", "own"),
-                ("Constant, at the end-diastolic volume (QGS-like)", "ed"),
-                ("Constant, at the end-systolic volume", "es"))
-GATE_VALVE_CYCLES = (("Smooth over the cycle", "smooth"),
-                     ("Each frame's own", "own"))
-VALVE_CYCLE_HARMONICS = 2   # smoothValveHeights: harmonics of the cardiac cycle the base rim height may follow
-WALL_FITS = GATE_FITS + (("Ellipsoid shape model, Gaussian smoothing (previous)", "ellipsoid"),)
-SPLINE_KNOT_MM = 8.0       # B-spline fit: knot spacing over the wall (mm)
-SPLINE_LENGTH_MM = 15.0    # B-spline fit: bending length, wall features shorter than this are smoothed out (mm)
-MESH_LENGTH_MM = 4.0       # mesh fit: tension length, wall features shorter than this are smoothed out (mm)
-LEGACY_MAX_SLOPE = 0.6     # legacy fit: largest change between neighbouring rays, mm per mm of wall
-THICKNESS_PRIOR_MM = 10.0    # slabThickness: wall thickness a profile leans to where the blur hides its own ...
-THICKNESS_PRIOR_SIGMA = 3.0  # ... with this spread (mm)
-THICKNESS_MODELS = (("Half way to the blood pool and to the counts outside", "width"),
-                    ("Blurred slab at the system resolution, with a thickness prior", "slab"))
-CAVITY_GAP_MM = 5.0          # _poolLevel: the blood pool is sampled this far inside the endocardium ...
-POOL_MIN_RAYS = 0.5          # ... where at least this share of the rays has 3 mm of cavity there (else without the gap)
-WIDTH_SIGMA_MM = 0.75        # slabThickness: uncertainty of a measured profile width (mm)
-BASE_METHODS = (("Adaptive, global: half way from the whole myocardium's counts to the blood pool", "global"),
-                ("Adaptive: half way from the basal wall to the blood pool", "adaptive"),
-                ("Fixed share of each angle's wall counts", "fraction"))
-VALVE_SHAPES = (("Saddle: a tilted plane that may rise and fall twice around the LV", "saddle"),
-                ("Plane", "plane"))
-SADDLE_MAX_MM = 8.0        # "saddle" base rim: largest rise / fall of the rim against the tilted plane (mm)
-SADDLE_RIDGE = 0.1         # "saddle" base rim: cost of the saddle in the fit, as a share of the wall ends' weights
-BASE_BAND_MM = 12.0        # "adaptive" base: the basal wall counts are taken this far apical of the preliminary plane
-BASE_SEARCH_MM = 16.0      # "adaptive" base: each column is searched toward the base from this far apical of it
-BASE_MIN_CONTRAST = 0.25   # "adaptive" base: basal wall counts taken at least this share of the way from blood pool to wall
-FIT_OUTLIER = 3.0          # rays further than this many robust misfits from the first fit lose their weight
-
-
-SHAPE_PRIOR_WEIGHT = 0.03  # weight of the shape model against the rays' own peaks (weights 0..1) in the wall fit
-SHAPE_RESIDUAL_SIGMA = 3.0 # grid samples: width of the field that carries the model's misfit into a defect
-SHAPE_BASAL_WEIGHT = 0.25 # weight of the walls on the basal side of the grid center in the model fit
-SHAPE_CENTER_SIGMA = 15.0  # mm: how far the shape model's ellipsoid center may stray from the valve plane ...
-SHAPE_CENTER_PRIOR = 0.05  # ... and the weight of that prior (share of all wall weights)
-SHAPE_MAX_TILT = 25.0      # deg: how far the shape model's long axis may turn away from the LV axis ...
-SHAPE_TILT_SIGMA = 15.0    # ... and the width of the prior that keeps it close (same weight as the center's)
-SHAPE_TILT_CAP = 0.25      # share of the apical cap fitted from which any better-fitting tilt is kept ...
-SHAPE_TILT_GAIN = 0.25     # ... below it, only one that lowers the model's misfit by this share
-VISIBILITY_REFERENCE = 50.0  # percentile of the walls' counts above the cavity that counts as the typical wall
-SHAPE_DIM = 0.45          # walls dimmer than this share of the bright walls (counts) count as defect for the model ...
-SHAPE_BORDER_SIGMA = 2.0  # ... and the walls within about this many grid samples of them are left out of its fit
-SHAPE_FADE = 0.1           # how fast that misfit fades inside a defect (share of the typical local weight)
-TRACE_RATIO_LOW = 1.25      # wall / blood pool counts (static image) up to which a ray's wall is untraceable (scar) ...
-TRACE_RATIO_HIGH = 1.75     # ... and from which it is traced as wall; in between it is partly trusted
-TRACE_POOL_FLOOR = 0.05     # share of the bright walls' counts below which the blood pool is not taken lower
-THICKENING_SMOOTHING = 2.5        # thickeningMap: smoothing of the % map (map cells)
-THICKENING_COUNT_SMOOTHING = 3.0  # thickeningMap: smoothing of the ED / ES count maps
-MOTION_SMOOTHING = 1.5            # motionMap: smoothing of the mm map
-PHASE_COHERENCE_SMOOTHING = 3.0   # phaseCoherenceMap: neighbourhood (Gaussian sigma, map cells) the phases are pooled over
-PHASE_COHERENCE_LOW = 50.0        # %: coherence below which the overlay hatches the thickening map
-MOTION_REFERENCES = (("Fixed LV center and axis", "fixed"),
-                     ("Floating: each frame's LV center and epicardial apex", "floating"),
-                     ("Floating: each frame's myocardium mass center", "mass"),
-                     ("Floating: each frame's base center", "base"))
-MOTION_APEX_ROWS = 2              # motionMap "floating": cap rows nearest the axis that place the epicardial apex
-REGIONAL_EF_SMOOTHING = 2.0       # regionalEFMap: smoothing of the % map (map cells)
-REGIONAL_EF_CUTS = (("Wedges from the long axis, cones from the LV center at the apex", "axis"),
-                    ("Cones from each frame's base center", "base"))   # regionalEFMap: how the cavity is cut
 
 
 def _traceability(peakValue, cavity):
@@ -541,13 +640,14 @@ def fitGate(sample, reference, params=None):
     beyond = _beyondBase(grid, mid, plane)
     mid = _limitBasalNarrowing(grid, _holdBeyondBase(mid, beyond), p["maxBaseNarrowing"])
     peak = _interp(profiles, grid.t, mid)
-    reach = 1.6 * max(6.0, 0.35 * float(np.median(mid[:grid.nCyl])))
+    reach = PROFILE_REACH_FACTOR * max(PEAK_HALF_MIN_MM, PEAK_HALF_SHARE * float(np.median(mid[:grid.nCyl])))
     pool = _gatePool(reference, profiles, peak)
-    inner, outer = _wallHalfWidths(profiles, grid.t, mid, peak, reach, pool)
+    inner, outer = _wallHalfWidths(profiles, grid.t, mid, peak, reach, pool, p.get("thicknessModel"),
+                                   _clearWalls(weight, peak) & ~_beyondBase(grid, mid, plane))
     result = {"grid": grid, "mid": mid, "peak": peak, "baseZ": plane[0], "detectedBaseZ": plane[0],
               "valvePlane": plane, "basePoints": basePoints, "rowCounts": np.median(peak[:grid.nCyl], axis=1),
               "gateWeight": weight, "profileFwhm": inner + outer, "profileInner": inner, "profileOuter": outer,
-              "profileReach": reach, "poolLevel": pool,
+              "profileReach": reach, "poolLevel": pool, "profiles": profiles,
               "segmentation": g["segmentation"], "fit": g["fit"], "fitPull": float(g["fitPull"])}
     return _withThickness(result, p["resolution"])
 
@@ -582,7 +682,7 @@ def _trackedGateWall(grid, profiles, reference, g):
     lo = np.maximum(refMid - shift, 1.0)
     hi = np.minimum(refMid + shift, grid.t[-1])
     peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
-    tolerance = min(0.5 * shift, max(0.25 * float(np.median(refMid[:grid.nCyl])), 5.0))
+    tolerance = min(GATE_TOLERANCE_SHIFT_SHARE * shift, max(GATE_TOLERANCE_RADIUS_SHARE * float(np.median(refMid[:grid.nCyl])), GATE_TOLERANCE_MIN_MM))
     weight = _gateWeights(grid, peakT, peakValue, lo, hi, _cavityLevel(profiles, grid.t, peakT), tolerance)
     weight = weight * _staticReliability(reference) ** 2
     weight[_beyondBase(grid, refMid, reference["valvePlane"])] = 0.0
@@ -610,15 +710,15 @@ def _fittedWall(grid, profiles, fit, pull, shapePrior=False):
     p = grid.params
     mean = profiles.mean(axis=(0, 1))
     usable = grid.t >= 3.0
-    t0 = max(float(grid.t[usable][np.argmax(mean[usable])]), 8.0)
-    lo = np.full((grid.nRows, grid.nTheta), 0.45 * t0)
-    hi = np.full((grid.nRows, grid.nTheta), min(1.7 * t0, grid.t[-1]))
-    half = max(6.0, 0.35 * t0)
+    t0 = max(float(grid.t[usable][np.argmax(mean[usable])]), PEAK_SEARCH_MIN_MM)
+    lo = np.full((grid.nRows, grid.nTheta), PEAK_SEARCH_LOW * t0)
+    hi = np.full((grid.nRows, grid.nTheta), min(PEAK_SEARCH_HIGH * t0, grid.t[-1]))
+    half = max(PEAK_HALF_MIN_MM, PEAK_HALF_SHARE * t0)
     beyond = np.zeros((grid.nRows, grid.nTheta), dtype=bool)
     plane = None
     for _ in range(int(p["iterations"]) + 1):
         peakT, peakValue = _peaks(profiles, grid.t, lo, hi)
-        weight = _gateWeights(grid, peakT, peakValue, lo, hi, _cavityLevel(profiles, grid.t, peakT), 0.3 * t0)
+        weight = _gateWeights(grid, peakT, peakValue, lo, hi, _cavityLevel(profiles, grid.t, peakT), PEAK_TOLERANCE_SHARE * t0)
         weight[beyond] = 0.0
         model = None
         if shapePrior:
@@ -630,7 +730,7 @@ def _fittedWall(grid, profiles, fit, pull, shapePrior=False):
                 baseZ = first[0]
             else:
                 inside, baseZ = ~beyond, plane[0]
-            model, off = _shapeModel(grid, peakT, weight, inside, 0.3 * t0, baseZ, peakValue)
+            model, off = _shapeModel(grid, peakT, weight, inside, PEAK_TOLERANCE_SHARE * t0, baseZ, peakValue)
         if model is not None:
             weight = np.where(off, 0.0, weight)
             mid = model + fitSurface(grid, peakT - model, weight, fit, pull, model)
@@ -658,7 +758,10 @@ def _wallFromWidths(result, resolution):
     static fit. thicknessModel "width": each half width is fitted on its own and the endo- and epicardium
     are where the profile falls half way to the blood pool and to the counts outside. "slab": the width is
     read as a blurred slab with a prior (slabThickness, at resolution) and the surfaces are the mid-wall
-    -/+ half of it."""
+    -/+ half of it, "meanfloor" the same from its one-floor width. "gradient": as "width", from the steepest
+    slopes. "gradienttable": the width between the slopes read with their own table (_gradientWidths), the
+    surfaces half of it either side of the slopes' midpoint, which unlike the count peak the blood pool
+    hardly moves."""
     grid, p = result["grid"], result["grid"].params
     weight = np.where(_clearWalls(result["gateWeight"], result["peak"]), result["gateWeight"], 0.0)
     fit = result.get("fit", GATE_DEFAULTS["fit"])
@@ -669,11 +772,18 @@ def _wallFromWidths(result, resolution):
     outer = result.get("profileOuter")
     if inner is None:   # older results: the whole width, split evenly
         inner = outer = 0.5 * result["profileFwhm"]
-    if p.get("thicknessModel", "width") == "slab":
+    if p.get("thicknessModel", "width") in ("slab", "meanfloor"):
         widths = slabThickness(inner + outer, resolution, result["profileReach"])
         widths = fitSurface(grid, widths, weight, fit, pull, mid)
         thickness = _holdBeyondBase(np.clip(widths, p["minThickness"], p["maxThickness"]), beyond)
         endo, epi = _wallSurfaces(grid, mid, thickness, p)
+        return thickness, endo, epi
+    if p.get("thicknessModel") == "gradienttable":
+        widths = slabThickness(inner + outer, resolution, result["profileReach"], _gradientWidths(resolution))
+        widths = fitSurface(grid, widths, weight, fit, pull, mid)
+        shift = _holdBeyondBase(fitSurface(grid, 0.5 * (outer - inner), weight, fit, pull, mid), beyond)
+        thickness = _holdBeyondBase(np.clip(widths, p["minThickness"], p["maxThickness"]), beyond)
+        endo, epi = _wallSurfaces(grid, mid + shift, thickness, p)
         return thickness, endo, epi
     inner = np.maximum(fitSurface(grid, inner, weight, fit, pull, mid), 0.5)
     outer = np.maximum(fitSurface(grid, outer, weight, fit, pull, mid), 0.5)
@@ -747,6 +857,25 @@ def myocardialVolumeMl(result):
     return _rayVolumes(result, np.asarray(result["endo"], dtype=float), np.asarray(result["epi"], dtype=float), 1)
 
 
+def _myocardialCounts(result, endo, epi):
+    """Counts between endo- and epicardium below the valve plane, from the frame's ray profiles ("profiles"):
+    every sample weighted by the volume it stands for (rings along the cylinder rows, shells over the apical
+    cap) and by the share of its step inside the wall."""
+    grid, t = result["grid"], result["grid"].t
+    step = float(t[1] - t[0])
+    lo = np.clip(endo[..., None], t - 0.5 * step, t + 0.5 * step)
+    hi = np.clip(epi[..., None], t - 0.5 * step, t + 0.5 * step)
+    share = np.maximum(hi - lo, 0.0)
+    dTheta = 2.0 * math.pi / grid.nTheta
+    element = np.empty((grid.nRows, 1, len(t)))
+    element[:grid.nCyl] = t[None, None, :] * dTheta * grid.dz
+    element[grid.nCyl:] = t[None, None, :] ** 2 * (np.sin(grid.phi) * grid.dphi * dTheta)[:, None, None]
+    counts = (np.asarray(result["profiles"]) * share * element).sum(axis=2)
+    inside = ~_beyondBase(grid, result["mid"], result["valvePlane"])
+    inside[grid.nCyl:] = True
+    return float(counts[inside].sum())
+
+
 def cavityVolumeMl(result):
     """LV cavity volume (ml) of a wall fit: inside the endocardium, below the valve plane."""
     return _rayVolumes(result, None, np.asarray(result["endo"], dtype=float), 0)
@@ -759,16 +888,29 @@ def constantVolumeGates(results, reference="ed"):
     keeps its mid-wall and the shape of its thickness map (from its own profile widths); its endo- and
     epicardial half widths are scaled by one factor, found by bisection, until its myocardial volume is the
     reference's. A wall that moves inward then thickens, so the thickness, the cavity and the EF follow from
-    the motion of the mid-wall. Any other reference returns the frames as they are."""
+    the motion of the mid-wall. reference "counts": every frame's half widths are scaled until its myocardium
+    holds the median frame's counts (_myocardialCounts, from its ray profiles): every frame has the same
+    tracer in its myocardium, so a frame whose wall was drawn too thin (an end-systolic cavity filled by the
+    walls' blur puts the inner edge next to the peak) shows too few counts and is widened, a frame drawn too
+    thick narrowed. Any other reference returns the frames as they are."""
     known = [(cavityVolumeMl(r), i) for i, r in enumerate(results) if r is not None]
-    if reference not in ("ed", "es") or len(known) < 2:
+    if reference == "counts":
+        known = [(c, i) for c, i in known if "profiles" in results[i]]
+    if reference not in ("ed", "es", "counts") or len(known) < 2:
         return list(results)
-    index = (max(known) if reference == "ed" else min(known))[1]
-    target = myocardialVolumeMl(results[index])
+    if reference == "counts":
+        index = None
+        measure = lambda result, endo, epi: _myocardialCounts(result, endo, epi)
+        target = float(np.median([_myocardialCounts(results[i], np.asarray(results[i]["endo"], dtype=float),
+                                                    np.asarray(results[i]["epi"], dtype=float)) for _, i in known]))
+    else:
+        index = (max(known) if reference == "ed" else min(known))[1]
+        measure = lambda result, endo, epi: _rayVolumes(result, endo, epi, 1)
+        target = myocardialVolumeMl(results[index])
     adjusted = []
     for i, result in enumerate(results):
-        if result is None:
-            adjusted.append(None)
+        if result is None or (reference == "counts" and "profiles" not in result):
+            adjusted.append(result)
             continue
         if i == index:
             adjusted.append(dict(result, myocardialVolume=reference, thicknessScale=1.0))
@@ -784,9 +926,8 @@ def constantVolumeGates(results, reference="ed"):
             return endo, epi
 
         def volume(scale):
-            endo, epi = surfaces(scale)
-            return _rayVolumes(result, endo, epi, 1)
-        low, high = 0.2, 5.0
+            return measure(result, *surfaces(scale))
+        low, high = THICKNESS_SCALE_LOW, THICKNESS_SCALE_HIGH
         if volume(low) >= target:
             scale = low
         elif volume(high) <= target:
@@ -1057,7 +1198,7 @@ def thickeningMap(gatePolars, ed, es, smoothing=None, countSmoothing=None):
     edCounts = _smoothMap(np.nan_to_num(edCounts), weights + 1e-6, countSmoothing)
     esCounts = _smoothMap(np.nan_to_num(esCounts), weights + 1e-6, countSmoothing)
     values = 100.0 * (esCounts / np.maximum(edCounts, 1e-9) - 1.0)
-    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -100.0, 200.0)
+    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), THICKENING_MAP_LOW, THICKENING_MAP_HIGH)
     reference = gatePolars[ed]
     return {"values": values, "rho": np.asarray(reference["rho"]).copy(), "theta": np.asarray(reference["theta"]).copy()}
 
@@ -1084,12 +1225,8 @@ def geometricThickeningMap(gateResults, ed, es, weights=None, smoothing=None):
     if weights is None:
         weights = np.ones(values.shape)
     weights = np.clip(np.asarray(weights, dtype=float) / max(float(np.nanmax(weights)), 1e-9), 0.0, 1.0) ** 2
-    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -100.0, 200.0)
+    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), THICKENING_MAP_LOW, THICKENING_MAP_HIGH)
     return {"values": values, "rho": np.asarray(rho).copy(), "theta": gateResults[ed]["grid"].theta.copy()}
-
-
-THICKENING_SOURCES = (("Wall counts (partial volume)", "counts"),
-                      ("Wall thickness, endo- to epicardium", "geometry"))
 
 
 def phaseCoherenceMap(gatePolars, ed, es, smoothing=None):
@@ -1237,7 +1374,7 @@ def motionMap(gateResults, ed, es, weights=None, smoothing=None, reference="fixe
     if weights is None:
         weights = np.ones(values.shape)
     weights = np.clip(np.asarray(weights, dtype=float) / max(float(np.nanmax(weights)), 1e-9), 0.0, 1.0) ** 2
-    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -30.0, 30.0)
+    values = np.clip(_smoothMap(np.nan_to_num(values), weights + 1e-6, smoothing), -MOTION_MAP_LIMIT_MM, MOTION_MAP_LIMIT_MM)
     return {"values": values, "rho": np.asarray(rhos[ed]).copy(), "theta": gateResults[ed]["grid"].theta.copy()}
 
 
@@ -1333,12 +1470,14 @@ def _fitValvePlane(grid, mid, peak, p, fill=None):
     base. Each column is searched from BASE_SEARCH_MM apical of the preliminary plane toward the base
     (a defect at the mid-ventricle does not end it), and counts in the fit by the contrast of its basal
     wall against the blood pool (a scar as dim as the blood pool has no edge to find).
+    baseMethod "gradient": the same preliminary plane, then every column ends at the steepest fall of its
+    wall counts near it (_gradientEnds): no level to set.
     Returns ((a, gw, gs, b2, c2), end points [K, 3] frame)."""
     nCyl = grid.nCyl
     cyl = peak[:nCyl]
     if fill is not None:
         # the column's own cavity contrast at the mid-ventricle, and how far it may fill before the wall ends
-        midRows = (grid.z >= -12.0) & (grid.z <= -2.0)
+        midRows = (grid.z >= BASE_MID_ROWS_LOW_MM) & (grid.z <= BASE_MID_ROWS_HIGH_MM)
         if not np.any(midRows):
             midRows = np.ones(nCyl, dtype=bool)
         midFill = np.median(fill[:nCyl][midRows], axis=0)
@@ -1347,19 +1486,24 @@ def _fitValvePlane(grid, mid, peak, p, fill=None):
     else:
         filled = np.zeros(cyl.shape, dtype=bool)
     method = p.get("baseMethod", "adaptive")
-    adaptive = method in ("adaptive", "global")
+    adaptive = method in ("adaptive", "global", "gradient")
 
     reference = np.percentile(peak, 85, axis=0)                  # each column's wall counts
     reference = _circularMedian(reference[None, :], _angleWindow(grid, 5))[0]
     lateral = np.percentile(cyl, 85, axis=0)                     # the same on the side wall only
     lateral = _circularMedian(lateral[None, :], _angleWindow(grid, 5))[0]
     columnWeight = np.clip(lateral / max(float(np.percentile(lateral, 90)), 1e-9), 0.0, 1.0) ** 2
-    reference = np.maximum(reference, 0.4 * float(np.percentile(peak, 85)))
-    fraction = p.get("basePrelimFraction", 0.5) if adaptive else p["baseFraction"]
-    ends, endWeights = _wallEnds(grid, mid, cyl, fraction * reference, filled, columnWeight)
+    reference = np.maximum(reference, BASE_MIN_REFERENCE_SHARE * float(np.percentile(peak, 85)))
+    fraction = p.get("basePrelimFraction", 0.3) if adaptive else p["baseFraction"]
+    gap = BASE_GAP_MM if p.get("baseGap", False) else 0.0
+    ends, endWeights = _wallEnds(grid, mid, cyl, fraction * reference, filled, columnWeight,
+                                 maxNarrowing=p["maxBaseNarrowing"], gap=gap)
     plane = _planeThroughEnds(grid, ends, endWeights, p)
     if not adaptive or len(ends) < max(6, grid.nTheta // 4):
         return plane, ends
+    if method == "gradient":
+        ends, endWeights = _gradientEnds(grid, mid, cyl, plane, columnWeight)
+        return _planeThroughEnds(grid, ends, endWeights, p), ends
 
     # blood pool: the lowest counts in the cavity at the mid-ventricle (fill is relative to the wall peak)
     pool = 0.0
@@ -1386,17 +1530,51 @@ def _fitValvePlane(grid, mid, peak, p, fill=None):
     start = np.array([np.searchsorted(grid.z, a + slope[c] * np.interp(a, grid.z, mid[:nCyl, c]) + saddle[c]
                                       + BASE_SEARCH_MM)
                       for c in range(grid.nTheta)])
-    ends, endWeights = _wallEnds(grid, mid, cyl, threshold, filled, weight, start)
+    ends, endWeights = _wallEnds(grid, mid, cyl, threshold, filled, weight, start, p["maxBaseNarrowing"], gap)
     if len(ends) < max(6, grid.nTheta // 4):
         return plane, ends
     return _planeThroughEnds(grid, ends, endWeights, p), ends
 
 
-def _wallEnds(grid, mid, cyl, threshold, filled, columnWeight, start=None):
+def _gradientEnds(grid, mid, cyl, plane, columnWeight):
+    """End of the wall in every column of the cylinder: where its counts fall fastest toward the base, along
+    the column smoothed by GRADIENT_SMOOTHING_MM, searched from BASE_SEARCH_MM apical of the preliminary plane
+    to BASE_GRADIENT_PAST_MM basal of it, so the atria and a defect further up are out of reach. A wall's
+    blurred end is at its steepest point whatever the counts beyond. A column counts in the fit by the size
+    of that fall against the typical column (a scar has no edge to find). Returns (end points [K, 3] frame,
+    their weights [K])."""
+    nCyl = grid.nCyl
+    a, slope, saddle = _rimColumns(grid.theta, plane)
+    above = grid.z[:, None] - (a + slope[None, :] * mid[:nCyl] + saddle[None, :])   # mm on the apical side of the rim
+    window = (above >= -BASE_GRADIENT_PAST_MM) & (above <= BASE_SEARCH_MM)
+    radius = int(math.ceil(3.0 * GRADIENT_SMOOTHING_MM / grid.dz))
+    smooth = np.asarray(cyl, dtype=float)
+    if radius > 0:
+        kernel = np.exp(-0.5 * (np.arange(-radius, radius + 1) * grid.dz / GRADIENT_SMOOTHING_MM) ** 2)
+        padded = np.pad(smooth, ((radius, radius), (0, 0)), mode="edge")
+        smooth = np.lib.stride_tricks.sliding_window_view(padded, 2 * radius + 1, axis=0) @ (kernel / kernel.sum())
+    rise = np.gradient(smooth, grid.dz, axis=0)                  # the rows run from the base to the apex
+    index = np.clip(np.argmax(np.where(window, rise, -np.inf), axis=0), 1, nCyl - 2)
+    columns = np.arange(grid.nTheta)
+    r0, r1, r2 = rise[index - 1, columns], rise[index, columns], rise[index + 1, columns]
+    curve = r0 - 2.0 * r1 + r2
+    offset = np.where(curve < -1e-12, np.clip(0.5 * (r0 - r2) / np.where(curve < -1e-12, curve, -1.0), -0.5, 0.5), 0.0)
+    z = grid.z[index] + offset * grid.dz
+    r = mid[index, columns] + offset * (mid[index + 1, columns] - mid[index - 1, columns]) * 0.5
+    fall = np.maximum(r1, 0.0)
+    weights = columnWeight * np.clip(fall / max(float(np.median(fall)), 1e-9), 0.0, 1.0) ** 2
+    ends = np.column_stack([r * np.cos(grid.theta), r * np.sin(grid.theta), z])
+    return ends, np.maximum(weights, 1e-3)
+
+
+def _wallEnds(grid, mid, cyl, threshold, filled, columnWeight, start=None, maxNarrowing=None, gap=0.0):
     """End of the wall in every column of the cylinder: going from the start row (default the LV center)
     toward the base, the first of two consecutive rows below the column's threshold or with the cavity
-    filled, after a row on the wall. Returns (end points [K, 3] frame, their weights [K])."""
+    filled, after a row on the wall, unless the wall comes back within gap mm toward the base (baseGap:
+    _wallResumes, a defect between the mid-ventricle and a basal wall still alive). Returns (end points
+    [K, 3] frame, their weights [K])."""
     nCyl = grid.nCyl
+    maxNarrowing = DEFAULTS["maxBaseNarrowing"] if maxNarrowing is None else maxNarrowing
     ends = []
     endWeights = []
     for col in range(grid.nTheta):
@@ -1404,10 +1582,16 @@ def _wallEnds(grid, mid, cyl, threshold, filled, columnWeight, start=None):
         below = (values < threshold[col]) | filled[:, col]
         first = nCyl - 2 if start is None else int(np.clip(start[col], 1, nCyl - 2))
         onWall = start is None
-        for row in range(first, 0, -1):
+        row = first + 1
+        while row > 1:
+            row -= 1
             if not below[row]:
                 onWall = True
             elif onWall and below[row - 1]:
+                resumed = _wallResumes(grid, mid[:, col], below, filled[:, col], row, maxNarrowing, gap) if gap > 0 else None
+                if resumed is not None:
+                    row = resumed + 1                                # on the wall again: search on from there
+                    continue
                 v0, v1 = values[row], values[row + 1]
                 f = np.clip((threshold[col] - v0) / (v1 - v0), 0.0, 1.0) if v1 > v0 and not filled[row, col] else 0.5
                 z = grid.z[row] + f * grid.dz
@@ -1416,6 +1600,29 @@ def _wallEnds(grid, mid, cyl, threshold, filled, columnWeight, start=None):
                 endWeights.append(columnWeight[col])
                 break
     return np.array(ends).reshape(-1, 3), np.maximum(np.array(endWeights), 1e-3)
+
+
+def _wallResumes(grid, mid, below, filled, row, maxNarrowing, gap):
+    """Row (toward the base) where a column's wall comes back after it fell off at row, or None. The wall
+    comes back where two consecutive rows are on it again within gap mm (BASE_GAP_MM) past the drop, before the
+    cavity fills (the atria), and only in the cone the wall could have followed from its last row on the
+    wall: its mid-wall no closer to the axis than maxNarrowing (deg, maxBaseNarrowing) allows and no further
+    out than BASE_GAP_WIDEN_DEG, give or take BASE_GAP_SLACK_MM, so the liver or the gut beside the base is
+    not taken for the wall."""
+    last = row + 1                                                # the last row on the wall
+    reach = int(round(gap / grid.dz))
+    narrow = math.tan(math.radians(float(maxNarrowing)))
+    widen = math.tan(math.radians(BASE_GAP_WIDEN_DEG))
+    for r in range(row - 1, max(row - reach, 1) - 1, -1):
+        if filled[r]:
+            return None
+        if below[r] or below[r - 1]:
+            continue
+        run = (last - r) * grid.dz
+        shift = mid[r] - mid[last]
+        if -narrow * run - BASE_GAP_SLACK_MM <= shift <= widen * run + BASE_GAP_SLACK_MM:
+            return r
+    return None
 
 
 def _planeThroughEnds(grid, ends, endWeights, p):
@@ -1517,8 +1724,8 @@ def valvePlane(result):
     grid = result["grid"]
     p = grid.params
     a, gw, gs, b2, c2 = _rim(result["valvePlane"])
-    gw = math.tan(np.clip(math.atan(gw) + math.radians(p["valveTiltAnterior"]), -1.2, 1.2))
-    gs = math.tan(np.clip(math.atan(gs) + math.radians(p["valveTiltSeptal"]), -1.2, 1.2))
+    gw = math.tan(np.clip(math.atan(gw) + math.radians(p["valveTiltAnterior"]), -VALVE_TILT_LIMIT_RAD, VALVE_TILT_LIMIT_RAD))
+    gs = math.tan(np.clip(math.atan(gs) + math.radians(p["valveTiltSeptal"]), -VALVE_TILT_LIMIT_RAD, VALVE_TILT_LIMIT_RAD))
     a = float(np.clip(a + p["valveOffset"], grid.z[0], -grid.dz))
     scale = _tiltScale(grid, result.get("epi"), a, gw, gs, b2, c2)
     return (a, gw * scale, gs * scale, b2 * scale, c2 * scale)
@@ -1578,8 +1785,6 @@ def rimZAt(result, theta, zBase=None):
 # ---------------------------------------------------------------------------
 # Labels and surfaces
 # ---------------------------------------------------------------------------
-LABEL_MYOCARDIUM = 1
-LABEL_CAVITY = 2
 
 
 def classify(result, points):
@@ -1640,14 +1845,6 @@ def surfaceTriangles(rows, angles, closeBase=True, baseCenterIndex=None, apexCen
 # ---------------------------------------------------------------------------
 # Polar map (bullseye)
 # ---------------------------------------------------------------------------
-# Ring edges of the 17-segment model as a fraction of the bullseye radius (apex at 0, valve plane
-# at 1): apex cap (17), apical (13-16), mid (7-12), basal (1-6)
-POLAR_RING_EDGES = (0.0, 0.2, 0.47, 0.73, 1.0)
-SEGMENT_NAMES = (
-    "basal anterior", "basal anteroseptal", "basal inferoseptal", "basal inferior", "basal inferolateral",
-    "basal anterolateral", "mid anterior", "mid anteroseptal", "mid inferoseptal", "mid inferior",
-    "mid inferolateral", "mid anterolateral", "apical anterior", "apical septal", "apical inferior",
-    "apical lateral", "apex")
 
 
 def polarRays(result):
@@ -1675,10 +1872,6 @@ def polarRays(result):
     fromApex = np.concatenate([np.cumsum(steps[::-1])[::-1], [0.0]])
     rho = fromApex / max(fromApex[0], 1e-9)
     return origins, directions, endo, epi, rho
-
-
-DIAMETER_LEVEL = 0.8       # lvDiameterMm: bullseye radius of the level (0 apex .. 1 valve plane), basal-mid like echo
-DIAMETER_ANGLES = (60.0, 240.0)   # lvDiameterMm: anteroseptal and inferolateral (the parasternal long-axis line)
 
 
 def lvDiameterMm(result, level=None, angles=None):
@@ -1753,6 +1946,17 @@ def polarMap(result, sample, samplesAcrossWall=9):
     return {"values": counts.max(axis=2), "rho": rho, "theta": result["grid"].theta.copy()}
 
 
+def countLevels(counts, percentile):
+    """(maximum, level at the percentile) of the myocardium's counts (finite, above 0), or None
+    when there are none: the 100 % of the perfusion displays and the window top of the percentile
+    normalization (a few hot voxels then do not set the color scale)."""
+    counts = np.asarray(counts, dtype=float).ravel()
+    counts = counts[np.isfinite(counts) & (counts > 0)]
+    if not counts.size:
+        return None
+    return float(counts.max()), float(np.percentile(counts, percentile))
+
+
 def _wallRays(result, points):
     """Ray through each world point as in the fit (radial on the cylinder, from the LV center on the
     apical cap): origins, directions, endo and epi distances along it, distance of the point, z."""
@@ -1816,21 +2020,6 @@ def segmentIndex(radius, angle):
     basal = (radius >= edges[3]) & (radius <= edges[4])
     segment[basal] = 1 + sixths[basal]
     return segment
-
-
-VESSELS = ("LAD", "RCA", "LCX")
-VESSEL_SEGMENTS = {   # coronary territories of the 17 segments (AHA 2002 standard assignment)
-    "LAD": (1, 2, 7, 8, 13, 14, 17),
-    "RCA": (3, 4, 9, 10, 15),
-    "LCX": (5, 6, 11, 12, 16),
-}
-OVERLAYS = ("vessels", "segments")   # region overlays of the polar maps and 3D views
-# where the values are written on the bullseye: (radius, angle from anterior toward the septum, deg)
-SEGMENT_LABEL_PLACES = tuple(
-    [(0.5 * (POLAR_RING_EDGES[3] + POLAR_RING_EDGES[4]), 60.0 * k) for k in range(6)]
-    + [(0.5 * (POLAR_RING_EDGES[2] + POLAR_RING_EDGES[3]), 60.0 * k) for k in range(6)]
-    + [(0.5 * (POLAR_RING_EDGES[1] + POLAR_RING_EDGES[2]), 90.0 * k) for k in range(4)] + [(0.0, 0.0)])
-VESSEL_LABEL_PLACES = ((0.6, 35.0), (0.6, 160.0), (0.6, 270.0))   # LAD anteroseptal, RCA inferior, LCX lateral
 
 
 def regionIndex(radius, angle, overlay="segments"):
@@ -1945,19 +2134,6 @@ def segmentValues(polar, resolution=181):
     image, segments = bullseye(polar, resolution)
     return np.array([float(np.nanmean(image[segments == n])) if np.any(segments == n) else float("nan")
                      for n in range(1, 18)])
-
-
-WALLS = ("Apex", "Anterior", "Septal", "Inferior", "Lateral")
-# The five walls are drawn on the bullseye itself, not grouped from the 17 segments: the apex is the disk
-# inside APEX_RADIUS (the size of segment 17), and the rest is cut into four quarters by an X, each
-# centred on its wall (anterior up, septal left, inferior down, lateral right), borders at 45, 135, 225
-# and 315 deg.
-APEX_RADIUS = POLAR_RING_EDGES[1]
-WALL_CENTERS_DEG = (0.0, 90.0, 180.0, 270.0)        # anterior, septal, inferior, lateral
-WALL_LABEL_PLACES = ((0.0, 0.0),) + tuple((0.5 * (APEX_RADIUS + 1.0), c) for c in WALL_CENTERS_DEG)
-# how a polar map is painted: per pixel, or the mean of each of the 17 segments, the five walls or the territories
-REGION_VIEWS = ("pixels", "segments", "walls", "vessels")
-REGION_OVERLAYS = ("vessels", "segments", "walls")   # the segmentations a polar map can show (borders and values)
 
 
 def wallIndex(radius, angle):
@@ -2092,10 +2268,6 @@ def surfaceCells(rows, angles, closeBase=False, baseCenterIndex=None, apexCenter
     return cells
 
 
-WALL_LABELS = (   # (text, angle around the axis from anterior toward the septum, deg)
-    ("Anterior", 0.0), ("Septal", 90.0), ("Inferior", 180.0), ("Lateral", 270.0))
-
-
 def wallLabelPositions(result, distanceMm=45.0, levelMm=-10.0):
     """Floating label positions [(text, label point, wall point)] distanceMm outside the epicardium:
     anterior, septal, inferior and lateral at the mid-ventricle (levelMm on the axis), apex beyond
@@ -2125,7 +2297,7 @@ def wallStatistics(result, labels, voxelVolumeMm3):
     a = valvePlaneZ(result)
     inWall = np.ones(result["mid"].shape, dtype=bool)
     inWall[:grid.nCyl] = grid.z[:, None] >= _polarBaseZ(result)[None, :]
-    return {"cavityMl": cavity, "myocardiumMl": myocardium, "massG": 1.05 * myocardium,
+    return {"cavityMl": cavity, "myocardiumMl": myocardium, "massG": MYOCARDIUM_DENSITY_G_PER_ML * myocardium,
             "meanThicknessMm": float(result["thickness"][inWall].mean()), "baseZ": a,
             "valveTiltDeg": valveTilt(result)}
 
@@ -2188,28 +2360,75 @@ def _profileWidth(profiles, t, position, peak, reach):
     return toInner + toOuter
 
 
-def _wallHalfWidths(profiles, t, position, peak, reach, pool=None):
+def _wallHalfWidths(profiles, t, position, peak, reach, pool=None, model=None, clear=None):
     """(toward the cavity, away from it): distances from the mid-wall to where the profile falls half way
     from the peak to each side's floor (_profileWidth, within reach). With pool (the blood pool's counts,
     _poolLevel) the cavity side is measured against it instead, searched up to the axis; a ray whose
-    profile does not fall that far (a cavity filled by the walls' blur) keeps its own floor."""
+    profile does not fall that far (a cavity filled by the walls' blur) takes its outer half width, up to the axis.
+    With model "fwhm" both sides are where the profile falls to half the peak (no floor), searched up to the
+    axis and to the end of the ray. "meanfloor": the same search against one floor for both sides, half the
+    ray's own (the mean of its two side floors) and half their mean over the clear rays (bool map, all rays
+    when None or empty)."""
+    if model in ("gradient", "gradienttable"):
+        return _gradientHalfWidths(profiles, t, position, reach)
+    if model == "fwhm":
+        zero = np.zeros_like(peak)
+        toInner, toOuter = _halfWidths(profiles, t, position, peak, float(t[-1]), zero, zero)
+        return np.minimum(toInner, position), toOuter
     d = t[None, None, :] - position[..., None]
     window = np.abs(d) <= reach
 
     def floor(side):
         level = np.where(window & side, profiles, np.inf).min(axis=2)
         return np.where(np.isfinite(level), np.minimum(level, peak), 0.0)
-    toInner, toOuter = _halfWidths(profiles, t, position, peak, reach, floor(d < 0), floor(d > 0))
+    innerFloor, outerFloor = floor(d < 0), floor(d > 0)
+    if model == "meanfloor":
+        local = 0.5 * (innerFloor + outerFloor)
+        rays = local if clear is None or not np.any(clear) else local[clear]
+        base = np.minimum(0.5 * local + 0.5 * float(np.mean(rays)), peak)
+        toInner, toOuter = _halfWidths(profiles, t, position, peak, float(t[-1]), base, base)
+        return np.minimum(toInner, position), toOuter
+    toInner, toOuter = _halfWidths(profiles, t, position, peak, reach, innerFloor, outerFloor)
     if pool is not None:
         far = float(t[-1])
         toPool, _ = _halfWidths(profiles, t, position, peak, far, np.minimum(pool, peak), peak, sides=(-1.0,))
         found = (toPool < far - 1e-6) & (toPool <= position)
-        toInner = np.where(found, toPool, toInner)
+        toInner = np.where(found, toPool, np.minimum(toOuter, position))
     return toInner, toOuter
 
 
+def _gradientHalfWidths(profiles, t, position, reach):
+    """(toward the cavity, away from it): distances from the mid-wall to the steepest rise and the steepest
+    fall of the profile, smoothed along the ray (GRADIENT_SMOOTHING_MM), the extremes of its slope located
+    between samples. Each side is searched up to GRADIENT_REACH x reach and only as far as its lowest counts,
+    so an organ beyond the valley does not count. No floor: a blurred step's steepest point is at the step
+    whatever the levels on either side, so the blood pool hardly moves it."""
+    step = float(t[1] - t[0])
+    radius = int(math.ceil(3.0 * GRADIENT_SMOOTHING_MM / step))
+    smooth = np.asarray(profiles, dtype=float)
+    if radius > 0:
+        kernel = np.exp(-0.5 * (np.arange(-radius, radius + 1) * step / GRADIENT_SMOOTHING_MM) ** 2)
+        padded = np.pad(smooth, ((0, 0), (0, 0), (radius, radius)), mode="edge")
+        smooth = np.lib.stride_tricks.sliding_window_view(padded, 2 * radius + 1, axis=2) @ (kernel / kernel.sum())
+    slope = np.gradient(smooth, step, axis=2)
+    d = t[None, None, :] - position[..., None]
+    far = GRADIENT_REACH * reach
+
+    def steepest(side, score):
+        valley = t[np.argmin(np.where(side, smooth, np.inf), axis=2)][..., None]
+        window = side & (t[None, None, :] >= valley if score is slope else t[None, None, :] <= valley)
+        index = np.clip(np.argmax(np.where(window, score, -np.inf), axis=2), 1, len(t) - 2)[..., None]
+        a, b, c = [np.take_along_axis(score, index + k, 2)[..., 0] for k in (-1, 0, 1)]
+        curve = a - 2.0 * b + c
+        offset = np.clip(0.5 * (a - c) / np.where(curve < -1e-12, curve, -1.0), -0.5, 0.5)
+        return t[index[..., 0]] + np.where(curve < -1e-12, offset, 0.0) * step
+    inner = steepest((d < 0) & (d >= -far), slope)
+    outer = steepest((d > 0) & (d <= far), -slope)
+    return np.clip(position - inner, 0.0, position), np.maximum(outer - position, 0.0)
+
+
 _SLAB_WIDTHS = {}
-SLAB_T = np.arange(0.0, 40.01, 0.5)   # slab widths of the slabThickness table (mm)
+_GRADIENT_WIDTHS = {}
 
 
 def _slabWidths(resolution, reach):
@@ -2233,15 +2452,31 @@ def _slabWidths(resolution, reach):
     return _SLAB_WIDTHS[key]
 
 
-def slabThickness(width, resolution, reach):
+def _gradientWidths(resolution):
+    """Distance (mm) between the steepest slopes of a slab of every width in SLAB_T, of uniform uptake, blurred by
+    a Gaussian of FWHM resolution and by GRADIENT_SMOOTHING_MM, as _gradientHalfWidths measures a wall. A slab
+    thinner than the blur reads about 1.7 sigma of it, one thicker reads its own width. Cached, rounded to 0.5 mm."""
+    resolution = max(round(2.0 * float(resolution)) / 2.0, 1.0)
+    key = (resolution, float(GRADIENT_SMOOTHING_MM))
+    if key not in _GRADIENT_WIDTHS:
+        s = math.sqrt((resolution / 2.3548) ** 2 + float(GRADIENT_SMOOTHING_MM) ** 2)
+        half = np.maximum(SLAB_T, 0.1)[:, None] / 2.0
+        x = np.arange(0.0, float(SLAB_T[-1]) / 2.0 + 4.0 * s, 0.02)[None, :]
+        slope = np.exp(-0.5 * ((x + half) / s) ** 2) - np.exp(-0.5 * ((x - half) / s) ** 2)
+        _GRADIENT_WIDTHS[key] = 2.0 * x[0, np.argmin(slope, axis=1)]
+    return _GRADIENT_WIDTHS[key]
+
+
+def slabThickness(width, resolution, reach, table=None):
     """Wall thickness (mm) from profile widths (_profileWidth, measured within reach mm of the peak) at a
     system resolution (FWHM, mm): the slab whose blurred profile has this width (_slabWidths), weighed
     against a prior wall of THICKNESS_PRIOR_MM +- THICKNESS_PRIOR_SIGMA by how well the width tells slabs
     apart at this blur (each width known to WIDTH_SIGMA_MM). A slab thinner than the blur keeps about the
     blur's width (at 12 mm a 10 mm slab reads 14.1 mm, a 6 mm one 12.8 mm), so there a small error of the
     width would move the thickness a lot and it leans to the prior; a wall thicker than the blur is read
-    from its width. The mean over SLAB_T; a width that is not finite gives the prior."""
-    table = _slabWidths(resolution, reach)
+    from its width. The mean over SLAB_T; a width that is not finite gives the prior. table: the widths of
+    another way of measuring them (_gradientWidths)."""
+    table = _slabWidths(resolution, reach) if table is None else table
     width = np.asarray(width, dtype=float)
     known = np.isfinite(width)[..., None]
     misfit = np.where(known, (table - np.nan_to_num(width)[..., None]) / WIDTH_SIGMA_MM, 0.0)
@@ -2284,10 +2519,7 @@ def _halfWidths(profiles, t, position, peak, reach, innerBase, outerBase, sides=
     return widths[0], widths[1]
 
 
-POLE_SPACING_MM = 3.0   # smoothing width around the axis is set by the spacing of the rays at the equator
-
-
-def _nearPoleRows(grid, distance, spacingMm=1.5):
+def _nearPoleRows(grid, distance, spacingMm=NEAR_POLE_SPACING_MM):
     """Cap rows whose neighbouring rays (one angle step apart) are closer than spacingMm: there all
     rays of the row look at nearly the same piece of wall."""
     rows = np.zeros(grid.nRows, dtype=bool)
@@ -2420,7 +2652,7 @@ def _clearWalls(weight, counts=None):
         return seen
     counts = np.sqrt(np.maximum(weight, 0.0)) if counts is None else np.where(seen, counts, 0.0)
     dim = (counts < SHAPE_DIM * max(float(np.percentile(counts[seen], 90)), 1e-9)).astype(float)
-    return seen & (_convolve2d(dim, _gaussianKernel(SHAPE_BORDER_SIGMA)) <= 0.1)
+    return seen & (_convolve2d(dim, _gaussianKernel(SHAPE_BORDER_SIGMA)) <= SHAPE_BORDER_DIM_SHARE)
 
 
 def _shapeModel(grid, distance, weight, inside, tolerance, baseZ, counts=None):
@@ -2579,7 +2811,7 @@ def _smoothFilled(values, weights, sigma, counts=None):
     norm = _convolve2d(w, kernel)
     level = max(float(np.percentile(norm[norm > 0], 50)), 1e-9)
     local = _convolve2d(values * w, kernel) / np.maximum(norm, 1e-12)
-    share = norm / (norm + SHAPE_FADE * 0.2 * level)
+    share = norm / (norm + SHAPE_FADE * SHAPE_FADE_FLOOR * level)
     return np.where(norm > 1e-12, share * local + (1.0 - share) * overall, overall)
 
 
@@ -2590,7 +2822,7 @@ def _smoothSurface(values, weights, sigma):
     (a maximum is lowered by any blur), more so the stronger the smoothing."""
     trend = (values * weights).sum(axis=1) / np.maximum(weights.sum(axis=1), 1e-12)
     rows = len(trend)
-    kernel = _gaussianKernel(0.75)
+    kernel = _gaussianKernel(SHAPE_RESIDUAL_KERNEL_SIGMA)
     k = len(kernel) // 2
     padded = np.concatenate([trend[k:0:-1], trend, trend[-2:-k - 2:-1]]) if rows > k + 1 else trend
     if rows > k + 1:

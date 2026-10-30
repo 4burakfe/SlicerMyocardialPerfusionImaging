@@ -38,6 +38,10 @@ from MyocardialPerfusionImagingLib import parameters as parametersLib  # noqa: E
 from MyocardialPerfusionImagingLib import case as caseLib  # noqa: E402
 from MyocardialPerfusionImagingLib.widgets import narrowLabel, styleButton  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 SUM_OFFERED_ATTRIBUTE = "MPI.SumOffered"   # on a gated sequence: the user was asked to sum it into a static image
 STUDIES_TABLE_HEIGHT = 250   # px, fixed height of the studies table
 

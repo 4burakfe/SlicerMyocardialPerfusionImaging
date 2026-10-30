@@ -44,7 +44,8 @@ from MyocardialPerfusionImagingLib.views import (  # noqa: E402
 from MyocardialPerfusionImagingLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
     setVolumeDisplay, rgbToQImage, mosaicPanel, polarPanel, polarPanelState, existingPanel, DEFAULT_FOV_CM, fovCrop,
-    REFIT_DELAY_MS, lastFirstSlice, cropStack, tilePixelsToIjk, bestGrid)
+    REFIT_DELAY_MS, lastFirstSlice, cropStack, tilePixelsToIjk, bestGrid, NORMALIZATIONS, NORMALIZATION_PERCENTILE,
+    NORMALIZATION_TIP)
 from MyocardialPerfusionImagingLib.geometry import worldToLocalMatrix  # noqa: E402
 from MyocardialPerfusionImagingLib import session  # noqa: E402
 from MyocardialPerfusionImagingLib import parameters as parametersLib  # noqa: E402
@@ -53,6 +54,10 @@ from MyocardialPerfusionImagingLib import myocardium as wallLib  # noqa: E402
 
 
 STRESS, REST, DIFF = "stress", "rest", "diff"
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 # layout ID -> XML, given the (Study 1, Study 2) labels of the 3D views
 LAYOUT_XML = {RESULT_LAYOUT_ID: lambda titles: resultLayoutXml(), SLICES_LAYOUT_ID: lambda titles: slicesLayoutXml(),
               DUAL_RESULT_LAYOUT_ID: dualResultLayoutXml, POLAR_LAYOUT_ID: lambda titles: polarLayoutXml(),
@@ -160,6 +165,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.chosenMode = None      # (layout the user picked, studies ready then): kept while those do not change
         self.grids = {"single": [DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS], "dual": [1, DEFAULT_GRID_COLUMNS]}
         self.polarCache = {}         # study ID -> (wall key, polar map)
+        self.levelCache = {}         # study ID -> (wall key, (myocardial maximum, percentile level) or None)
+        self.normalizedFor = {}      # slot -> (normalization, study, levels) its window tops were last set for
         self.tileCache = {}          # row key -> (key, [QImage per slice]): rendered once, scrolling reuses them
         self.contourCache = {}       # row key -> (key, (epi, endo) bool masks [slices, size, size])
         self.polarImageCache = {}    # polar map tag -> (key, (QImage, segment values))
@@ -185,12 +192,18 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.colormapCombo = qt.QComboBox()
         self.colormapCombo.addItems([label for label, _ in COLORMAPS])
         form.addRow("Color map:", self.colormapCombo)
+        self.normalizationCombo = qt.QComboBox()
+        for text, value in NORMALIZATIONS:
+            self.normalizationCombo.addItem(text, value)
+        self.normalizationCombo.toolTip = NORMALIZATION_TIP + " (each study on its own)"
+        form.addRow("Normalize to:", self.normalizationCombo)
 
         self.windowRanges = {}
         for slot in (STRESS, REST):
             self.windowRanges[slot] = self._windowWidget(
-                f"Color window (min - max) of the {slot} slices as a percentage of its myocardial (ROI) "
-                "maximum: counts below the minimum get the lowest color, counts above the maximum the highest")
+                f"Color window (min - max) of the {slot} slices as a percentage of the maximum in its detected "
+                "myocardium (before detection: the hottest voxel of Processing): counts below the minimum get "
+                "the lowest color, counts above the maximum the highest")
             form.addRow(self._slotLabel(slot, "{title} window:"), self.windowRanges[slot])
 
         gridRow = qt.QHBoxLayout()
@@ -247,16 +260,16 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarLinkCheck = qt.QCheckBox("Same as the slices")
         self.polarLinkCheck.checked = True
         self.polarLinkCheck.toolTip = ("Use each study's slice window for its polar map and 3D uptake view (in % of "
-                                       "the polar map maximum); untick to window them on their own")
+                                       "the same myocardial maximum); untick to window them on their own")
         polarForm.addRow("Window:", self.polarLinkCheck)
         self.polarWindowRanges = {}
         for slot in (STRESS, REST):
             self.polarWindowRanges[slot] = self._windowWidget(
                 f"Color window (min - max) of the {slot} polar map and 3D uptake view, as a percentage of the "
-                "polar map maximum")
+                "myocardial maximum")
             polarForm.addRow(self._slotLabel(slot, "{title}:"), self.polarWindowRanges[slot])
         self.diffWindowRange = self._windowWidget(
-            "Color window of the difference map (rest - stress, each in % of its own maximum): positive "
+            "Color window of the difference map (rest - stress, each in % of its own myocardial maximum): positive "
             "values are lower uptake at stress (ischemia)", *DIFF_WINDOW)
         polarForm.addRow("Difference:", self.diffWindowRange)
         overlayRow = qt.QHBoxLayout()
@@ -318,6 +331,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.parameterPanel = parametersLib.ParameterPanel(
             "perfusion", self.layout, onChanged=self.onParameterChanged)
         self.parameterPanel.bind("colormap", self.colormapCombo)
+        self.parameterPanel.bind("normalization", self.normalizationCombo)
         self.parameterPanel.bind("stressWindow", self.windowRanges[STRESS])
         self.parameterPanel.bind("restWindow", self.windowRanges[REST])
         self.parameterPanel.bind("gridRows", self.gridRowsSpin)
@@ -342,6 +356,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.mosaicResizeTimer.connect("timeout()", self.refreshMosaic)
         self.colormapCombo.connect("currentIndexChanged(int)", self.onColormapChanged)
+        self.normalizationCombo.connect("currentIndexChanged(int)", lambda _: self.onNormalizationChanged())
         for slot in (STRESS, REST):
             self.windowRanges[slot].connect("valuesChanged(double,double)", lambda a, b: self.onSliceWindowChanged())
             self.polarWindowRanges[slot].connect("valuesChanged(double,double)", lambda a, b: self.refreshPolar())
@@ -593,6 +608,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.tileCache = {}
         self.contourCache = {}
         self.polarCache = {}
+        self.levelCache = {}
+        self.normalizedFor = {}
         self.polarImageCache = {}
         self.centerCache = {}
         self.extentCache = {}
@@ -703,7 +720,11 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             spin.blockSignals(wasBlocked)
 
     def displayReference(self, slot):
-        """Count level shown at 100 %: the myocardial maximum stored by Processing, else the volume maximum."""
+        """Count level shown at 100 %: the maximum in the detected myocardium (the same as the polar map
+        and 3D view), before detection the hottest voxel stored by Processing, else the volume maximum."""
+        levels = self.myocardialLevels(self.studies.get(slot))
+        if levels is not None:
+            return levels[0]
         values = []
         for node in self.outputs[slot].values():
             try:
@@ -784,6 +805,82 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         spin = self.firstSliceSpins.get((slot, name))
         if spin:
             spin.setValue(spin.value + direction * self.stepSpin.value)
+
+    def myocardialLevels(self, study):
+        """(maximum, NORMALIZATION_PERCENTILE level) of the counts in the myocardium detected for a study,
+        on the volume it was detected on (MPIMyocardium.myocardiumLevels), or None before detection.
+        Cached until the detection changes."""
+        state = self.wallState(study)
+        if state is None:
+            return None
+        key, result, _ = state
+        cached = self.levelCache.get(study.GetID())
+        if cached is None or cached[0] != key:
+            levels = None
+            try:
+                import MPIMyocardium
+                frame = MPIMyocardium.cardiacFrame(study)
+                if frame is not None:
+                    polar, _ = self.polarMap(study)
+                    sample = MPIMyocardium.volumeSampler(MPIMyocardium.detectionVolume(study))
+                    levels = MPIMyocardium.myocardiumLevels(result, frame, sample, polar, NORMALIZATION_PERCENTILE)
+            except Exception:
+                logging.error("MPI: could not get the myocardial counts:\n" + traceback.format_exc())
+            cached = (key, levels)
+            self.levelCache[study.GetID()] = cached
+        return cached[1]
+
+    def polarReference(self, study, polar):
+        """Counts shown at 100 % on a study's polar map and 3D view: its myocardial maximum."""
+        levels = self.myocardialLevels(study)
+        if levels is not None:
+            return levels[0]
+        return float(np.nanmax(polar["values"])) or 1.0
+
+    def normalization(self):
+        """NORMALIZATIONS value chosen: "max" or "percentile"."""
+        return self.normalizationCombo.itemData(self.normalizationCombo.currentIndex) or "max"
+
+    def normalizationTop(self, slot):
+        """Window top (%) the normalization asks for a study: 100, or its percentile level in % of its
+        myocardial maximum; None when the percentile is chosen but the myocardium is not detected."""
+        if self.normalization() != "percentile":
+            return 100.0
+        levels = self.myocardialLevels(self.studies.get(slot))
+        if levels is None or levels[0] <= 0:
+            return None
+        return 100.0 * levels[1] / levels[0]
+
+    def applyNormalization(self, force=False):
+        """Set the window tops of the slices and polar maps of each study to normalizationTop: when the
+        normalization is chosen (force), or with the percentile when a study or its myocardium changed. A
+        window moved by hand afterwards is kept. Signals are blocked: the caller renders."""
+        mode = self.normalization()
+        changed = False
+        for slot in (STRESS, REST):
+            study = self.studies.get(slot)
+            if study is None or not self.ready(slot):
+                continue
+            levels = self.myocardialLevels(study) if mode == "percentile" else None
+            key = (mode, study.GetID(), levels)
+            if not force and (mode != "percentile" or self.normalizedFor.get(slot) == key):
+                continue
+            top = self.normalizationTop(slot)
+            if top is None:
+                continue
+            self.normalizedFor[slot] = key
+            for window in (self.windowRanges[slot], self.polarWindowRanges[slot]):
+                wasBlocked = window.blockSignals(True)
+                window.maximumValue = max(round(top), window.minimumValue + 1.0)
+                window.blockSignals(wasBlocked)
+            changed = True
+        if changed:
+            self.syncToolbar()
+        return changed
+
+    def onNormalizationChanged(self):
+        if self.applyNormalization(force=True):
+            self.refreshMosaic()
 
     def sliceWindow(self, slot):
         """(low, top) counts of the slice color window of a study."""
@@ -942,6 +1039,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         slots = self.rowSlots()
         if any(not slicer.mrmlScene.IsNodePresent(n) for slot in (STRESS, REST) for n in self.outputs[slot].values()):
             self.loadOutputs()
+        self.applyNormalization()
         panel = existingPanel("_mpiSliceMosaicState")
         if slots and panel is not None and all(self.ready(slot) for slot in slots):
             self.renderRows(panel, slots)
@@ -1145,9 +1243,10 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return self.overlayCombo.itemData(self.overlayCombo.currentIndex) or None
 
     @staticmethod
-    def polarPercent(polar, size):
-        """(bullseye image, {overlay: region values}), all in % of the map maximum."""
-        maximum = float(np.nanmax(polar["values"])) or 1.0
+    def polarPercent(polar, size, maximum=None):
+        """(bullseye image, {overlay: region values}), all in % of maximum (the myocardial maximum,
+        polarReference; by default the map maximum)."""
+        maximum = maximum or float(np.nanmax(polar["values"])) or 1.0
         image, _ = wallLib.bullseye(polar, size)
         return 100.0 * image / maximum, {overlay: 100.0 * wallLib.regionValues(polar, overlay) / maximum
                                          for overlay in wallLib.OVERLAYS}
@@ -1194,7 +1293,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         key = (self.polarCache[study.GetID()][0], int(size), self.colormapCombo.currentText, low, top)
         cached = self.polarImageCache.get(tag)
         if cached is None or cached[0] != key:
-            image, segments = self.polarPercent(polar, size)
+            image, segments = self.polarPercent(polar, size, self.polarReference(study, polar))
             rgb = colorize(np.nan_to_num(image), top, table, low)
             rgb[np.isnan(image)] = 0
             cached = (key, (rgbToQImage(rgb), {k: [float(v) for v in values] for k, values in segments.items()}))
@@ -1242,8 +1341,9 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                int(size), self.colormapCombo.currentText, low, top)
         cached = self.polarImageCache.get(tag)
         if cached is None or cached[0] != key:
-            stressImage, stressSegments = self.polarPercent(stress[0], size)
-            restImage, restSegments = self.polarPercent(rest[0], size)
+            stressImage, stressSegments = self.polarPercent(
+                stress[0], size, self.polarReference(self.studies[STRESS], stress[0]))
+            restImage, restSegments = self.polarPercent(rest[0], size, self.polarReference(self.studies[REST], rest[0]))
             image = restImage - stressImage
             rgb = colorize(np.nan_to_num(image, nan=low), top, table, low)
             rgb[np.isnan(image)] = 0
@@ -1251,7 +1351,7 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                                                for k in wallLib.OVERLAYS}))
             self.polarImageCache[tag] = cached
         qimage, segments = cached[1]
-        note = (f"{second.capitalize()} minus {first}, each in % of its own maximum: positive is lower uptake in "
+        note = (f"{second.capitalize()} minus {first}, each in % of its own myocardial maximum: positive is lower uptake in "
                 f"the {first} study")
         panel.setPolar(qimage, segments, title,
                        note=note + (" (ischemia)." if session.isStressRest(self.studies) else "."))
@@ -1305,7 +1405,8 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if model is None or model.GetAttribute("MPI.WallKey") != repr(key):
                 for node in nodes:
                     slicer.mrmlScene.RemoveNode(node)
-                model = self.makeSurfaceModel(study, result, frame, polar, viewNode.GetID())
+                model = self.makeSurfaceModel(study, result, frame, polar, viewNode.GetID(),
+                                              self.polarReference(study, polar))
                 model.SetAttribute("MPI.WallKey", repr(key))
                 borders = [self.makeSegmentBorderModel(study, result, viewNode.GetID(), overlay)
                            for overlay in wallLib.OVERLAYS]
@@ -1409,13 +1510,13 @@ class MPIReviewWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     node.GetDisplayNode().SetVisibility(node.GetAttribute("MPI.Overlay") == self.overlay())
 
     @staticmethod
-    def makeSurfaceModel(study, result, frame, polar, viewId):
+    def makeSurfaceModel(study, result, frame, polar, viewId, maximum=None):
         import MPIMyocardium
         from vtk.util import numpy_support
         polyData = MPIMyocardium.wallShellPolyData(result, frame)
         points = numpy_support.vtk_to_numpy(polyData.GetPoints().GetData())
         sample = MPIMyocardium.volumeSampler(MPIMyocardium.detectionVolume(study))
-        maximum = float(np.nanmax(polar["values"])) or 1.0
+        maximum = maximum or float(np.nanmax(polar["values"])) or 1.0
         uptake = 100.0 * wallLib.uptakeAtPoints(result, sample, points) / maximum
         scalars = numpy_support.numpy_to_vtk(uptake.astype(np.float32), deep=1)
         scalars.SetName("Uptake")

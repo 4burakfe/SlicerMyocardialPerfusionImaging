@@ -12,6 +12,10 @@ import slicer
 
 from MyocardialPerfusionImagingLib import studies as studiesLib
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 SESSION_TAG = "MPISession"
 ACTIVE_STUDY_REFERENCE = "MPI.ActiveStudy"
 
@@ -31,6 +35,12 @@ MODULE_NAMES = (HUB_MODULE,)   # the toolbar is shown while one of these is the 
 
 _listeners = []
 _currentStep = HUB_STEP
+STUDY_SLOT_ROLES = {"stress": ("Stress",), "rest": ("Rest", "Redistribution")}   # roles filling each place
+STUDY_SLOTS = ("stress", "rest")   # Study 1 and Study 2 of the two-study screens
+STUDY_REFERENCES = {"stress": "MPI.Study1", "rest": "MPI.Study2"}
+STUDY_PAIR_ATTRIBUTE = "MPI.StudyPairChosen"   # "1": Study 1 / 2 were picked by the user, not by role
+SLOT_FALLBACK_TITLES = {"stress": "Study 1", "rest": "Study 2"}
+AXIS_ALIGNED_MIN_DOT = 0.9         # a view counts as along an axis from this cosine
 
 
 def currentStep():
@@ -126,7 +136,7 @@ def axisOrder(ijkToRas, expected):
     for axis in expected:
         dots = columns.T @ np.asarray(axis, dtype=float)
         source = int(np.argmax(np.abs(dots)))
-        if abs(dots[source]) < 0.9 or source in [o[0] for o in order]:
+        if abs(dots[source]) < AXIS_ALIGNED_MIN_DOT or source in [o[0] for o in order]:
             return None
         order.append((source, 1 if dots[source] > 0 else -1))
     return order
@@ -173,12 +183,6 @@ def restoreAxisOrder(node):
     return True
 
 
-STUDY_SLOT_ROLES = {"stress": ("Stress",), "rest": ("Rest", "Redistribution")}   # roles filling each place
-STUDY_SLOTS = ("stress", "rest")   # Study 1 and Study 2 of the two-study screens
-STUDY_REFERENCES = {"stress": "MPI.Study1", "rest": "MPI.Study2"}
-STUDY_PAIR_ATTRIBUTE = "MPI.StudyPairChosen"   # "1": Study 1 / 2 were picked by the user, not by role
-
-
 def candidateStudies():
     """Static volumes that can be Study 1 / Study 2: the SPECT / PET studies not set to None."""
     return [n for n in studiesLib.staticVolumes() if not studiesLib.isExcluded(n)]
@@ -223,9 +227,6 @@ def stressRestStudies():
         if found["stress"] is not None or found["rest"] is not None:
             return found
     return _defaultStudyPair()
-
-
-SLOT_FALLBACK_TITLES = {"stress": "Study 1", "rest": "Study 2"}
 
 
 def roleTitles(roles):

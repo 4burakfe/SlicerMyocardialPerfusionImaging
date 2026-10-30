@@ -20,6 +20,10 @@ import slicer
 from MyocardialPerfusionImagingLib import colortables
 from MyocardialPerfusionImagingLib.views import ORIENTATIONS, ORIENTATION_TITLES
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 DEFAULT_GRID_ROWS = 2
 DEFAULT_GRID_COLUMNS = 12
 MOSAIC_PANEL_VERSION = 14  # bump when SliceMosaicPanel changes, so a reload replaces the old panel
@@ -41,6 +45,25 @@ COLORMAPS = [
     ("Inverted grey", "vtkMRMLColorTableNodeInvertedGrey"),
     ("PET-DICOM (Slicer)", "PET-DICOM"),
 ]
+OUTWARD_MOTION_MM = 4.0          # outward (dyskinetic) wall motion shown at full color from this many mm
+OUTWARD_COLORS = {"Jotun": (255, 0, 0), "Vanaheim": (255, 0, 0), "PET-DICOM": (255, 0, 0)}  # maps with turquoise
+OUTWARD_COLOR = (64, 224, 208)  # turquoise
+DEFAULT_FOV_CM = 13.0     # field of view of the slice tiles (stress and rest alike)
+# color scale of the gated frames (Gated QC, Gated Review): (panel text, value, toolbar text, tooltip)
+FRAME_SCALES = (("All frames together", "common", "All frames",
+                 "One color scale for every frame of a study, so the count changes over the cycle show"),
+                ("Each frame on its own", "frame", "Each frame", "Every frame scaled to its own maximum"))
+# Window top of the slices, polar maps and 3D views (100 % is always the myocardial maximum): at 100 %, or
+# at the percentile level of the myocardium's counts, so a few hot voxels do not set the color scale
+NORMALIZATIONS = (("Myocardial maximum", "max"), ("98th percentile of the myocardium", "percentile"))
+NORMALIZATION_PERCENTILE = 98.0
+NORMALIZATION_TIP = (
+    "100 % is the hottest count in the detected myocardium (slices, polar map and 3D). Myocardial maximum: "
+    "the window top is set to 100 %. 98th percentile: it is set to the level the hottest 2 % of the "
+    "myocardium reaches (in % of its maximum), so a small hot spot does not darken the rest of the wall. "
+    "Set again when a study or its myocardium changes; move the window by hand after that as usual")
+MIN_VISIBLE_SLICES = 8   # a row scrolls past its last slice (black tiles) until this many slices are left
+REFIT_DELAY_MS = 1000    # wait after the last resize before the slice tiles are fitted and made again
 
 
 # ---------------------------------------------------------------------------
@@ -114,11 +137,6 @@ def colorTableArray(label):
     if table is None:
         table = _sampleColorNode(colorNodeForLabel(label), np.linspace(0.0, 1.0, 256))
     return np.clip(np.round(table * 255.0), 0, 255).astype(np.uint8)
-
-
-OUTWARD_MOTION_MM = 4.0          # outward (dyskinetic) wall motion shown at full color from this many mm
-OUTWARD_COLORS = {"Jotun": (255, 0, 0), "Vanaheim": (255, 0, 0), "PET-DICOM": (255, 0, 0)}  # maps with turquoise
-OUTWARD_COLOR = (64, 224, 208)  # turquoise
 
 
 def signedMotionTable(table, label, low, top):
@@ -1179,15 +1197,6 @@ class GatingInfoPanel:
 
     def clear(self):
         self.setInfo("", None)
-
-
-DEFAULT_FOV_CM = 13.0     # field of view of the slice tiles (stress and rest alike)
-# color scale of the gated frames (Gated QC, Gated Review): (panel text, value, toolbar text, tooltip)
-FRAME_SCALES = (("All frames together", "common", "All frames",
-                 "One color scale for every frame of a study, so the count changes over the cycle show"),
-                ("Each frame on its own", "frame", "Each frame", "Every frame scaled to its own maximum"))
-MIN_VISIBLE_SLICES = 8   # a row scrolls past its last slice (black tiles) until this many slices are left
-REFIT_DELAY_MS = 1000    # wait after the last resize before the slice tiles are fitted and made again
 
 
 def fovCrop(shape, spacing, center, fovMm):

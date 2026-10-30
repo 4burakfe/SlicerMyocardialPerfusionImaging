@@ -31,6 +31,10 @@ from MyocardialPerfusionImagingLib import case as caseLib
 from MyocardialPerfusionImagingLib import dicomexport
 from MyocardialPerfusionImagingLib.widgets import BUTTON_COLORS
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 TOOLBAR_OBJECT_NAME = "MPIWorkflowToolbar"
 CONTROLS_OBJECT_NAME = "MPIStepControlsToolbar"
 TOOLBAR_VERSION = 13      # bump when the class changes, so a reload replaces the toolbar

@@ -54,10 +54,14 @@ from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     GATED_QC_LAYOUT_ID, ORIENTATIONS, ORIENTATION_TITLES, gatedQcLayoutXml, registerLayout)
 from MyocardialPerfusionImagingLib.display import (  # noqa: E402
     COLORMAPS, colorTableArray, colorize, rgbToQImage, gatedMosaicPanel, countCurvePanel, gatingInfoPanel,
-    existingPanel, tilePixelsToIjk, BoundedCache, packMask, unpackMask, FRAME_SCALES)
+    existingPanel, tilePixelsToIjk, BoundedCache, packMask, unpackMask, FRAME_SCALES, NORMALIZATION_PERCENTILE)
 from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 SLOT_TITLES = {STRESS: "STUDY 1 GATED", REST: "STUDY 2 GATED"}   # layout buttons without a study role
 CONTOUR_COLORS = {"epi": (64, 220, 90), "endo": (60, 190, 255)}
 CONTOUR_MAX_SIZE = 160
@@ -66,6 +70,7 @@ CONTOUR_CACHE_BYTES = 16 * 1024 * 1024   # contour masks, bit-packed (also used 
 LABEL_GRID_MM = 2.0          # grid of the per-frame myocardium / cavity labels (counts and volumes)
 SERIES_COLORS = {"projections": (120, 180, 255), "image": (210, 210, 210), "myocardium": (255, 140, 60)}
 MOSAIC_STATE, CURVE_STATE, INFO_STATE = "_mpiGatedMosaicState", "_mpiCountCurveState", "_mpiGatingInfoState"
+PEAK_SEARCH_MARGIN_MM = 5.0        # the hottest voxel near the LV is searched this far beyond the wall
 
 
 def _installToolbar():
@@ -186,15 +191,17 @@ def resliceLike(array, arrayToIjk, referenceNode, mask=None, center=None):
 
 def frameStatistics(result, frame, array, matrix, voxelVolumeMm3, mask=None):
     """Myocardium counts (the gate's counts inside the frame's myocardium, inside the Processing ellipsoid when
-    the volumes were masked), cavity and myocardium ml."""
+    the volumes were masked), their (maximum, NORMALIZATION_PERCENTILE level), cavity and myocardium ml."""
     labels, labelMatrix = _labelGrid(result, frame, LABEL_GRID_MM)
     m = slicer.util.arrayFromVTKMatrix(labelMatrix)
     index = np.argwhere(labels == wallLib.LABEL_MYOCARDIUM)[:, ::-1].astype(float)   # (i, j, k)
     points = index @ m[:3, :3].T + m[:3, 3]
     voxel = LABEL_GRID_MM ** 3
     sample = sampler(array, matrix, mask, np.asarray(frame["center"], dtype=float))
-    counts = float(sample(points).sum()) * voxel / max(voxelVolumeMm3, 1e-9) if len(points) else 0.0
-    return {"myocardiumCounts": counts,
+    values = np.asarray(sample(points), dtype=float) if len(points) else np.zeros(0)
+    counts = float(values.sum()) * voxel / max(voxelVolumeMm3, 1e-9)
+    levels = wallLib.countLevels(values, NORMALIZATION_PERCENTILE)
+    return {"myocardiumCounts": counts, "myocardiumLevels": levels,
             "cavityMl": float(np.count_nonzero(labels == wallLib.LABEL_CAVITY)) * voxel / 1000.0,
             "myocardiumMl": float(len(points)) * voxel / 1000.0}
 
@@ -230,7 +237,7 @@ class GatedStudy:
         self.attributes = gatingLib.attributes(gates[0][1])
         mask = maskOf(outputs["SA"], frame)
         center = np.asarray(frame["center"], dtype=float)
-        reach = wallLib.wallReach(staticResult, center) + 5.0
+        reach = wallLib.wallReach(staticResult, center) + PEAK_SEARCH_MARGIN_MM
         self.slices = {name: [] for name in ORIENTATIONS}
         frames = []
         for label, node in gates:
@@ -260,7 +267,7 @@ class GatedStudy:
             self.results = wallLib.constantVolumeGates(self.results, volume)
         for index, (label, node, matrix, voxel) in enumerate(frames):
             array = slicer.util.arrayFromVolume(node).astype(np.float32)   # again, one frame at a time
-            stats = {"myocardiumCounts": None, "cavityMl": None, "myocardiumMl": None}
+            stats = {"myocardiumCounts": None, "myocardiumLevels": None, "cavityMl": None, "myocardiumMl": None}
             if self.results[index] is not None:
                 try:
                     stats = frameStatistics(self.results[index], frame, array, matrix, voxel, mask)
@@ -282,6 +289,16 @@ class GatedStudy:
 
     def myocardiumCounts(self):
         return [s["myocardiumCounts"] for s in self.stats]
+
+    def myocardiumLevels(self):
+        """Per frame (maximum, NORMALIZATION_PERCENTILE level) of the counts in its myocardium, or None."""
+        levels = [s.get("myocardiumLevels") for s in self.stats]
+        return levels if len(levels) == len(self.peaks) else [None] * len(self.peaks)
+
+    def windowReferences(self):
+        """Counts at 100 % of every frame's slices: the maximum in its myocardium, else (frame not
+        segmented) the hottest voxel near the LV."""
+        return [levels[0] if levels else peak for levels, peak in zip(self.myocardiumLevels(), self.peaks)]
 
     def cavityMl(self):
         return [s["cavityMl"] for s in self.stats]
@@ -352,7 +369,8 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.windowRange.singleStep = 1.0
         self.windowRange.suffix = " %"
         self.windowRange.minimumValue, self.windowRange.maximumValue = 0.0, 100.0
-        self.windowRange.toolTip = "Color window in % of the hottest voxel near the LV"
+        self.windowRange.toolTip = ("Color window in % of the maximum in each frame's myocardium (a frame not "
+                                    "segmented: the hottest voxel near the LV)")
         form.addRow("Window:", self.windowRange)
         self.normalizationCombo = qt.QComboBox()
         for text, value, _, _ in FRAME_SCALES:
@@ -442,8 +460,11 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.volumeCombo.setCurrentIndex(
             max(0, self.volumeCombo.findData(wallLib.GATE_DEFAULTS["myocardialVolume"])))
         self.volumeCombo.toolTip = (
-            "Myocardial volume of the frames. Each frame's own (default): every frame's wall thickness from its own "
-            "count profile widths, so the myocardial volume may change over the cycle. Constant at the end-diastolic "
+            "Myocardial volume of the frames. Constant myocardial counts: every frame's wall thickness from "
+            "its own count profile widths, scaled by one factor until its myocardium holds the median frame's counts "
+            "(the same tracer in every frame: a frame drawn too thin, often end-systole, is widened). Each frame's own "
+            "(default): "
+            "the widths as measured, so the myocardial volume may change over the cycle. Constant at the end-diastolic "
             "volume (QGS-like, Germano et al., J Nucl Med 1995): every frame keeps its mid-wall and the shape of its "
             "thickness map, scaled to the myocardial volume of the frame with the largest cavity, so a wall that "
             "moves inward thickens and the endocardium moves further in than the mid-wall (smaller ESV, higher EF). "
@@ -509,7 +530,7 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.toolbarBar = bar
         bar.mirror(self.segmentButton, "Segment again", "Segment the frames again with the current settings", "create")
         bar.separator()
-        self.tbMax = bar.spin("Max", 10, 150, 5, " %", "Top of the color window (% of the hottest voxel near the LV)",
+        self.tbMax = bar.spin("Max", 10, 150, 5, " %", "Top of the color window (% of the myocardial maximum)",
                               self.onToolbarMax)
         self.tbScale = bar.choice([(text, value, tip) for _, value, text, tip in FRAME_SCALES], self.onToolbarScale)
         bar.mirrorCombo(self.colormapCombo, toolTip="Color map of the frames")
@@ -734,9 +755,9 @@ class MPIGatedQCWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def windows(self, data):
         """(low, top) counts of every frame's color window."""
         if self.normalizationCombo.itemData(self.normalizationCombo.currentIndex) == "frame":
-            references = list(data.peaks)
+            references = data.windowReferences()
         else:
-            references = [max(data.peaks)] * len(data.peaks)
+            references = [max(data.windowReferences())] * len(data.peaks)
         low, high = self.windowRange.minimumValue / 100.0, self.windowRange.maximumValue / 100.0
         return [(r * low, max(r * high, r * low + 1e-9)) for r in references]
 
@@ -951,6 +972,9 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
         self.test_PoolFloor()
         self.test_SlabThickness()
         self.test_EndSystolicWall()
+        self.test_ConstantCounts()
+        self.test_GradientEdges()
+        self.test_GradientBase()
         self.test_MaskedSampler()
 
     def test_GatingText(self):
@@ -1130,6 +1154,99 @@ class MPIGatedQCTest(ScriptedLoadableModuleTest):
             endo = [float(np.median(wall["endo"][rows])) for wall in walls]
             self.assertLess(endo[1], endo[0] - 8.0, (model, endo))
         self.delayDisplay("End-systolic wall test passed")
+
+    def test_ConstantCounts(self):
+        """A small gated LV blurred at 15 mm (ED 10 mm wall around a 22 mm cavity, ES 14 mm around 9 mm, the
+        same counts in every frame): drawn from its own profiles the frames' myocardia hold counts some 25 %
+        apart (with noise the end-systolic one the fewest: its wall drawn too thin); with myocardialVolume
+        "counts" every frame holds the median frame's counts and the end-systolic wall is the thickest."""
+        n, spacing = 64, 2.0
+        center = np.array([n * spacing / 2.0] * 3)
+        u, w = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])
+        ii = np.arange(n) * spacing
+        p = np.stack(np.meshgrid(ii, ii, ii, indexing="ij"), -1)[..., ::-1] - center   # array [k, j, i]
+        z, rho = p[..., 2], np.hypot(p[..., 0], p[..., 1])
+        frequency = np.fft.fftfreq(n, spacing)
+        f2 = frequency[:, None, None] ** 2 + frequency[None, :, None] ** 2 + frequency[None, None, :] ** 2
+        blur = np.exp(-2.0 * (math.pi * 15.0 / 2.3548) ** 2 * f2)
+
+        def ventricle(radius, length, thickness):
+            def inside(a, c):
+                return (np.where(z > 0, (rho / a) ** 2 + (z / c) ** 2, (rho / a) ** 2) <= 1.0) & (z >= -25.0)
+            epi, endo = inside(radius + thickness, length + thickness), inside(radius, length)
+            image = np.where(epi & ~endo, 1.0, 0.0) + np.where(endo, 0.1, 0.0)
+            image = np.real(np.fft.ifftn(np.fft.fftn(image) * blur))
+            return (image / image.sum() * 1e6).astype(np.float32)
+
+        def sampleOf(array):
+            return lambda pts: sampleTrilinear(array, np.asarray(pts) / spacing)
+        ed, es = np.array([22.0, 35.0, 10.0]), np.array([9.0, 22.0, 14.0])
+        frames = [ventricle(*(ed + (es - ed) * f)) for f in 0.5 - 0.5 * np.cos(2.0 * math.pi * np.arange(8) / 8)]
+        with _defaults(resolution=15.0, thicknessModel="slab"):
+            static = wallLib.fitWall(sampleOf(sum(frames) / len(frames)), center, u, w, 55.0)
+        rows = slice(static["grid"].nCyl // 3, static["grid"].nCyl)
+        own = [wallLib.fitGate(sampleOf(frame), static) for frame in frames]
+
+        def counts(results):
+            values = [wallLib._myocardialCounts(r, r["endo"], r["epi"]) for r in results]
+            return np.array(values) / np.median(values)
+        self.assertGreater(float(np.ptp(counts(own))), 0.15, counts(own))
+        fixed = wallLib.constantVolumeGates(own, "counts")
+        self.assertTrue(np.allclose(counts(fixed), 1.0, atol=0.02), counts(fixed))
+        thickness = [float(np.median(r["thickness"][rows])) for r in fixed]
+        self.assertEqual(int(np.argmax(thickness)), 4, thickness)
+        self.assertGreater(thickness[4], thickness[0] + 2.0, thickness)
+        self.delayDisplay("Constant counts test passed")
+
+    def test_GradientEdges(self):
+        """The steepest slopes of a blurred wall's profile (12 mm): the blood pool hardly moves them, their
+        midpoint stays at the wall's center where the count peak leaves it, a wall thicker than the blur is
+        read as it is, and the table reads a 10 mm wall under the blur."""
+        t = np.arange(0.0, 90.0, 1.0)
+        sigma = 12.0 / 2.3548
+        edge = lambda x: 0.5 * (1.0 + np.vectorize(math.erf)(x / (sigma * math.sqrt(2.0))))
+        reach = 14.0
+
+        def measure(thickness, pool, outside):
+            a, b = 45.0, 45.0 + thickness
+            profile = pool * (1.0 - edge(t - a)) + 100.0 * (edge(t - a) - edge(t - b)) + outside * edge(t - b)
+            position = np.array([[float(t[np.argmax(profile)])]])
+            inner, outer = wallLib._gradientHalfWidths(profile[None, None, :], t, position, reach)
+            return float((inner + outer)[0, 0]), float((position + 0.5 * (outer - inner))[0, 0]) - 0.5 * (a + b)
+        clean = measure(10.0, 0.0, 0.0)[0]
+        for pool, outside in ((15.0, 5.0), (40.0, 10.0)):
+            width, center = measure(10.0, pool, outside)
+            self.assertAlmostEqual(width, clean, delta=0.5, msg=pool)
+            self.assertAlmostEqual(center, 0.0, delta=1.0, msg=pool)
+        self.assertAlmostEqual(measure(24.0, 15.0, 5.0)[0], 24.0, delta=1.0)
+        table = wallLib._gradientWidths(12.0)
+        self.assertAlmostEqual(float(wallLib.slabThickness(np.array([clean]), 12.0, reach, table)[0]), 10.0, delta=1.0)
+        self.delayDisplay("Gradient edges test passed")
+
+    def test_GradientBase(self):
+        """A blurred LV with a base tilted 20 deg and atria behind it: the steepest fall of the wall's counts finds
+        the valve plane, the atria do not draw it past the base."""
+        n, spacing = 64, 3.0
+        center = np.array([n * spacing / 2.0] * 3)
+        u, w = np.array([0.0, 0.0, 1.0]), np.array([1.0, 0.0, 0.0])
+        ii = np.arange(n) * spacing
+        p = np.stack(np.meshgrid(ii, ii, ii, indexing="ij"), -1)[..., ::-1] - center   # array [k, j, i]
+        z, rho = p[..., 2], np.hypot(p[..., 0], p[..., 1])
+        tilt = math.tan(math.radians(20.0))
+        plane = -30.0 + tilt * p[..., 0]
+        cap = np.sqrt((rho / 25.0) ** 2 + (np.maximum(z, 0.0) / 40.0) ** 2)
+        wall = np.where(z <= 0, np.abs(rho - 25.0) < 5.0, np.abs(cap - 1.0) * 25.0 < 5.0) & (z >= plane)
+        image = wall.astype(float)
+        image[(z < plane - 3.0) & (z > plane - 40.0) & (rho < 33.0)] = 0.4
+        f = np.fft.fftfreq(n, spacing)
+        f2 = f[:, None, None] ** 2 + f[None, :, None] ** 2 + f[None, None, :] ** 2
+        image = np.real(np.fft.ifftn(np.fft.fftn(image) * np.exp(-2.0 * (math.pi * 12.0 / 2.3548) ** 2 * f2)))
+        result = wallLib.fitWall(lambda pts: sampleTrilinear(image, np.asarray(pts) / spacing), center, u, w, 70.0,
+                                 {"resolution": 12.0, "baseMethod": "gradient"})
+        self.assertAlmostEqual(result["baseZ"] + result["centerShift"], -30.0, delta=4.0)
+        self.assertAlmostEqual(result["valvePlane"][1], tilt, delta=0.12)
+        self.assertAlmostEqual(result["valvePlane"][2], 0.0, delta=0.12)
+        self.delayDisplay("Gradient base test passed")
 
     def test_SlabThickness(self):
         """A wall's thickness from its profile width, measured as the walls are (_profileWidth, within reach of

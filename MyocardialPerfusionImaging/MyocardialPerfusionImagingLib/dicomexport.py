@@ -24,6 +24,10 @@ import tempfile
 
 import numpy as np
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 MANUFACTURER = "Tarvos (3D Slicer)"
 SECONDARY_CAPTURE_STORAGE = "1.2.840.10008.5.1.4.1.1.7"
 SCREEN_SERIES_NUMBER = 951

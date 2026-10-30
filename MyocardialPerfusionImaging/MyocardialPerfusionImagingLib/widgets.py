@@ -1,5 +1,9 @@
 """Small Qt helpers shared by the MPI modules."""
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 # (normal, hover, pressed)
 BUTTON_COLORS = {
     "primary": ("#2f7ed8", "#4a92e3", "#2466b3"),   # start / go to the next step

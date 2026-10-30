@@ -54,10 +54,14 @@ from MyocardialPerfusionImagingLib.display import (  # noqa: E402
     DEFAULT_GRID_ROWS, DEFAULT_GRID_COLUMNS, COLORMAPS, colorTableArray, colorize, colorNodeForLabel,
     rgbToQImage, gatedReviewMosaicPanel, gatedReviewMosaic2Panel, volumeCurvePanel, volumeCurvePanelState, polarPanel, polarPanelState,
     existingPanel, DEFAULT_FOV_CM, REFIT_DELAY_MS, lastFirstSlice, fovCrop, cropStack, bestGrid, signedMotionTable,
-    FRAME_SCALES)
+    FRAME_SCALES, NORMALIZATIONS, NORMALIZATION_TIP)
 from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 STRESS, REST = "stress", "rest"
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 # key: (button text, studies, layout kind, tooltip); kinds as in views.gatedLayoutXml
 MODES = {}
 for _prefix, _slots, _title in (("stress", (STRESS,), "STRESS"), ("rest", (REST,), "REST"),
@@ -284,11 +288,15 @@ class GatedReviewData:
     counts of every frame on the polar map rays, the thickening map, the volumes and the 3D wall of
     every frame (made on first use)."""
 
-    def __init__(self, gated, staticResult, frame, staticPolar):
+    def __init__(self, gated, staticResult, frame, staticPolar, staticLevels=None):
         self.gated = gated                 # MPIGatedQC.GatedStudy
         self.staticResult = staticResult
         self.frame = frame
         self.staticPolar = staticPolar     # perfusion polar map of the static study
+        # (myocardial maximum, percentile level) of the static study (Perfusion): its polar map and 3D at 100 %
+        self.staticLevels = staticLevels
+        self.staticMaximum = ((staticLevels[0] if staticLevels else 0.0)
+                              or float(np.nanmax(staticPolar["values"])) or 1.0)
         self.volumes = gated.cavityMl()
         self.phases = ejectionFraction(self.volumes)
         self.thickening = None             # thickening polar map (%), from the wall counts or the wall thickness
@@ -382,7 +390,7 @@ class GatedReviewData:
         from vtk.util import numpy_support
         polyData = MPIMyocardium.wallShellPolyData(self.result(index), self.frame)
         points = numpy_support.vtk_to_numpy(polyData.GetPoints().GetData())
-        maximum = float(np.nanmax(self.staticPolar["values"])) or 1.0
+        maximum = self.staticMaximum
         # the rays through the frame's wall points carry the static wall's counts: perfusion colours
         uptake = 100.0 * wallLib.uptakeAtPoints(self.staticResult, staticSample, points) / maximum
         scalars = numpy_support.numpy_to_vtk(uptake.astype(np.float32), deep=1)
@@ -414,6 +422,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.tiles = {}            # (slot, orientation) -> (key, [frame][cell] (QImage or None, slice number or None), title)
         self.polarImages = {}      # (slot, polar map tag) -> (key, (QImage, region values))
         self.inherited = None      # Perfusion settings last taken over
+        self.normalizedFor = None  # (normalization, scale, studies shown) the window tops were last set for
         self.staticSamples = {}    # study ID -> (key, sampler of the volume the wall was detected on)
         self.surfaceKeys = {}      # slot -> key of the 3D models made for its data
         self.ghostLayers = {STRESS: GhostLayer(), REST: GhostLayer()}
@@ -461,9 +470,16 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.colormapCombo = qt.QComboBox()
         self.colormapCombo.addItems([label for label, _ in COLORMAPS])
         form.addRow("Color map:", self.colormapCombo)
+        self.normalizationCombo = qt.QComboBox()
+        for text, value in NORMALIZATIONS:
+            self.normalizationCombo.addItem(text, value)
+        self.normalizationCombo.toolTip = (NORMALIZATION_TIP + ". The slices: of the frames' myocardium (each "
+                                           "frame's own with Scale: Each frame); the perfusion polar maps and 3D "
+                                           "walls: of the static study, as in Perfusion")
+        form.addRow("Normalize to:", self.normalizationCombo)
         self.windowRange = self._windowWidget(
-            "Color window (min - max) of the slices in % of the hottest frame near the LV (or of each frame's own "
-            "hottest voxel, see Scale)")
+            "Color window (min - max) of the slices in % of the maximum in the myocardium of the hottest frame "
+            "(or of each frame's own, see Scale); a frame not segmented: its hottest voxel near the LV")
         form.addRow("Window:", self.windowRange)
         self.scaleCombo = qt.QComboBox()
         for text, value, _, _ in FRAME_SCALES:
@@ -542,10 +558,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.polarLinkCheck = qt.QCheckBox("Same as the slices")
         self.polarLinkCheck.checked = True
         self.polarLinkCheck.toolTip = ("Use the slice window for the perfusion polar maps and the 3D walls (in % of "
-                                       "the polar map maximum); untick to window them on their own")
+                                       "the static study's myocardial maximum); untick to window them on their own")
         polarForm.addRow("Perfusion window:", self.polarLinkCheck)
         self.polarWindowRange = self._windowWidget(
-            "Color window of the perfusion polar maps and the 3D walls, % of the polar map maximum")
+            "Color window of the perfusion polar maps and the 3D walls, % of the static study's myocardial maximum")
         polarForm.addRow("", self.polarWindowRange)
         self.perfusionViewCombo = self._mapViewCombo("perfusion")
         polarForm.addRow("Perfusion map:", self.perfusionViewCombo)
@@ -739,6 +755,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             hint=("Map smoothing applies when a study is loaded again (e.g. after Segment frames again in Gated QC); the other parameters at once."))
         self.parameterPanel.bind("speed", self.speedSpin)
         self.parameterPanel.bind("colormap", self.colormapCombo)
+        self.parameterPanel.bind("normalization", self.normalizationCombo)
         self.parameterPanel.bind("window", self.windowRange)
         self.parameterPanel.bind("scale", self.scaleCombo)
         self.parameterPanel.bind("gridRows", self.gridRowsSpin)
@@ -789,6 +806,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.colormapCombo.connect("currentIndexChanged(int)", lambda _: self.refresh())
         self.windowRange.connect("valuesChanged(double,double)", lambda a, b: self.refresh(rebuild3D=False))
         self.scaleCombo.connect("currentIndexChanged(int)", lambda _: self.refreshSlices())
+        self.normalizationCombo.connect("currentIndexChanged(int)", lambda _: self.onNormalizationChanged())
         for spin in (self.gridRowsSpin, self.gridColumnsSpin):
             spin.connect("valueChanged(int)", lambda _: self.onGridChanged())
         for spin in [self.stepSpin] + list(self.firstSliceSpins.values()):
@@ -1159,10 +1177,11 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         cached = self.data.get(slot)
         if cached and cached[0] == key:
             return cached[1]
-        staticPolar, message = self.reviewWidget().polarMap(study)
+        review = self.reviewWidget()
+        staticPolar, message = review.polarMap(study)
         if staticPolar is None:
             raise ValueError(message)
-        data = GatedReviewData(gated, staticResult, frame, staticPolar)
+        data = GatedReviewData(gated, staticResult, frame, staticPolar, review.myocardialLevels(study))
         data.motionReference = self.motionReference()
         data.thickeningSource = self.thickeningSource()
         data.efReference = self.efReference()
@@ -1207,7 +1226,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def perfusionSettings(self, slots):
         review = self.reviewWidget()
         first = slots[0]
-        return {"colormap": review.colormapCombo.currentText,
+        return {"colormap": review.colormapCombo.currentText, "normalization": review.normalization(),
                 "window": (review.windowRanges[first].minimumValue, review.windowRanges[first].maximumValue),
                 "grid": tuple(review.grids["dual" if len(slots) > 1 else "single"]), "step": review.stepSpin.value,
                 "first": {(slot, name): (review.firstSliceSpins[(slot, name)].value,
@@ -1231,7 +1250,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         if settings == self.inherited and not force:
             return
         self.inherited = settings
-        widgets = [self.colormapCombo, self.windowRange, self.gridRowsSpin, self.gridColumnsSpin, self.stepSpin,
+        widgets = [self.colormapCombo, self.normalizationCombo, self.windowRange, self.gridRowsSpin, self.gridColumnsSpin, self.stepSpin,
                    self.polarLinkCheck, self.polarWindowRange, self.overlayCombo, self.scoresButton, self.fovSpin,
                    self.syncCheck] + \
             list(self.firstSliceSpins.values())
@@ -1242,6 +1261,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             index = self.colormapCombo.findText(settings["colormap"])
             if index >= 0:
                 self.colormapCombo.setCurrentIndex(index)
+            index = self.normalizationCombo.findData(settings["normalization"])
+            if index >= 0:
+                self.normalizationCombo.setCurrentIndex(index)
+            self.normalizedFor = None   # the percentile is set again on the gate frames
             self.windowRange.minimumValue, self.windowRange.maximumValue = settings["window"]
             self.grids[self.gridKind()] = list(settings["grid"])
             self.gridRowsSpin.setValue(settings["grid"][0])
@@ -1560,15 +1583,69 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     # --- slices -----------------------------------------------------------------------------
     def sliceWindows(self, data):
-        """(low, top) counts of every frame's color window: % of the hottest frame, or of each frame's own peak."""
-        peaks = list(data.gated.peaks) or [1.0] * data.count
+        """(low, top) counts of every frame's color window: % of the myocardial maximum of the hottest frame,
+        or of each frame's own (GatedStudy.windowReferences)."""
+        peaks = list(data.gated.windowReferences()) or [1.0] * data.count
         if self.scaleCombo.itemData(self.scaleCombo.currentIndex) != "frame":
             peaks = [max(peaks)] * len(peaks)
         low, high = self.windowRange.minimumValue / 100.0, self.windowRange.maximumValue / 100.0
         return [(r * low, max(r * high, r * low + 1e-9)) for r in peaks]
 
+    def normalization(self):
+        """NORMALIZATIONS value chosen: "max" or "percentile"."""
+        return self.normalizationCombo.itemData(self.normalizationCombo.currentIndex) or "max"
+
+    def normalizationTops(self):
+        """(slice window top, perfusion polar window top) in % the normalization asks for the first study
+        shown: 100, or the percentile level of the myocardium in % of its maximum (the slices: of the
+        hottest frame, or the mean of the frames' own with Scale: Each frame; the polar maps: of the static
+        study). None where the myocardium has no counts."""
+        if self.normalization() != "percentile":
+            return 100.0, 100.0
+        shown = self.shown()
+        if not shown:
+            return None, None
+        data = shown[0][1]
+        levels = [v for v in data.gated.myocardiumLevels() if v and v[0] > 0]
+        sliceTop = None
+        if levels:
+            if self.scaleCombo.itemData(self.scaleCombo.currentIndex) == "frame":
+                sliceTop = 100.0 * float(np.mean([level / peak for peak, level in levels]))
+            else:
+                sliceTop = 100.0 * max(level for _, level in levels) / max(peak for peak, _ in levels)
+        static = data.staticLevels
+        polarTop = 100.0 * static[1] / static[0] if static and static[0] > 0 else None
+        return sliceTop, polarTop
+
+    def applyNormalization(self, force=False):
+        """Set the slice and perfusion polar window tops to normalizationTops: when the normalization is chosen
+        (force), or with the percentile when the studies shown or Scale changed. A window moved by hand
+        afterwards is kept. Signals are blocked: the caller renders."""
+        mode = self.normalization()
+        key = (mode, self.scaleCombo.itemData(self.scaleCombo.currentIndex),
+               tuple((slot, id(data)) for slot, data in self.shown()))
+        if not self.shown() or not (force or (mode == "percentile" and self.normalizedFor != key)):
+            return False
+        self.normalizedFor = key
+        changed = False
+        for window, top in zip((self.windowRange, self.polarWindowRange), self.normalizationTops()):
+            if top is None:
+                continue
+            wasBlocked = window.blockSignals(True)
+            window.maximumValue = max(round(top), window.minimumValue + 1.0)
+            window.blockSignals(wasBlocked)
+            changed = True
+        if changed:
+            self.syncToolbar()
+        return changed
+
+    def onNormalizationChanged(self):
+        if self.applyNormalization(force=True):
+            self.refresh(rebuild3D=False)
+
     def refreshSlices(self, show=True):
         """Tiles of every frame of every row at the current settings, made once (the cine only swaps them)."""
+        self.applyNormalization()
         shownSlots = set(self.slots()) if self.kind() != "plots" else set()
         self.tiles = {k: v for k, v in self.tiles.items() if k[0] in shownSlots}   # all frames: free the others
         panels = {attribute: (existingPanel(attribute), groups, columns)
@@ -1684,7 +1761,7 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                     key = (id(data), int(size), self.colormapCombo.currentText, low, top, view)
                     cached = self.polarImages.get((slot, tags["polar"]))
                     if cached is None or cached[0] != key:
-                        image, regions = self.polarPercent(data.staticPolar, size, view)
+                        image, regions = self.polarPercent(data.staticPolar, size, view, data.staticMaximum)
                         rgb = colorize(np.nan_to_num(image), top, table, low)
                         rgb[np.isnan(image)] = 0
                         cached = (key, (rgbToQImage(rgb), regions))
@@ -1712,9 +1789,10 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         return view if view in wallLib.REGION_VIEWS else DEFAULT_MAP_VIEW
 
     @staticmethod
-    def polarPercent(polar, size, view="pixels"):
-        """(bullseye painted per view, {segmentation: region values}), all in % of the map maximum."""
-        maximum = float(np.nanmax(polar["values"])) or 1.0
+    def polarPercent(polar, size, view="pixels", maximum=None):
+        """(bullseye painted per view, {segmentation: region values}), all in % of maximum (by default the
+        map maximum)."""
+        maximum = maximum or float(np.nanmax(polar["values"])) or 1.0
         image = 100.0 * wallLib.regionBullseye(polar, size, view) / maximum
         return image, {overlay: [float(v) for v in 100.0 * wallLib.regionValues(polar, overlay) / maximum]
                        for overlay in wallLib.REGION_OVERLAYS}

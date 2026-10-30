@@ -19,6 +19,10 @@ step modules (MPIDataRoles, MPIProcessing, MPIMyocardium, MPIReview, MPIGatedQC,
 import logging
 import traceback
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 SETTINGS_ROOT = "MyocardialPerfusionImaging"
 LEGACY_SETTINGS_ROOT = "MyocardialPerfusionSPECT"   # name of the extension before the rename
 

@@ -86,6 +86,10 @@ from MyocardialPerfusionImagingLib import session  # noqa: E402
 from MyocardialPerfusionImagingLib import parameters as parametersLib  # noqa: E402
 from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 DEFAULT_PIXEL_SIZE_MM = 2.0       # in-plane
 DEFAULT_SLICE_THICKNESS_MM = 5.0
 
@@ -105,6 +109,15 @@ MAX_ELEVATION_DEG = 80.0          # the long axis stays within this of the trans
 MASK_LONG_FRACTION = 1.0          # semi-axes of a new mask ellipsoid in ROI radii: long axis ...
 MASK_SHORT_FRACTION = 0.85        # ... anterior-inferior and septal-lateral
 NO_STUDY_HINT = "No active study. Choose one in Data roles or in the study box of the toolbar."
+DUAL_SLOTS = ("stress", "rest")   # top and bottom study (Study 1, Study 2) of the two-study screen
+HALF_LENGTH_LONG_SHARE = 0.75      # axis lines: half length on the TA / VLA views, share of the radius ...
+HALF_LENGTH_SA_SHARE = 0.6         # ... on the SA view ...
+HALF_LENGTH_FALLBACK_SHARE = 0.7   # ... on a view without its own ...
+HALF_LENGTH_MIN_MM = 8.0           # ... at least this (mm) ...
+HALF_LENGTH_MAX_SHARE = 1.5        # ... at most this share of the radius
+MASK_SEMI_AXIS_MIN_MM = 5.0        # mask ellipsoid: range of its semi-axes
+MASK_SEMI_AXIS_MAX_MM = 150.0
+PREVIEW_OPACITY = 0.7              # opacity of the preview
 
 
 def placeNextTo(node, referenceNode):
@@ -592,8 +605,8 @@ class ProcessingLane(VTKObservationMixin):
                                       (bounds[2] + bounds[3]) / 2.0,
                                       (bounds[4] + bounds[5]) / 2.0])
         self.viewCenter = self.logic.center.copy()
-        self.halfLength = {"TA": 0.75 * self.logic.radius, "VLA": 0.75 * self.logic.radius,
-                           "SA": 0.6 * self.logic.radius}
+        self.halfLength = {"TA": HALF_LENGTH_LONG_SHARE * self.logic.radius, "VLA": HALF_LENGTH_LONG_SHARE * self.logic.radius,
+                           "SA": HALF_LENGTH_SA_SHARE * self.logic.radius}
         self.logic.resetMaskEllipsoid()
         setVolumeDisplay(node, self.widget.colormapCombo.currentText, 0.0, node.GetImageData().GetScalarRange()[1])
         self.createHelperNodes()
@@ -679,7 +692,7 @@ class ProcessingLane(VTKObservationMixin):
         previewDisplay = self.previewNode.GetDisplayNode()
         previewDisplay.SetColor(*yellow)
         previewDisplay.SetSelectedColor(*yellow)
-        previewDisplay.SetOpacity(0.7)
+        previewDisplay.SetOpacity(PREVIEW_OPACITY)
         previewDisplay.SetPointLabelsVisibility(False)
         keepPointsMovableInMip(previewDisplay)
         previewDisplay.SetVisibility(False)
@@ -1271,7 +1284,7 @@ class ProcessingLane(VTKObservationMixin):
                 self.draggedMaskHandle = index
                 self.maskHandlePositions[index] = position
                 semi = abs(float(np.dot(position - self.logic.center, directions[index])))
-                self.logic.maskSemiAxes[index] = float(np.clip(semi, 5.0, 150.0))
+                self.logic.maskSemiAxes[index] = float(np.clip(semi, MASK_SEMI_AXIS_MIN_MM, MASK_SEMI_AXIS_MAX_MM))
                 self.widget.refreshPanel(self)
                 self.updateGeometry()
                 return
@@ -1343,7 +1356,7 @@ class ProcessingLane(VTKObservationMixin):
             length = float(np.linalg.norm(vector))
             if length > 3.0:
                 self.logic.setLineDirection(which, vector)
-                self.halfLength[which] = float(np.clip(length, 8.0, 1.5 * self.logic.radius))
+                self.halfLength[which] = float(np.clip(length, HALF_LENGTH_MIN_MM, HALF_LENGTH_MAX_SHARE * self.logic.radius))
         # The view being dragged in is not re-centered until the drag ends; panning under the
         # mouse would feed back into the drag.
         self.updateGeometry()
@@ -1360,14 +1373,14 @@ class ProcessingLane(VTKObservationMixin):
     def onResetAxes(self):
         self.logic.resetAxes()
         r = self.logic.radius
-        self.halfLength = {"TA": 0.75 * r, "VLA": 0.75 * r, "SA": 0.6 * r}
+        self.halfLength = {"TA": HALF_LENGTH_LONG_SHARE * r, "VLA": HALF_LENGTH_LONG_SHARE * r, "SA": HALF_LENGTH_SA_SHARE * r}
         self.updateGeometry()
 
     def setCurve(self, which, center, direction):
         curve = self.curves.get(which)
         if not curve:
             return
-        half = float(np.clip(self.halfLength.get(which, 0.7 * self.logic.radius), 8.0, 1.5 * self.logic.radius))
+        half = float(np.clip(self.halfLength.get(which, HALF_LENGTH_FALLBACK_SHARE * self.logic.radius), HALF_LENGTH_MIN_MM, HALF_LENGTH_MAX_SHARE * self.logic.radius))
         points = [center - half * direction, center, center + half * direction]
         wasModifying = curve.StartModify()
         for index, p in enumerate(points):
@@ -1457,7 +1470,6 @@ class ProcessingLane(VTKObservationMixin):
 # Widget
 # ---------------------------------------------------------------------------
 MODE_SINGLE, MODE_DUAL = "single", "dual"
-DUAL_SLOTS = ("stress", "rest")   # top and bottom study (Study 1, Study 2) of the two-study screen
 
 
 class MPIProcessingWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):

@@ -42,9 +42,14 @@ from MyocardialPerfusionImagingLib import studies as studiesLib  # noqa: E402
 from MyocardialPerfusionImagingLib import views  # noqa: E402
 from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 ICON_PATH = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
 BANNER_PATH = os.path.join(_MODULE_DIR, "Resources", "Images", "Banner.jpg")
 STATE_TEXT = {session.STATE_DONE: "Done", session.STATE_AVAILABLE: "Ready", session.STATE_LOCKED: "Waiting"}
+PANEL_MAX_WIDTH = 900   # px, module panel width while the hub is open
 
 
 def _installToolbar():
@@ -54,9 +59,6 @@ def _installToolbar():
     except Exception:
         logging.exception("MPI: could not install the workflow toolbar")
         return None
-
-
-PANEL_MAX_WIDTH = 900   # px, module panel width while the hub is open
 
 
 class MyocardialPerfusionImaging(ScriptedLoadableModule):

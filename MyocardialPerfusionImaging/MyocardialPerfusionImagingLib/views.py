@@ -10,6 +10,10 @@ import slicer
 # ---------------------------------------------------------------------------
 # View / layout identifiers
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 REORIENT_LAYOUT_ID = 5710        # one study
 RESULT_LAYOUT_ID = 5711          # slices, polar map and 3D uptake of one study (STRESS PERF / REST PERF)
 SLICES_LAYOUT_ID = 5720          # slices only (STRESS SLICES / REST SLICES / STRESS-REST SLICES)
@@ -72,6 +76,10 @@ ORIENTATION_TITLES = {
     "HLA": "Horizontal long axis (inferior \u2192 anterior)",
     "VLA": "Vertical long axis (septum \u2192 lateral)",
 }
+SLOT_DEFAULT_TITLES = {"stress": "Stress", "rest": "Rest"}   # labels of Study 1 / Study 2 when no roles are given
+REPRESENTATIVE_LAYOUT_KINDS = ("full", "dual")   # three slices per axis (MPIGated.REPRESENTATIVE_KINDS)
+AUTO_DUAL_SCREEN_KEY = "MyocardialPerfusionImaging/AutoDualScreen"
+OWN_LAYOUT_IDS = range(5700, 5800)   # every layout of this extension (the IDs above)
 
 
 def _sliceViewXml(tag, label, color, orientation="Axial"):
@@ -273,9 +281,6 @@ def gatedPlotKinds(slots, kind):
     return GATED_PLOT_KINDS
 
 
-SLOT_DEFAULT_TITLES = {"stress": "Stress", "rest": "Rest"}   # labels of Study 1 / Study 2 when no roles are given
-
-
 def _gatedPlotXml(slot, kind, titles=None):
     tag = gatedTags(slot)[kind]
     if kind == "3d":
@@ -305,9 +310,6 @@ def _gatedPlotsXml(slots, kinds, titles=None):
 
 def _mosaicXml(tag=GATED_REVIEW_MOSAIC_TAG):
     return f"<{tag}></{tag}>"
-
-
-REPRESENTATIVE_LAYOUT_KINDS = ("full", "dual")   # three slices per axis (MPIGated.REPRESENTATIVE_KINDS)
 
 
 def _representativeSlicesXml(slots, titles=None):
@@ -391,9 +393,6 @@ def secondaryScreen():
     return next((screen for screen in screens if not screen.geometry.contains(center)), None)
 
 
-AUTO_DUAL_SCREEN_KEY = "MyocardialPerfusionImaging/AutoDualScreen"
-
-
 def autoDualScreen():
     """Whether Perfusion and Gated Review open on two monitors by themselves when there is a second screen
     (the hub's "Auto use dual screen when available" setting, on by default)."""
@@ -447,9 +446,6 @@ def placeMonitor2Window(viewTag=None, title=GATED_MONITOR2_TITLE):
         window.raise_()
     except Exception:
         logging.exception("MPI: could not place the second window; drag it to the second monitor")
-
-
-OWN_LAYOUT_IDS = range(5700, 5800)   # every layout of this extension (the IDs above)
 
 
 def isOwnLayout(layoutId):

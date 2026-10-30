@@ -3,6 +3,10 @@
 import numpy as np
 import vtk
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 SUPERIOR = np.array([0.0, 0.0, 1.0])
 PATIENT_LEFT = np.array([-1.0, 0.0, 0.0])
 

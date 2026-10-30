@@ -21,6 +21,10 @@ import numpy as np
 import vtk
 import vtk.util.numpy_support as numpy_support
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 INTERPOLATION_MODES = ("bspline", "sinc", "linear")
 INTERPOLATION_LABELS = {
     "bspline": "Cubic B-spline (smooth)",

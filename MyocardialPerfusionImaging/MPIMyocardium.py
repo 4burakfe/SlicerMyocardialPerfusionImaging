@@ -40,6 +40,10 @@ from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     setViewTitle)
 from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 LABEL_SPACING_MM = 1.5      # grid of the myocardium / cavity segmentation
 # 3D view, styled as Taranis' segmentation layout: segments as flat wireframes, low opacity (dense meshes)
 SEGMENTS = (  # (label, name, color)
@@ -58,6 +62,16 @@ SURFACES = {                # key: (name, color, shown by default)
     "epi": ("epicardium", (0.25, 0.85, 0.35), True),
     "mid": ("mid-wall", (1.0, 0.85, 0.1), False),
 }
+DEFAULT_LV_RADIUS_MM = 55.0        # search radius around the LV center when the study has none
+SHELL_PASS_BAND = 0.05             # smoothing of the wall shell's surface (smaller is smoother)
+CAMERA_DISTANCE_MM = 330.0         # 3D view: camera distance ...
+CAMERA_WALL_FACTOR = 0.75          # ... and parallel scale: this times the wall's reach and label distance ...
+CAMERA_MARGIN_MM = 10.0            # ... plus this
+CAMERA_RADIUS_FACTOR = 1.6         # without a wall: this times the search radius
+WALL_LABEL_GLYPH_SCALE = 1.2       # 3D wall labels
+WALL_LABEL_TEXT_SCALE = 4.0
+WALL_LABEL_OCCLUDED_OPACITY = 0.6
+WALL_LABEL_LEADER_OPACITY = 0.45
 
 
 def _installToolbar():
@@ -103,7 +117,7 @@ def cardiacFrame(studyNode):
         center = np.array([float(x) for x in node.GetAttribute("MPI.Center").split()])
         u = unit([float(x) for x in node.GetAttribute("MPI.LongAxis").split()])
         w = unit([float(x) for x in node.GetAttribute("MPI.AnteriorAxis").split()])
-        radius = float(node.GetAttribute("MPI.RadiusMm") or 55.0)
+        radius = float(node.GetAttribute("MPI.RadiusMm") or DEFAULT_LV_RADIUS_MM)
     except (AttributeError, ValueError):
         return None
     w = unit(w - np.dot(w, u) * u)
@@ -202,7 +216,7 @@ def wallShellPolyData(result, frame, spacing=None):
     smooth = vtk.vtkWindowedSincPolyDataFilter()
     smooth.SetInputConnection(surface.GetOutputPort())
     smooth.SetNumberOfIterations(20)
-    smooth.SetPassBand(0.05)
+    smooth.SetPassBand(SHELL_PASS_BAND)
     smooth.FeatureEdgeSmoothingOff()
     smooth.BoundarySmoothingOff()
     smooth.NormalizeCoordinatesOn()
@@ -260,14 +274,14 @@ def addWallLabelNodes(result, study, viewIds, distanceMm=None):
     display.SetSelectedColor(*LABEL_COLOR)
     display.SetActiveColor(*LABEL_COLOR)
     display.SetGlyphType(slicer.vtkMRMLMarkupsDisplayNode.Sphere3D)
-    display.SetGlyphScale(1.2)
-    display.SetTextScale(4.0)
+    display.SetGlyphScale(WALL_LABEL_GLYPH_SCALE)
+    display.SetTextScale(WALL_LABEL_TEXT_SCALE)
     display.SetPropertiesLabelVisibility(False)
     display.SetPointLabelsVisibility(True)
     display.SetVisibility2D(False)
     try:
         display.SetOccludedVisibility(True)
-        display.SetOccludedOpacity(0.6)
+        display.SetOccludedOpacity(WALL_LABEL_OCCLUDED_OPACITY)
         textProperty = display.GetTextProperty()
         textProperty.SetBold(True)
         textProperty.SetShadow(True)
@@ -283,7 +297,7 @@ def addWallLabelNodes(result, study, viewIds, distanceMm=None):
     leaders.CreateDefaultDisplayNodes()
     display = leaders.GetDisplayNode()
     display.SetColor(*LABEL_COLOR)
-    display.SetOpacity(0.45)
+    display.SetOpacity(WALL_LABEL_LEADER_OPACITY)
     display.SetLineWidth(1.0)
     display.SetVisibility2D(False)
     if viewIds:
@@ -320,11 +334,11 @@ def cameraAnchor(frame, result=None):
 def defaultParallelScale(frame, result=None):
     """Half the height of the orthographic 3D view, mm: the LV and its floating labels fit in."""
     if result is not None:
-        return 0.75 * (wallLib.wallReach(result) + LABEL_DISTANCE_MM) + 10.0
-    return 1.6 * float(frame.get("radius", 55.0))
+        return CAMERA_WALL_FACTOR * (wallLib.wallReach(result) + LABEL_DISTANCE_MM) + CAMERA_MARGIN_MM
+    return CAMERA_RADIUS_FACTOR * float(frame.get("radius", DEFAULT_LV_RADIUS_MM))
 
 
-def placeCamera(viewNode, frame, result=None, distance=330.0, parallelScale=None, direction=None, up=None):
+def placeCamera(viewNode, frame, result=None, distance=CAMERA_DISTANCE_MM, parallelScale=None, direction=None, up=None):
     """Look at the LV from superior-anterior: the camera sits in front of the heart (anterior wall
     of the cardiac frame) and above it (patient superior), aimed at the middle of the LV. direction (from
     the LV toward the camera) and up (the screen's up) can be given instead."""
@@ -401,6 +415,22 @@ def labelGrid(result, frame, spacing=None):
             matrix.SetElement(r, col, float(axes[col][r] * spacing))
         matrix.SetElement(r, 3, float(origin[r]))
     return labels, matrix
+
+
+def myocardiumLevels(result, frame, sample, polar=None, percentile=98.0):
+    """(maximum, level at the percentile) of the counts inside the detected myocardium (its labels on
+    the LABEL_SPACING_MM grid, sampled by sample), or None. The maximum also covers the polar map
+    samples when given, so no polar map value is above 100 %."""
+    labels, matrix = labelGrid(result, frame)
+    m = slicer.util.arrayFromVTKMatrix(matrix)
+    index = np.argwhere(labels == wallLib.LABEL_MYOCARDIUM)[:, ::-1].astype(float)   # (i, j, k)
+    counts = np.asarray(sample(index @ m[:3, :3].T + m[:3, 3]), dtype=float) if len(index) else np.zeros(0)
+    levels = wallLib.countLevels(counts, percentile)
+    if polar is not None:
+        peak = wallLib.countLevels(polar["values"], 100.0)
+        if peak is not None:
+            levels = (peak[0], peak[0]) if levels is None else (max(levels[0], peak[0]), levels[1])
+    return levels
 
 
 # ---------------------------------------------------------------------------
@@ -483,7 +513,7 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.baseMethodCombo.setCurrentIndex(max(0, self.baseMethodCombo.findData(defaults["baseMethod"])))
         self.baseMethodCombo.toolTip = (
             "Where the wall ends at the base, along each angle. Adaptive, global (default): a preliminary segment "
-            "(50 % of each angle's wall counts) gives the blood pool and the mean counts of the whole myocardium, "
+            "(30 % of each angle's wall counts) gives the blood pool and the mean counts of the whole myocardium, "
             "and every angle's wall ends half way between the two: one level for all angles, steadier in the noisy "
             "gate frames; angles whose basal wall is dim (a scar) count less in the plane fit. Adaptive: the same "
             "with each angle's own basal wall counts instead of the whole myocardium's, so a basal-only defect "
@@ -917,6 +947,9 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 slider.value = 0.0
                 slider.blockSignals(wasBlocked)
             self.detectStudy(self.studyNode)
+            for study, _ in self.lanes():     # the other study on screen takes the same parameters
+                if study is not None and study is not self.studyNode:
+                    self.detectStudy(study)
         if slicer.app.layoutManager().layout != self.layoutId() and self.isShown():
             self.showLayout()
         else:
@@ -928,12 +961,13 @@ class MPIMyocardiumWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         session.notify()
 
     def detectStudy(self, study):
-        """Fit the wall of a study with the current parameters (another study than the active one:
-        its own modality's resolution and no valve adjustment) and store the result."""
+        """Fit the wall of a study with the current parameters (another study than the active one: no valve
+        adjustment and, of another modality, that modality's resolution) and store the result."""
         frame = cardiacFrame(study)
         params = self.parameters(study)
         if study is not self.studyNode:
-            params["resolution"] = studiesLib.SYSTEM_RESOLUTION_MM.get(studiesLib.modality(study), params["resolution"])
+            if studiesLib.modality(study) != studiesLib.modality(self.studyNode):
+                params["resolution"] = studiesLib.SYSTEM_RESOLUTION_MM.get(studiesLib.modality(study), params["resolution"])
             params["valveOffset"] = 0.0
             params.update({key: 0.0 for key in self.tiltSliders})
         result = wallLib.fitWall(volumeSampler(detectionVolume(study)), frame["center"], frame["u"], frame["w"],

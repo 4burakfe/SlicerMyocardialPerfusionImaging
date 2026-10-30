@@ -18,38 +18,55 @@ import json
 import logging
 import sys
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 SETTINGS_GROUP = "MyocardialPerfusionImaging/Parameters"
 LIB = "MyocardialPerfusionImagingLib"
 
 
 class Parameter:
-    """One adjustable constant. default: bool, int, float, a tuple of numbers, or a color (kind="color",
-    a tuple of 3 numbers 0..colorScale). factor: target value = shown value x factor (e.g. MB -> bytes).
-    choices: ((label, value), ...) for a choice. restart: the change takes effect after restarting Slicer."""
+    """One adjustable constant. literal: its value here, a bool, int, float, a tuple of numbers, or a color
+    (kind="color", a tuple of 3 numbers 0..colorScale); it sets the kind, and the default until the target's
+    module is imported: from then on the default is the value in that module's source (default), so a
+    constant is edited in one place, its module. factor: target value = shown value x factor (e.g. MB ->
+    bytes). choices: ((label, value), ...) for a choice. restart: the change takes effect after restarting
+    Slicer."""
 
-    def __init__(self, key, label, default, targets, minimum=None, maximum=None, step=None, decimals=None,
+    def __init__(self, key, label, literal, targets, minimum=None, maximum=None, step=None, decimals=None,
                  suffix="", tooltip="", group="", kind=None, colorScale=1.0, factor=1, choices=None, restart=False):
         self.key = key
         self.label = label
-        self.default = default
+        self.literal = literal
         self.targets = (targets,) if isinstance(targets, str) else tuple(targets)
         self.minimum, self.maximum, self.step, self.decimals = minimum, maximum, step, decimals
         self.suffix = suffix
         self.tooltip = tooltip
         self.group = group
-        self.kind = kind or _kindOf(default, choices)
+        self.kind = kind or _kindOf(literal, choices)
         self.colorScale = colorScale
         self.factor = factor
         self.choices = choices
         self.restart = restart
 
+    @property
+    def default(self):
+        """The built-in value, as shown: the one in the target module's source."""
+        value = codeValue(self.targets[0])
+        if value is None:
+            return self.literal
+        if self.factor != 1 and self.kind in ("int", "float"):
+            value = value / self.factor
+        return type(self.literal)(value) if self.kind == "tuple" else self.normalize(value)
+
     def normalize(self, value):
         """A saved or entered value in the type of the default (tuples from JSON lists)."""
         if self.kind in ("tuple", "color"):
             items = list(value)
-            if len(items) != len(self.default):
-                raise ValueError(f"{self.key}: {len(self.default)} values expected")
-            kinds = [type(x) for x in self.default]
+            if len(items) != len(self.literal):
+                raise ValueError(f"{self.key}: {len(self.literal)} values expected")
+            kinds = [type(x) for x in self.literal]
             return tuple(int(round(float(v))) if k is int else float(v) for v, k in zip(items, kinds))
         if self.kind == "bool":
             return bool(value)
@@ -61,7 +78,7 @@ class Parameter:
 
     def targetValue(self, value):
         if self.factor != 1 and self.kind in ("int", "float"):
-            return type(self.default)(value * self.factor) if self.kind == "int" else value * self.factor
+            return type(self.literal)(value * self.factor) if self.kind == "int" else value * self.factor
         return value
 
 
@@ -135,12 +152,23 @@ STEP_PARAMETERS = {
         P("thicknessSmoothing", "Thickness map smoothing", 3.0, f"{MYO}:DEFAULTS.thicknessSmoothing", 0.0, 8.0, 0.25,
           2, " samples", "Fit: Ellipsoid only. Gaussian sigma of the wall thickness map (the surface fits fit the "
                          "thickness as the wall, with the Gated QC fit parameters)", "Wall fit"),
-        P("thicknessModel", "Wall borders", "slab", f"{MYO}:DEFAULTS.thicknessModel",
+        P("thicknessModel", "Wall borders", "gradienttable", f"{MYO}:DEFAULTS.thicknessModel",
           tooltip="Surface fits and Gated QC: the profile width read as a slab blurred at the system resolution, "
-                  "leaning to the thickness prior (default), or the endo- and epicardium where the count profile falls "
-                  "half way to the static image's blood pool and to the counts outside (no resolution model)",
+                  "leaning to the thickness prior, or the endo- and epicardium where the count profile falls "
+                  "half way to the static image's blood pool and to the counts outside (no resolution model). FWHM: "
+                  "where the profile falls to half the peak on both sides, with no floor. Mean floor: half way from "
+                  "the peak to one floor for both sides (half the ray's own, half the mean over the wall), read as "
+                  "the blurred slab. Gradient: the steepest slopes of the profile on each side, with no floor, as "
+                  "they are or (blur-corrected, the default) read as a blurred slab leaning to the thickness prior",
           group="Wall fit", choices=(("Half way to blood pool / outside", "width"),
+                                     ("FWHM: half the peak on both sides", "fwhm"),
+                                     ("Mean floor (local + global), blur-corrected", "meanfloor"),
+                                     ("Gradient: steepest slopes", "gradient"),
+                                     ("Gradient, blur-corrected", "gradienttable"),
                                      ("Blurred slab with a prior", "slab"))),
+        P("gradientSmoothing", "Gradient smoothing along a ray", 2.0, f"{MYO}:GRADIENT_SMOOTHING_MM", 0.0, 6.0, 0.25, 2,
+          " mm", "Wall borders Gradient: Gaussian sigma of the profile before its slope is taken: larger is steadier "
+                 "in noise and widens the walls a little (the blur-corrected table allows for it)", "Wall fit"),
         P("cavityGap", "Blood pool gap from the endocardium", 5.0, f"{MYO}:CAVITY_GAP_MM", 0.0, 20.0, 0.5, 1, " mm",
           "The blood pool level (the inner wall edge's floor, taken from the static image for every frame) is "
           "sampled this far inside the endocardium; a cavity too small for it is sampled up to the endocardium",
@@ -180,9 +208,19 @@ STEP_PARAMETERS = {
           "How far the ellipsoid's long axis may turn away from the LV axis", "Defects"),
         P("shapeTiltSigma", "Shape model tilt spread", 15.0, f"{MYO}:SHAPE_TILT_SIGMA", 1.0, 90.0, 1.0, 0, " deg",
           "How far the ellipsoid's axis may tilt before the prior pulls it back", "Defects"),
-        P("basePrelimFraction", "Adaptive base: preliminary threshold", 0.50, f"{MYO}:DEFAULTS.basePrelimFraction",
+        P("basePrelimFraction", "Adaptive base: preliminary threshold", 0.30, f"{MYO}:DEFAULTS.basePrelimFraction",
           0.2, 0.8, 0.05, 2, " x wall", "Base detection Adaptive: share of each angle's wall counts at which the "
           "preliminary segment ends; the blood pool and each angle's basal wall counts are taken from it",
+          "Valve plane"),
+        P("baseGap", "Base: go on past a defect gap", False, f"{MYO}:DEFAULTS.baseGap",
+          tooltip="Along each angle, a wall that falls off and comes back within the gap length toward the base (a "
+                  "defect between the mid-ventricle and a basal wall that is still alive, inferobasal) goes on to "
+                  "the end of the basal wall; only where the cavity has not filled (the atria) and the wall comes "
+                  "back in the cone it could have followed (no closer to the axis than Steepest basal narrowing, no "
+                  "more than 30 deg further out, +- 4 mm), so the liver or gut beside the base is not taken",
+          group="Valve plane"),
+        P("baseGapLength", "Base: defect gap length", 15.0, f"{MYO}:BASE_GAP_MM", 4.0, 40.0, 1.0, 0, " mm",
+          "Base: go on past a defect gap: how far toward the base the wall may come back after it falls off",
           "Valve plane"),
         P("baseEdgeFraction", "Adaptive base: edge level", 0.50, f"{MYO}:DEFAULTS.baseEdgeFraction", 0.2, 0.8, 0.05,
           2, "", "Base detection Adaptive: the wall ends where its counts fall this far from its basal wall counts "
@@ -405,6 +443,28 @@ def _parseTarget(target):
     return moduleName, parts, index
 
 
+_CODE_VALUES = {}   # target -> its value in the module's source, kept before anything is assigned to it
+
+
+def codeValue(target):
+    """The value of a target in its module's source, None while the module is not imported yet."""
+    if target in _CODE_VALUES:
+        return _CODE_VALUES[target]
+    moduleName, parts, index = _parseTarget(target)
+    module = sys.modules.get(moduleName)
+    if module is None:
+        return None
+    try:
+        value = getattr(module, parts[0])
+        for part in parts[1:]:
+            value = value[part]
+        value = value if index is None else value[index]
+    except (AttributeError, KeyError, IndexError, TypeError):
+        return None         # still being imported
+    _CODE_VALUES[target] = value
+    return value
+
+
 def assign(target, value, importMissing=False):
     """Set one target to value. False when its module is not imported (and not importable)."""
     moduleName, parts, index = _parseTarget(target)
@@ -425,6 +485,7 @@ def assign(target, value, importMissing=False):
             container = container[part]
         name = parts[-1]
         current = container[name]
+    _CODE_VALUES.setdefault(target, current if index is None else current[index])
     if index is not None:
         items = list(current)
         items[index] = value

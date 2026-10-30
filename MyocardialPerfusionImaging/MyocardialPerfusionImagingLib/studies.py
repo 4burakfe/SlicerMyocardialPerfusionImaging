@@ -29,6 +29,10 @@ import logging
 import re
 import traceback
 
+# ---------------------------------------------------------------------------
+# Settings of this file: edit the values here. A value shown in Advanced parameters takes the one here as its
+# built-in default; a value saved with Save parameters overrides it until Restore defaults.
+# ---------------------------------------------------------------------------
 ROLES = ("Stress", "Rest", "Redistribution", "Viability", "Other", "None")
 EXCLUDED_ROLE = "None"   # set in Data roles to leave a volume out of the analysis (never guessed)
 UNKNOWN_ROLE = "Other"
@@ -61,6 +65,10 @@ _TRACER_PATTERNS = [
 # Written by the DICOM Gated / Dynamic PET extension (one prefix per kind of series)
 TRACER_ATTRIBUTES = tuple(prefix + name for prefix in ("GatedPET.", "StaticPET.", "DynamicPET.")
                           for name in ("Radiopharmaceutical", "Radionuclide"))
+EMISSION_MODALITIES = ("NM", "PT")
+SYSTEM_RESOLUTION_MM = {"NM": 15.0, "PT": 7.0}   # default FWHM at the heart, by modality
+WALL_FIT = {"NM": "bspline", "PT": "mesh"}       # surface fit of the wall with fit "auto", by modality
+AUTO_FIT = ("Automatic: mesh for PET, B-spline for SPECT", "auto")
 
 
 def tracerKind(*texts):
@@ -260,12 +268,6 @@ def _geometry(volumeNode):
     spacing = tuple(round(s, 3) for s in volumeNode.GetSpacing())
     origin = tuple(round(o, 1) for o in volumeNode.GetOrigin())
     return dims, spacing, origin
-
-
-EMISSION_MODALITIES = ("NM", "PT")
-SYSTEM_RESOLUTION_MM = {"NM": 15.0, "PT": 7.0}   # default FWHM at the heart, by modality
-WALL_FIT = {"NM": "bspline", "PT": "mesh"}       # surface fit of the wall with fit "auto", by modality
-AUTO_FIT = ("Automatic: mesh for PET, B-spline for SPECT", "auto")
 
 
 def wallFit(node, fit="auto"):
