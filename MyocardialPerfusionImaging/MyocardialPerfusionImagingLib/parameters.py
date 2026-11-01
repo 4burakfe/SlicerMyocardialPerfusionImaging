@@ -166,6 +166,11 @@ STEP_PARAMETERS = {
                                      ("Gradient: steepest slopes", "gradient"),
                                      ("Gradient, blur-corrected", "gradienttable"),
                                      ("Blurred slab with a prior", "slab"))),
+        P("smoothEdges", "Endo / epi widths wholly from the fit", True, f"{MYO}:DEFAULTS.smoothEdges",
+          tooltip="Surface fits: the endo- and epicardial half widths go through the same fit as the mid-wall either "
+                  "way. On, they take the fit as it is; off, they keep a share of each ray's own width as Smoothing "
+                  "(pull to the fit) keeps of its peak, which leaves the borders rougher in noisy frames",
+          group="Wall fit"),
         P("gradientSmoothing", "Gradient smoothing along a ray", 2.0, f"{MYO}:GRADIENT_SMOOTHING_MM", 0.0, 6.0, 0.25, 2,
           " mm", "Wall borders Gradient: Gaussian sigma of the profile before its slope is taken: larger is steadier "
                  "in noise and widens the walls a little (the blur-corrected table allows for it)", "Wall fit"),
@@ -212,7 +217,7 @@ STEP_PARAMETERS = {
           0.2, 0.8, 0.05, 2, " x wall", "Base detection Adaptive: share of each angle's wall counts at which the "
           "preliminary segment ends; the blood pool and each angle's basal wall counts are taken from it",
           "Valve plane"),
-        P("baseGap", "Base: go on past a defect gap", False, f"{MYO}:DEFAULTS.baseGap",
+        P("baseGap", "Base: go on past a defect gap", True, f"{MYO}:DEFAULTS.baseGap",
           tooltip="Along each angle, a wall that falls off and comes back within the gap length toward the base (a "
                   "defect between the mid-ventricle and a basal wall that is still alive, inferobasal) goes on to "
                   "the end of the basal wall; only where the cavity has not filled (the atria) and the wall comes "

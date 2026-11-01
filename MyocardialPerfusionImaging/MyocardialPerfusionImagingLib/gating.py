@@ -158,8 +158,9 @@ def qcFindings(imageCounts, myocardiumCounts=None, projectionCounts=None, values
         bad = [(i + 1, d) for i, d in enumerate(dev) if d is not None and abs(d) > COUNT_BAND_PERCENT]
         if bad:
             frames = ", ".join(f"{i} ({d:+.0f} %)" for i, d in bad)
+            causes = "arrhythmia, gating or segmentation error" if name == "Myocardium" else "arrhythmia or gating error"
             findings.append(("warning", f"{name} counts of frame {frames} differ more than "
-                                        f"{COUNT_BAND_PERCENT:.0f} % from the mean: arrhythmia or gating error?"))
+                                        f"{COUNT_BAND_PERCENT:.0f} % from the mean: {causes}?"))
         elif any(d is not None for d in dev):
             spread = max(abs(d) for d in dev if d is not None)
             findings.append(("ok", f"{name} counts within ± {spread:.1f} % of the mean."))

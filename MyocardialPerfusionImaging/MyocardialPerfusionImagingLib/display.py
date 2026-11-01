@@ -55,11 +55,11 @@ FRAME_SCALES = (("All frames together", "common", "All frames",
                 ("Each frame on its own", "frame", "Each frame", "Every frame scaled to its own maximum"))
 # Window top of the slices, polar maps and 3D views (100 % is always the myocardial maximum): at 100 %, or
 # at the percentile level of the myocardium's counts, so a few hot voxels do not set the color scale
-NORMALIZATIONS = (("Myocardial maximum", "max"), ("98th percentile of the myocardium", "percentile"))
-NORMALIZATION_PERCENTILE = 98.0
+NORMALIZATIONS = (("Myocardial maximum", "max"), ("99th percentile of the myocardium", "percentile"))
+NORMALIZATION_PERCENTILE = 99.0
 NORMALIZATION_TIP = (
     "100 % is the hottest count in the detected myocardium (slices, polar map and 3D). Myocardial maximum: "
-    "the window top is set to 100 %. 98th percentile: it is set to the level the hottest 2 % of the "
+    "the window top is set to 100 %. 99th percentile: it is set to the level the hottest 1 % of the "
     "myocardium reaches (in % of its maximum), so a small hot spot does not darken the rest of the wall. "
     "Set again when a study or its myocardium changes; move the window by hand after that as usual")
 MIN_VISIBLE_SLICES = 8   # a row scrolls past its last slice (black tiles) until this many slices are left

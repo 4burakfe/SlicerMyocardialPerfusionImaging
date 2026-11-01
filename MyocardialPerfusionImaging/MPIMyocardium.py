@@ -13,6 +13,7 @@ sample the same surfaces.
 import os
 import sys
 import json
+import time
 import logging
 import traceback
 
@@ -54,6 +55,7 @@ SEGMENTS = (  # (label, name, color)
 SHELL_SPACING_MM = 1.25
 SHELL_COLOR = (0.85, 0.35, 0.25)
 SHELL_OPACITY = 0.25
+CAMERA_ELEVATION_DEG = 30.0  # default 3D view: from anteroseptal, raised this much toward the base
 LABEL_DISTANCE_MM = 45.0    # floating wall labels in 3D, outside the epicardium
 LABEL_COLOR = (0.85, 0.88, 0.9)
 HIDDEN_VIEW_ID = "MPINoView"   # view list of the result nodes of a study not on screen: shown in no view
@@ -339,15 +341,21 @@ def defaultParallelScale(frame, result=None):
 
 
 def placeCamera(viewNode, frame, result=None, distance=CAMERA_DISTANCE_MM, parallelScale=None, direction=None, up=None):
-    """Look at the LV from superior-anterior: the camera sits in front of the heart (anterior wall
-    of the cardiac frame) and above it (patient superior), aimed at the middle of the LV. direction (from
-    the LV toward the camera) and up (the screen's up) can be given instead."""
+    """Look at the LV from anteroseptal (half way between the anterior wall and the septum of the
+    cardiac frame), raised CAMERA_ELEVATION_DEG toward the base, the base up, aimed at the middle of the LV.
+    Built in the cardiac frame only: the patient's superior is not used, since the anterior axis often
+    points mostly superior, and adding superior to it then hardly tilts the view (or flips the screen's up).
+    direction (from the LV toward the camera) and up (the screen's up) can be given instead."""
     center, _ = cameraAnchor(frame, result)
     if parallelScale is None:
         parallelScale = defaultParallelScale(frame, result)
-    superior = np.array([0.0, 0.0, 1.0])
-    direction = unit(unit(frame["w"]) + superior) if direction is None else unit(direction)
-    up = superior if up is None else np.asarray(up, dtype=float)
+    base = -unit(frame["u"])
+    if direction is None:
+        elevation = np.radians(CAMERA_ELEVATION_DEG)
+        anteroseptal = unit(unit(frame["w"]) + unit(frame["s"]))
+        direction = np.cos(elevation) * anteroseptal + np.sin(elevation) * base
+    direction = unit(direction)
+    up = base if up is None else np.asarray(up, dtype=float)
     up = unit(up - np.dot(up, direction) * direction)
     position = center + distance * direction
     camera = _cameraNode(viewNode)
@@ -371,6 +379,90 @@ def placeCamera(viewNode, frame, result=None, distance=CAMERA_DISTANCE_MM, paral
                 vtkCamera.SetParallelScale(float(parallelScale))
             renderer.ResetCameraClippingRange()
         widget.threeDView().forceRender()
+    _guardCamera(viewNode.GetLayoutName(), (center, position, up), frame, result, distance, parallelScale, direction, up)
+
+
+# A 3D view can get its camera reset by Slicer after the placement (seen on some studies only: the LV then
+# shows upside down, base at the bottom, looked at along the anterior axis). The placement is checked again
+# a few seconds later and made again when the camera moved without the user touching the view.
+CAMERA_GUARD_DELAYS_MS = (2500, 5000)
+_cameraGuards = {}   # view tag -> {"expected": (focal, position, up), "placedAt": s, "args": ..., "observers": [...]}
+_cameraTouchedAt = [0.0]   # time.monotonic() of the last mouse or key event in a guarded 3D view (linked views move too)
+_cameraRechecking = [False]
+
+
+def _cameraPose(camera):
+    return (np.asarray(camera.GetFocalPoint(), dtype=float), np.asarray(camera.GetPosition(), dtype=float),
+            np.asarray(camera.GetViewUp(), dtype=float))
+
+
+def _direction(focal, position):
+    return np.round(unit(np.asarray(position, dtype=float) - np.asarray(focal, dtype=float)), 3).tolist()
+
+
+def _guardCamera(tag, intended, frame, result, distance, parallelScale, direction, up):
+    widget = threeDWidgetByTag(tag)
+    renderer = widget.threeDView().renderWindow().GetRenderers().GetFirstRenderer() if widget is not None else None
+    if renderer is None:
+        return
+    guard = _cameraGuards.get(tag)
+    if guard is None:
+        guard = {"observers": []}
+        _cameraGuards[tag] = guard
+        interactor = widget.threeDView().interactor()
+        if interactor is not None:
+            def touched(caller=None, event=None):
+                _cameraTouchedAt[0] = time.monotonic()
+            for event in (vtk.vtkCommand.LeftButtonPressEvent, vtk.vtkCommand.MiddleButtonPressEvent,
+                          vtk.vtkCommand.RightButtonPressEvent, vtk.vtkCommand.MouseWheelForwardEvent,
+                          vtk.vtkCommand.MouseWheelBackwardEvent, vtk.vtkCommand.KeyPressEvent):
+                guard["observers"].append((interactor, interactor.AddObserver(event, touched, 1.0)))
+    guard["expected"] = tuple(np.asarray(x, dtype=float) for x in intended)
+    guard["placedAt"] = time.monotonic()
+    actual = _cameraPose(renderer.GetActiveCamera())
+    logging.debug(f"MPI: 3D camera of {tag} placed: toward camera {_direction(*intended[:2])}, up {np.round(unit(intended[2]), 3).tolist()}; "
+                 f"the view's camera now: toward camera {_direction(*actual[:2])}, up {np.round(unit(actual[2]), 3).tolist()}; "
+                 f"frame u {np.round(frame['u'], 3).tolist()} w {np.round(frame['w'], 3).tolist()} s {np.round(frame['s'], 3).tolist()}")
+    if _cameraRechecking[0]:
+        return   # placed again by _checkCamera: its remaining check still runs, no new ones
+    guard["args"] = (frame, result, distance, parallelScale, direction, up)
+    guard["serial"] = guard.get("serial", 0) + 1
+    serial = guard["serial"]
+    for delay in CAMERA_GUARD_DELAYS_MS:
+        qt.QTimer.singleShot(delay, lambda tag=tag, serial=serial: _checkCamera(tag, serial))
+
+
+def _checkCamera(tag, serial):
+    guard = _cameraGuards.get(tag)
+    if guard is None or guard.get("serial") != serial or _cameraTouchedAt[0] >= guard.get("placedAt", 0.0):
+        return   # placed again since, or the user moved the view
+    try:
+        widget = threeDWidgetByTag(tag)
+        if widget is None:
+            return
+        renderer = widget.threeDView().renderWindow().GetRenderers().GetFirstRenderer()
+        if renderer is None:
+            return
+        now = _cameraPose(renderer.GetActiveCamera())
+        expected = guard["expected"]
+        size = max(float(np.linalg.norm(expected[1] - expected[0])), 1.0)
+        moved = (np.linalg.norm(now[0] - expected[0]) > 0.01 * size
+                 or np.linalg.norm(now[1] - expected[1]) > 0.01 * size
+                 or float(np.dot(unit(now[2]), unit(expected[2]))) < 0.999)
+        if not moved:
+            return
+        logging.warning(f"MPI: the 3D camera of {tag} is not where it was placed (toward camera "
+                        f"{_direction(*now[:2])}, up {np.round(unit(now[2]), 3).tolist()}; expected "
+                        f"{_direction(*expected[:2])}, up {np.round(unit(expected[2]), 3).tolist()}); placed again")
+        viewNode = widget.mrmlViewNode()
+        frame, result, distance, parallelScale, direction, up = guard["args"]
+        _cameraRechecking[0] = True
+        try:
+            placeCamera(viewNode, frame, result, distance, parallelScale, direction, up)
+        finally:
+            _cameraRechecking[0] = False
+    except Exception:
+        logging.warning("MPI: could not check the 3D camera:\n" + traceback.format_exc())
 
 
 def _cameraNode(viewNode):
@@ -417,7 +509,7 @@ def labelGrid(result, frame, spacing=None):
     return labels, matrix
 
 
-def myocardiumLevels(result, frame, sample, polar=None, percentile=98.0):
+def myocardiumLevels(result, frame, sample, polar=None, percentile=99.0):
     """(maximum, level at the percentile) of the counts inside the detected myocardium (its labels on
     the LABEL_SPACING_MM grid, sampled by sample), or None. The maximum also covers the polar map
     samples when given, so no polar map value is above 100 %."""

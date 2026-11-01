@@ -246,7 +246,7 @@ How it works:
   angle's wall counts) gives the blood pool and the wall counts, and the wall ends half way between the
   two (*Adaptive, global*: the whole myocardium's counts, the default; *Adaptive*: each angle's own basal
   wall, so a basal-only defect is followed to the valve plane); *Fixed share* ends it at *Base threshold*
-  of each angle's wall counts. With *Base: go on past a defect gap* (Advanced parameters, Valve plane, off
+  of each angle's wall counts. With *Base: go on past a defect gap* (Advanced parameters, Valve plane, on
   by default) a wall that falls off and comes back within 15 mm toward the base (a defect between the
   mid-ventricle and a basal wall still alive) goes on to the end of the basal wall, only where the cavity
   has not filled and the wall comes back in the cone it could have followed. The valve plane is fitted

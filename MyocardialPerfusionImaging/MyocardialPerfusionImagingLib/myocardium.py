@@ -70,9 +70,9 @@ DEFAULTS = {
     "baseMethod": "global",    # BASE_METHODS: "global" ends the wall half way between the whole myocardium's counts and
                                # the blood pool, "adaptive" half way between its column's basal counts and the blood
                                # pool, "fraction" at baseFraction of its column's wall counts (_fitValvePlane)
-    "baseFraction": 0.55,      # "fraction": wall ends where its counts fall below this fraction of its column's wall counts
+    "baseFraction": 0.50,      # "fraction": wall ends where its counts fall below this fraction of its column's wall counts
     "basePrelimFraction": 0.30,  # "adaptive": the same for the preliminary segment the blood pool and basal wall come from
-    "baseGap": False,          # base: a wall that falls off and comes back within BASE_GAP_MM toward the base goes on
+    "baseGap": True,           # base: a wall that falls off and comes back within BASE_GAP_MM toward the base goes on
                                # (a defect between the mid-ventricle and a basal wall still alive, _wallResumes)
     "baseEdgeFraction": 0.50,  # "adaptive": the wall ends this far from its basal counts down to the blood pool
     "maxValveTilt": 40.0,      # deg, largest tilt of the valve plane against the short-axis plane
@@ -87,6 +87,8 @@ DEFAULTS = {
                                # width against one floor for both sides, half the ray's own, half the wall's mean,
                                # "gradient" puts them at the profile's steepest slopes, "gradienttable" reads the width
                                # between those slopes as a blurred slab, leaning to the prior (the default)
+    "smoothEdges": True,       # surface fits: the endo- and epicardial half widths come wholly from their fit, whatever
+                               # fitPull keeps of a ray's own value on the mid-wall (a width is noisier than a peak)
     "minThickness": 6.0,       # mm
     "maxThickness": 18.0,      # mm
     "valveOffset": 0.0,        # mm, + moves the valve plane toward the apex
@@ -765,7 +767,7 @@ def _wallFromWidths(result, resolution):
     grid, p = result["grid"], result["grid"].params
     weight = np.where(_clearWalls(result["gateWeight"], result["peak"]), result["gateWeight"], 0.0)
     fit = result.get("fit", GATE_DEFAULTS["fit"])
-    pull = result.get("fitPull", GATE_DEFAULTS["fitPull"])
+    pull = 1.0 if p.get("smoothEdges", True) else result.get("fitPull", GATE_DEFAULTS["fitPull"])
     mid = result["mid"]
     beyond = _beyondBase(grid, mid, result["valvePlane"])
     inner = result.get("profileInner")

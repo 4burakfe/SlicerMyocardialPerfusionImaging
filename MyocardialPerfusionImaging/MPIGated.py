@@ -125,7 +125,7 @@ READING_NOTE = ("Read the wall motion, thickening, volumes and EF together, with
                 "data. With the fixed motion reference (default) motion is measured from one LV center and axis: "
                 "when the whole heart moves down in systole, an apex that contracts well can show little motion "
                 "while its wall clearly thickens (Motion reference: Floating takes such a shift out).")
-MOTION_WINDOW = (0.0, 25.0, 0.0, 8.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
+MOTION_WINDOW = (0.0, 25.0, 0.0, 6.0)   # inward wall motion window, mm (QGS: 0-10 mm); outward has its own ramp
 EF_WINDOW = (-50.0, 100.0, 0.0, 80.0)    # range and default window of the regional EF map, %
 DEFAULT_EF_REFERENCE = "fixed"        # regional EF: a wedge grows or shrinks with a heart that moves as a whole
 DEFAULT_EF_CUT = "base"                  # regional EF: wallLib.REGIONAL_EF_CUTS
@@ -136,7 +136,7 @@ DEFAULT_WALL_COLORMAP = "Inferno"  # 3D wall colors (its own setting, not taken 
 DEFAULT_REPRESENTATION = "surface"
 WALL_COLOR_MODES = (("Perfusion", "perfusion"), ("Wall motion", "motion"), ("Constant color", "constant"))
 DEFAULT_WALL_COLOR_MODE = "perfusion"
-WALL_COLOR = (0.85, 0.35, 0.25)     # beating wall in "Constant color"
+WALL_COLOR = (0.40, 0.30, 1.0)     # beating wall in "Constant color"
 WALL_OPACITY = 0.5                  # beating wall in the 3D view
 GHOST_OPACITY = 0.03                # ED reference (drawn on top, so it need not be opaque)
 GHOST_REPRESENTATION = "wireframe"
@@ -2106,19 +2106,15 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def updateRepresentation(self):
         """Surface, wireframe or points: only the rendering of the same models changes."""
         representation = self.representation()
-        shaded = self.wallColorMode() == "constant"    # one color: the shading shows the shape
         for slot in (STRESS, REST):
             model = self.surfaceModel(slot)
             if model is None or model.GetDisplayNode() is None:
                 continue
             display = model.GetDisplayNode()
             display.SetRepresentation({"points": 0, "wireframe": 1}.get(representation, 2))
-            if shaded:
-                display.SetAmbient(0.3)
-                display.SetDiffuse(0.7)
-            else:   # flat colors: the counts or the motion, not the shading
-                display.SetAmbient(1.0 if representation == "surface" else 0.7)
-                display.SetDiffuse(0.0 if representation == "surface" else 0.3)
+            # flat colors in every color mode: the counts, the motion or the one color, not the shading
+            display.SetAmbient(1.0 if representation == "surface" else 0.7)
+            display.SetDiffuse(0.0 if representation == "surface" else 0.3)
             display.SetOpacity(float(self.wallOpacitySlider.value))
 
     def updateWallColorMode(self):
@@ -2217,7 +2213,9 @@ class MPIGatedWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 MPIMyocardium.style3DView(viewNode)
                 viewNode.SetRenderMode(slicer.vtkMRMLViewNode.Orthographic)
                 scale = 0.75 * (wallLib.wallReach(data.staticResult) + LABEL_DISTANCE_MM) + 10.0
-                MPIMyocardium.placeCamera(viewNode, data.frame, data.staticResult, parallelScale=scale)
+                # straight from anterior, the base up: the beating wall reads best face on
+                MPIMyocardium.placeCamera(viewNode, data.frame, data.staticResult, parallelScale=scale,
+                                          direction=data.frame["w"], up=-np.asarray(data.frame["u"], dtype=float))
                 self.updateGhost((slot,))   # the overlay layer follows the view's (possibly new) camera
             except Exception:
                 logging.warning("MPI: could not place the gated 3D camera:\n" + traceback.format_exc())
