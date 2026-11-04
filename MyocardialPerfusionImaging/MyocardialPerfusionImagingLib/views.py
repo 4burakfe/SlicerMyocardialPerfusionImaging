@@ -665,3 +665,221 @@ def setSliceGeometry(sliceNode, right, up, normal, origin, fieldOfView):
     sliceNode.UpdateMatrices()
     sliceNode.EndModify(wasModifying)
 
+
+
+# ---------------------------------------------------------------------------
+# Wall labels in the 3D scene
+# ---------------------------------------------------------------------------
+# Markups draw their point labels over the 3D view (a 2D overlay): a label behind the heart is either hidden
+# all at once or drawn on top of the wall. Here the labels of a markups node are billboard text props in the
+# scene itself instead, depth tested like the models: hidden behind an opaque wall, dimmed behind a translucent
+# one (depth peeling) and cut where the wall's edge passes in front of them. The markups node keeps the
+# positions, texts, color, font and view list; its own labels are switched off.
+DEPTH_LABELS_ATTRIBUTE = "MPI.DepthLabels"
+DEPTH_LABEL_OFFSET = 0.35          # text bottom this many font heights above the point (clears the glyph)
+
+
+def _threeDWidgets():
+    layoutManager = slicer.app.layoutManager()
+    if layoutManager is None:
+        return []
+    widgets = [layoutManager.threeDWidget(index) for index in range(layoutManager.threeDViewCount)]
+    return [widget for widget in widgets if widget is not None and widget.mrmlViewNode() is not None]
+
+
+class _DepthLabels:
+    def __init__(self, node):
+        self.node = node
+        self.props = []        # (view widget, renderer, vtkBillboardTextActor3D)
+        self.signature = None
+        self.tags = []
+        events = [vtk.vtkCommand.ModifiedEvent, slicer.vtkMRMLDisplayableNode.DisplayModifiedEvent]
+        for name in ("PointModifiedEvent", "PointAddedEvent", "PointRemovedEvent"):
+            if hasattr(slicer.vtkMRMLMarkupsNode, name):
+                events.append(getattr(slicer.vtkMRMLMarkupsNode, name))
+        for event in events:
+            self.tags.append(node.AddObserver(event, lambda caller, event: self.sync()))
+
+    def wanted(self):
+        """(points, views) to show: points [(text, (x, y, z))], views [(widget, renderer, font size)]."""
+        node, display = self.node, self.node.GetDisplayNode()
+        if display is None or not display.GetVisibility() or not display.GetVisibility3D():
+            return [], []
+        points = []
+        for index in range(node.GetNumberOfControlPoints()):
+            if not node.GetNthControlPointVisibility(index) or not node.GetNthControlPointLabel(index):
+                continue
+            position = [0.0, 0.0, 0.0]
+            node.GetNthControlPointPositionWorld(index, position)
+            points.append((node.GetNthControlPointLabel(index), tuple(round(v, 3) for v in position)))
+        views = []
+        for widget in _threeDWidgets():
+            viewNode = widget.mrmlViewNode()
+            if not display.IsDisplayableInView(viewNode.GetID()):
+                continue
+            renderer = widget.threeDView().renderWindow().GetRenderers().GetFirstRenderer()
+            if renderer is None:
+                continue
+            # the size Markups would give the label (vtkSlicerMarkupsWidgetRepresentation3D)
+            size = (display.GetTextProperty().GetFontSize() * display.GetTextScale()
+                    * viewNode.GetScreenScaleFactor() * 5.0)
+            views.append((widget, renderer, max(6, int(size))))
+        return points, views
+
+    def sync(self):
+        try:
+            points, views = self.wanted()
+            display = self.node.GetDisplayNode()
+            textProperty = display.GetTextProperty() if display is not None else None
+            style = None
+            if textProperty is not None:
+                style = (tuple(display.GetSelectedColor()), display.GetOpacity(), textProperty.GetBold(),
+                         textProperty.GetItalic(), textProperty.GetShadow(), textProperty.GetFontFamily())
+            signature = (tuple(points), tuple((id(r), size) for _, r, size in views), style)
+            if signature == self.signature:
+                return
+            self.clear()
+            self.signature = signature
+            for widget, renderer, size in views:
+                for text, position in points:
+                    prop = vtk.vtkBillboardTextActor3D()
+                    prop.SetInput(text)
+                    prop.SetPosition(*position)
+                    prop.SetDisplayOffset(0, int(DEPTH_LABEL_OFFSET * size))
+                    prop.PickableOff()
+                    textStyle = prop.GetTextProperty()
+                    textStyle.ShallowCopy(textProperty)
+                    try:
+                        slicer.app.applicationLogic().UseCustomFontFile(textStyle)   # the font Markups use
+                    except AttributeError:
+                        pass
+                    textStyle.SetFontSize(size)
+                    textStyle.SetColor(*display.GetSelectedColor())
+                    textStyle.SetOpacity(display.GetOpacity())
+                    textStyle.SetBackgroundOpacity(0.0)
+                    textStyle.SetFrame(False)
+                    textStyle.SetJustificationToCentered()
+                    textStyle.SetVerticalJustificationToBottom()
+                    renderer.AddViewProp(prop)
+                    self.props.append((widget, renderer, prop))
+                widget.threeDView().scheduleRender()
+        except Exception:
+            logging.debug("MPI: could not draw the 3D wall labels", exc_info=True)
+
+    def clear(self):
+        widgets = []
+        for widget, renderer, prop in self.props:
+            renderer.RemoveViewProp(prop)
+            if widget not in widgets:
+                widgets.append(widget)
+        self.props = []
+        self.signature = None
+        for widget in widgets:
+            try:
+                widget.threeDView().scheduleRender()
+            except Exception:
+                pass
+
+    def release(self):
+        self.clear()
+        for tag in self.tags:
+            self.node.RemoveObserver(tag)
+        self.tags = []
+
+
+# Kept on the slicer module so a reload (developer mode) takes over, and cleans up, the labels already shown
+_depthState = getattr(slicer, "_mpiDepthLabelsState", None)
+if _depthState is None:
+    _depthState = slicer._mpiDepthLabelsState = {"labels": {}, "observers": []}
+
+
+def showLabelsInScene(markupsNode):
+    """Draw the point labels of markupsNode as depth-tested text in the 3D views it is shown in (see above).
+    The node is tagged, so the labels come back when a saved scene is loaded."""
+    if markupsNode is None:
+        return
+    markupsNode.SetAttribute(DEPTH_LABELS_ATTRIBUTE, "1")
+    display = markupsNode.GetDisplayNode()
+    if display is not None:
+        display.SetPointLabelsVisibility(False)
+        try:
+            display.SetOccludedVisibility(False)   # the glyphs: depth tested too
+        except AttributeError:
+            pass
+    _observeLayout()
+    _attachDepthLabels(markupsNode)
+
+
+def _attachDepthLabels(node):
+    labels = _depthState["labels"]
+    if node.GetID() in labels and labels[node.GetID()].node is node:
+        labels[node.GetID()].sync()
+        return
+    if node.GetID() in labels:
+        labels.pop(node.GetID()).release()
+    labels[node.GetID()] = entry = _DepthLabels(node)
+    entry.sync()
+
+
+def _syncAllDepthLabels(*args):
+    for entry in list(_depthState["labels"].values()):
+        entry.sync()
+
+
+def _dropRemovedDepthLabels(*args):
+    labels = _depthState["labels"]
+    for nodeId, entry in list(labels.items()):
+        if entry.node.GetScene() is None or slicer.mrmlScene.GetNodeByID(nodeId) is not entry.node:
+            labels.pop(nodeId).release()
+
+
+@vtk.calldata_type(vtk.VTK_OBJECT)
+def _onNodeAdded(caller, event, node):
+    if isinstance(node, slicer.vtkMRMLMarkupsNode) and node.GetAttribute(DEPTH_LABELS_ATTRIBUTE) == "1":
+        _attachDepthLabels(node)
+
+
+@vtk.calldata_type(vtk.VTK_OBJECT)
+def _onNodeRemoved(caller, event, node):
+    entry = _depthState["labels"].get(node.GetID()) if node is not None else None
+    if entry is not None and entry.node is node:
+        _depthState["labels"].pop(node.GetID()).release()
+
+
+def _observeLayout():
+    """3D views made after the labels (another layout): their labels. The layout manager may not exist yet
+    when this file is first imported, so this is tried again whenever labels are added."""
+    if any(not isinstance(tag, int) for _, tag in _depthState["observers"]):
+        return
+    layoutManager = slicer.app.layoutManager()
+    if layoutManager is not None:
+        layoutManager.connect("layoutChanged(int)", _syncAllDepthLabels)
+        _depthState["observers"].append((layoutManager, _syncAllDepthLabels))
+
+
+def _installDepthLabelObservers():
+    try:
+        for target, tag in _depthState["observers"]:
+            if isinstance(tag, int):
+                target.RemoveObserver(tag)
+            else:
+                target.disconnect("layoutChanged(int)", tag)
+        _depthState["observers"] = []
+        for entry in list(_depthState["labels"].values()):   # made by the previous version of this file
+            entry.release()
+        _depthState["labels"] = {}
+        scene = slicer.mrmlScene
+        observers = [(scene, scene.AddObserver(slicer.vtkMRMLScene.NodeAddedEvent, _onNodeAdded)),
+                     (scene, scene.AddObserver(slicer.vtkMRMLScene.NodeRemovedEvent, _onNodeRemoved)),
+                     (scene, scene.AddObserver(slicer.vtkMRMLScene.EndCloseEvent, _dropRemovedDepthLabels)),
+                     (scene, scene.AddObserver(slicer.vtkMRMLScene.EndImportEvent, _syncAllDepthLabels))]
+        _depthState["observers"] = observers
+        _observeLayout()
+        for node in slicer.util.getNodesByClass("vtkMRMLMarkupsNode"):
+            if node.GetAttribute(DEPTH_LABELS_ATTRIBUTE) == "1":
+                _attachDepthLabels(node)
+    except Exception:
+        logging.warning("MPI: could not set up the 3D wall labels", exc_info=True)
+
+
+_installDepthLabelObservers()

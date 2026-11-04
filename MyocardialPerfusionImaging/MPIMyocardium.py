@@ -38,7 +38,7 @@ from MyocardialPerfusionImagingLib.geometry import unit, worldToLocalMatrix, sam
 from MyocardialPerfusionImagingLib.views import (  # noqa: E402
     MYOCARDIUM_LAYOUT_ID, DUAL_MYOCARDIUM_LAYOUT_ID, LANE_SUFFIXES, ORIENTATIONS, myocardiumLayoutXml,
     dualMyocardiumLayoutXml, myocardiumViews, registerLayout, sliceNodeByTag, threeDWidgetByTag, showVolumeInView, setSliceGeometry,
-    setViewTitle)
+    setViewTitle, showLabelsInScene)
 from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleButton, StudyPairSelector  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,6 @@ CAMERA_MARGIN_MM = 10.0            # ... plus this
 CAMERA_RADIUS_FACTOR = 1.6         # without a wall: this times the search radius
 WALL_LABEL_GLYPH_SCALE = 1.2       # 3D wall labels
 WALL_LABEL_TEXT_SCALE = 4.0
-WALL_LABEL_OCCLUDED_OPACITY = 0.6
 WALL_LABEL_LEADER_OPACITY = 0.45
 
 
@@ -259,7 +258,9 @@ def labelLeaderPolyData(positions):
 
 def addWallLabelNodes(result, study, viewIds, distanceMm=None):
     """Floating labels (anterior, septal, inferior, lateral, apex, base) distanceMm outside the
-    epicardium with thin leader lines, shown in the given 3D views only. Returns the two new nodes."""
+    epicardium with thin leader lines, shown in the given 3D views only. The labels are drawn in the 3D
+    scene, so the wall hides (or, when translucent, dims) those behind it (views.showLabelsInScene).
+    Returns the two new nodes."""
     scene = slicer.mrmlScene
     distanceMm = LABEL_DISTANCE_MM if distanceMm is None else distanceMm
     positions = wallLib.wallLabelPositions(result, distanceMm)
@@ -282,8 +283,6 @@ def addWallLabelNodes(result, study, viewIds, distanceMm=None):
     display.SetPointLabelsVisibility(True)
     display.SetVisibility2D(False)
     try:
-        display.SetOccludedVisibility(True)
-        display.SetOccludedOpacity(WALL_LABEL_OCCLUDED_OPACITY)
         textProperty = display.GetTextProperty()
         textProperty.SetBold(True)
         textProperty.SetShadow(True)
@@ -292,6 +291,7 @@ def addWallLabelNodes(result, study, viewIds, distanceMm=None):
         pass
     if viewIds:
         display.SetViewNodeIDs(viewIds)
+    showLabelsInScene(labels)
     _placeNextTo(labels, study)
 
     leaders = scene.AddNewNodeByClass("vtkMRMLModelNode", f"{study.GetName()} wall label lines")

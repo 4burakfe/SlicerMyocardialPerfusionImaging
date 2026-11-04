@@ -519,7 +519,7 @@ MyocardialPerfusionImaging/
     myocardium.py                    LV wall fitting (rays, mid-wall, thickness, valve plane; per gate frame), no Slicer imports
     gating.py                        ECG gating information and per-frame count checks, no Slicer imports
     resampling.py                    B-spline / sinc / linear reslicing, in-plane zoom
-    views.py                         layouts and view helpers
+    views.py                         layouts and view helpers, 3D wall labels drawn in the scene (depth tested)
     display.py                       colour maps, the slice panel, the polar map panel and the Gated QC charts
     colortables.py                   the nuclear medicine color maps
     studies.py                       study roles, gated sequence recognition and pairing
