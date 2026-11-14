@@ -22,7 +22,7 @@ import numpy as np
 # built-in default; a value saved with Save parameters overrides it until Restore defaults.
 # ---------------------------------------------------------------------------
 PREFIX = "SPECTRecon."
-PREFIXES = (PREFIX, "GatedPET.")   # gated PET: same keys, written by the DICOMGatedDynamicPET extension
+PREFIXES = (PREFIX, "GatedPET.")   # gated PET: same keys, written by the PET4D extension
 COUNT_BAND_PERCENT = 10.0      # a frame whose counts differ more from the mean is flagged
 REJECTED_WARNING_PERCENT = 20.0
 RR_DRIFT_WARNING_PERCENT = 10.0

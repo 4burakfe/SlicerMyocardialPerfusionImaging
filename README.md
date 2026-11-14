@@ -93,8 +93,8 @@ in Myocardium instead of 15 mm for SPECT.
 
 ### Gated PET from DICOM
 
-Gated PET is loaded by the separate **DICOM Gated / Dynamic PET** extension
-([SlicerDICOMGatedDynamicPET](https://github.com/4burakfe/SlicerDICOMGatedDynamicPET)), which also loads
+Gated PET is loaded by the separate **PET4D** (DICOM Gated / Dynamic PET) extension
+([SlicerPET4D](https://github.com/4burakfe/SlicerPET4D)), which also loads
 dynamic and static PET. Install it next to Tarvos. For a gated series it gives:
 
 - **"<series> mean SUVbw"**: the static image, mean of the gates (each gate is a full activity image),
