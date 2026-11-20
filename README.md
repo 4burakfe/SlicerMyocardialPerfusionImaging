@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Branding/Tarvos_banner.jpg" alt="Tarvos: Myocardial Perfusion Imaging" width="100%">
+</p>
+
 # Tarvos - Myocardial Perfusion Imaging (3D Slicer)
 
 Tarvos is a 3D Slicer extension for myocardial perfusion SPECT (and PET). It takes reconstructed

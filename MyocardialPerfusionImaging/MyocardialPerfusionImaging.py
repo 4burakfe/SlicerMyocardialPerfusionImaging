@@ -47,7 +47,7 @@ from MyocardialPerfusionImagingLib.widgets import breakable, narrowLabel, styleB
 # built-in default; a value saved with Save parameters overrides it until Restore defaults.
 # ---------------------------------------------------------------------------
 ICON_PATH = os.path.join(_MODULE_DIR, "Resources", "Icons", "MyocardialPerfusionImaging.png")
-BANNER_PATH = os.path.join(_MODULE_DIR, "Resources", "Images", "Banner.jpg")
+BANNER_PATH = os.path.join(_MODULE_DIR, "Resources", "Images", "banner.jpg")
 STATE_TEXT = {session.STATE_DONE: "Done", session.STATE_AVAILABLE: "Ready", session.STATE_LOCKED: "Waiting"}
 PANEL_MAX_WIDTH = 900   # px, module panel width while the hub is open
 

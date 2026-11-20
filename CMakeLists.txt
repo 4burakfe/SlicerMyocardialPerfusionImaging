@@ -8,7 +8,7 @@ set(EXTENSION_HOMEPAGE "https://github.com/4burakfe/SlicerMyocardialPerfusionIma
 set(EXTENSION_CATEGORY "Nuclear Medicine")
 set(EXTENSION_CONTRIBUTORS "Burak Demir")
 set(EXTENSION_DESCRIPTION "Tarvos: myocardial perfusion SPECT and PET workflow. Study roles and case from DICOM, reorientation to the cardiac axes (SA, HLA, VLA), automatic LV wall detection, stress / rest slices, polar maps, 3D views and TID, gated QC and gated review with thickening and motion maps, LV volumes and EF. Works with volumes reconstructed by the DICOMSpectRecon extension.")
-set(EXTENSION_ICONURL "https://raw.githubusercontent.com/4burakfe/SlicerMyocardialPerfusionImaging/main/MyocardialPerfusionImaging/Resources/Icons/MyocardialPerfusionImaging.png")
+set(EXTENSION_ICONURL "https://raw.githubusercontent.com/4burakfe/SlicerMyocardialPerfusionImaging/main/Branding/Tarvos_logo.png")
 set(EXTENSION_SCREENSHOTURLS "")
 set(EXTENSION_DEPENDS "NA") # Specified as a list or "NA" if no dependencies
 
