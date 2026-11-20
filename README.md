@@ -21,6 +21,7 @@ Author: Burak Demir, MD, FEBNM · License: [MIT](LICENSE)
 
 ## Contents
 
+- [Screenshots](#screenshots)
 - [Highlights](#highlights)
 - [Installation](#installation)
 - [Quick start](#quick-start)
@@ -36,6 +37,18 @@ Author: Burak Demir, MD, FEBNM · License: [MIT](LICENSE)
 - [Parameters](#parameters)
 - [Saved scenes](#saved-scenes)
 - [For developers](#for-developers)
+
+## Screenshots
+
+**Perfusion:** short axis, horizontal and vertical long axis slices, the polar map with coronary territories
+and the 3D uptake view.
+
+![Tarvos perfusion slices, polar map and 3D view](Screenshots/perfusion-slices.png)
+
+**Gated Review:** cine slices, perfusion, wall thickening, wall motion and regional EF polar maps, the LV
+volume curve with EF and the beating 3D wall.
+
+![Tarvos gated review with thickening, motion and regional EF maps](Screenshots/gated-review.png)
 
 ## Highlights
 
